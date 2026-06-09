@@ -1,0 +1,53 @@
+appId: com.corneroffice.app
+productName: CornerOffice
+copyright: Corner Office
+artifactName: CornerOffice-${version}.${ext}
+
+directories:
+  output: release
+  buildResources: assets
+
+files:
+  - out/**/*
+  - node_modules/**/*
+  - package.json
+
+extraResources:
+  - from: assets/icon.png
+    to: assets/icon.png
+  - from: assets/tray-icon.png
+    to: assets/tray-icon.png
+
+asarUnpack:
+  - "**/node_modules/node-pty/**"
+
+linux:
+  executableName: corner-office
+  icon: assets
+  category: Development
+  target:
+    - target: deb
+      arch:
+        - x64
+        - arm64
+    - target: rpm
+      arch:
+        - x64
+        - arm64
+    - target: AppImage
+      arch:
+        - x64
+        - arm64
+
+deb:
+  maintainer: Corner Office <noreply@corneroffice.app>
+  depends:
+    - libnotify4
+    - libappindicator3-1
+
+rpm:
+  depends:
+    - libnotify
+
+# Explicitly disable auto-update — no external API calls
+publish: null

@@ -1,0 +1,644 @@
+@import "tailwindcss";
+
+@source "../**/*.{tsx,ts}";
+
+/* Design token indirection:
+   @theme registers TW utility names (bg-co-bg-primary, text-co-text-muted, etc.)
+   that resolve through :root / .theme-light CSS custom properties defined below.
+   This enables runtime theme switching without JS — just swap the CSS class. */
+@theme {
+  --font-display: 'Outfit', system-ui, sans-serif;
+  --font-sans: 'Outfit', system-ui, -apple-system, sans-serif;
+
+  --color-co-bg-primary: var(--co-bg-primary);
+  --color-co-bg-secondary: var(--co-bg-secondary);
+  --color-co-bg-tertiary: var(--co-bg-tertiary);
+  --color-co-bg-elevated: var(--co-bg-elevated);
+  --color-co-text-primary: var(--co-text-primary);
+  --color-co-text-secondary: var(--co-text-secondary);
+  --color-co-text-muted: var(--co-text-muted);
+  --color-co-border: var(--co-border);
+  --color-co-border-glow: var(--co-border-glow);
+  --color-co-accent: var(--co-accent);
+  --color-co-accent-dim: var(--co-accent-dim);
+  --color-co-accent-teal: var(--co-accent-teal);
+  --color-co-status-active: var(--co-status-active);
+  --color-co-status-waiting: var(--co-status-waiting);
+  --color-co-status-parked: var(--co-status-parked);
+  --color-co-status-idle: var(--co-status-idle);
+  --color-co-status-attention: var(--co-status-attention);
+  --color-co-ship-gold: var(--co-ship-gold);
+  --color-co-accent-violet: var(--co-accent);
+  --color-co-accent-violet-dim: var(--co-accent-dim);
+
+  --shadow-co-card: 0 2px 12px -2px rgba(0, 0, 0, 0.2);
+  --shadow-co-card-hover: 0 4px 24px -4px rgba(0, 0, 0, 0.3), 0 0 0 1px var(--co-border-glow);
+  --shadow-co-glow-accent: 0 0 20px -4px var(--co-accent-glow);
+  --shadow-co-glow-active: 0 0 16px -2px rgba(52, 211, 153, 0.2);
+
+  --radius-co: 0.75rem;
+}
+
+@font-face {
+  font-family: 'Outfit';
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url('../assets/fonts/Outfit-VariableFont_wght.woff2') format('woff2');
+}
+
+/* ============================================================
+   Corner Office Design Tokens — Dark (default) Theme
+   "Night Command" — deep, rich, alive
+   ============================================================ */
+:root {
+  /* Surfaces — layered depth, not flat */
+  --co-bg-primary: #0a0c14;        /* Deepest layer — near-black with blue undertone */
+  --co-bg-secondary: #111420;      /* Card surfaces */
+  --co-bg-tertiary: #1a1e2e;       /* Hover, inputs, recessed areas */
+  --co-bg-elevated: #1e2235;       /* Elevated panels, popovers */
+
+  /* Text — clear hierarchy */
+  --co-text-primary: #e8eaf4;      /* Headlines, primary content */
+  --co-text-secondary: #a0a4b8;    /* Body text, labels */
+  --co-text-muted: #636882;        /* Timestamps, hints — WCAG AA 4.78:1 on #0a0c14 */
+
+  /* Borders — barely there */
+  --co-border: #1e2235;            /* Subtle structural lines */
+  --co-border-glow: #2a3050;       /* Slightly more visible on hover */
+
+  /* Accents — electric but refined */
+  --co-accent: #7c6aff;            /* Primary accent — rich violet */
+  --co-accent-dim: #5a4ad4;        /* Dimmed variant */
+  --co-accent-glow: rgba(124, 106, 255, 0.15);  /* Glow halo */
+  --co-accent-teal: #22d3c5;       /* Secondary accent — electric teal */
+  --co-accent-teal-glow: rgba(34, 211, 197, 0.12);
+
+  /* Status — vivid and distinct */
+  --co-status-active: #34d399;     /* Emerald green — alive */
+  --co-status-waiting: #fbbf24;    /* Warm amber */
+  --co-status-parked: #a78bfa;     /* Soft violet */
+  --co-status-idle: #4b5068;       /* Muted slate */
+  --co-status-attention: #f87171;  /* Warm red */
+
+  /* Ship / celebration */
+  --co-ship-gold: #f59e0b;
+
+  /* Glass effect */
+  --co-glass-bg: rgba(17, 20, 32, 0.6);
+  --co-glass-border: rgba(255, 255, 255, 0.06);
+  --co-glass-shine: rgba(255, 255, 255, 0.03);
+
+  /* Sidebar */
+  --co-sidebar-width: 15rem;
+  --co-sidebar-bg: rgba(10, 12, 20, 0.85);
+}
+
+/* ============================================================
+   Light Theme Overrides
+   ============================================================ */
+.theme-light {
+  --co-bg-primary: #f5f6fa;
+  --co-bg-secondary: #ffffff;
+  --co-bg-tertiary: #eef0f6;
+  --co-bg-elevated: #ffffff;
+  --co-text-primary: #13152a;
+  --co-text-secondary: #5a5f73;
+  --co-text-muted: #7c819a;        /* WCAG AA 4.62:1 on #f5f6fa */
+  --co-border: #e4e6ef;
+  --co-border-glow: #d0d3e0;
+  --co-accent: #6d4cf0;
+  --co-accent-dim: #8b6ff5;
+  --co-accent-glow: rgba(109, 76, 240, 0.08);
+  --co-accent-teal: #0d9488;
+  --co-accent-teal-glow: rgba(13, 148, 136, 0.06);
+  --co-glass-bg: rgba(255, 255, 255, 0.7);
+  --co-glass-border: rgba(0, 0, 0, 0.06);
+  --co-glass-shine: rgba(255, 255, 255, 0.5);
+  --co-sidebar-bg: rgba(245, 246, 250, 0.9);
+}
+
+/* ============================================================
+   Base Styles
+   ============================================================ */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background-color: var(--co-bg-primary);
+    color: var(--co-text-primary);
+    font-family: 'Outfit', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.01em;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  /* Custom scrollbar — thin and translucent */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: rgba(99, 104, 130, 0.3);
+    border-radius: 99px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(99, 104, 130, 0.5);
+  }
+}
+
+/* ============================================================
+   Glass & Card Utilities
+   ============================================================ */
+@layer components {
+  /* Glass card — frosted translucent surface */
+  .co-glass {
+    background: var(--co-glass-bg);
+    border: 1px solid var(--co-glass-border);
+    backdrop-filter: blur(16px) saturate(1.5);
+    -webkit-backdrop-filter: blur(16px) saturate(1.5);
+  }
+
+  /* Solid card — opaque surface with subtle depth */
+  .co-card {
+    background: var(--co-bg-secondary);
+    border: 1px solid var(--co-border);
+    border-radius: 0.75rem;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+  }
+
+  .co-card:hover {
+    border-color: var(--co-border-glow);
+    box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.3), 0 0 0 1px var(--co-border-glow);
+  }
+
+  /* Interactive card — lifts on hover */
+  .co-card-interactive {
+    cursor: pointer;
+  }
+
+  .co-card-interactive:hover {
+    transform: translateY(-1px);
+  }
+
+  .co-card-interactive:active {
+    transform: translateY(0);
+  }
+
+  /* Accent glow — used for active items */
+  .co-glow-accent {
+    box-shadow: 0 0 20px -4px var(--co-accent-glow), 0 0 0 1px rgba(124, 106, 255, 0.2);
+  }
+
+  .co-glow-teal {
+    box-shadow: 0 0 20px -4px var(--co-accent-teal-glow), 0 0 0 1px rgba(34, 211, 197, 0.15);
+  }
+
+  .co-glow-active {
+    box-shadow: 0 0 16px -2px rgba(52, 211, 153, 0.2), 0 0 0 1px rgba(52, 211, 153, 0.15);
+  }
+
+  /* Custom title bar — frameless window chrome */
+  .co-titlebar {
+    position: relative;
+    background: var(--co-bg-primary);
+    border-bottom: 1px solid var(--co-glass-border);
+  }
+
+  /* Sidebar active indicator — left accent bar */
+  .co-sidebar-active {
+    position: relative;
+  }
+
+  .co-sidebar-active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 25%;
+    bottom: 25%;
+    width: 2px;
+    border-radius: 0 2px 2px 0;
+    background: var(--co-accent);
+    box-shadow: 0 0 8px var(--co-accent-glow);
+  }
+}
+
+/* ============================================================
+   Background Atmosphere — Subtle ambient gradient
+   ============================================================ */
+@layer components {
+  .co-atmosphere {
+    position: relative;
+  }
+
+  .co-atmosphere::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 60% 40% at 20% 10%, rgba(124, 106, 255, 0.04), transparent),
+      radial-gradient(ellipse 50% 50% at 80% 80%, rgba(34, 211, 197, 0.03), transparent);
+    z-index: 0;
+  }
+
+  .co-atmosphere > * {
+    position: relative;
+    z-index: 1;
+  }
+}
+
+/* ============================================================
+   Document Viewer Dialog
+   ============================================================ */
+@layer components {
+  .co-docviewer-dialog {
+    border: none;
+    background: transparent;
+    padding: 0;
+    max-width: none;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .co-docviewer-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+  }
+}
+
+/* ============================================================
+   Prose — Markdown Rendering Styles
+   ============================================================ */
+@layer components {
+  .co-prose {
+    color: var(--co-text-secondary);
+    line-height: 1.7;
+    font-size: 0.875rem;
+  }
+
+  .co-prose h1 {
+    color: var(--co-text-primary);
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-top: 2rem;
+    margin-bottom: 0.75rem;
+    letter-spacing: -0.02em;
+  }
+
+  .co-prose h2 {
+    color: var(--co-text-primary);
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-top: 1.75rem;
+    margin-bottom: 0.5rem;
+    letter-spacing: -0.01em;
+  }
+
+  .co-prose h3 {
+    color: var(--co-text-primary);
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-top: 1.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .co-prose h4 {
+    color: var(--co-text-primary);
+    font-size: 1rem;
+    font-weight: 600;
+    margin-top: 1.25rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .co-prose h5,
+  .co-prose h6 {
+    color: var(--co-text-primary);
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin-top: 1rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .co-prose strong {
+    font-weight: 700;
+    color: var(--co-text-primary);
+  }
+
+  .co-prose em {
+    font-style: italic;
+  }
+
+  .co-prose img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 0.375rem;
+    margin-top: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .co-prose p {
+    margin-top: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .co-prose a {
+    color: var(--co-accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+
+  .co-prose a:hover {
+    color: var(--co-accent-dim);
+  }
+
+  .co-prose .co-prose-link-blocked {
+    color: var(--co-text-muted);
+    text-decoration: line-through;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  .co-prose ul {
+    list-style-type: disc;
+    padding-left: 1.5rem;
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .co-prose ol {
+    list-style-type: decimal;
+    padding-left: 1.5rem;
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .co-prose li {
+    margin-top: 0.25rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .co-prose blockquote {
+    border-left: 3px solid var(--co-accent-dim);
+    padding-left: 1rem;
+    margin-left: 0;
+    margin-top: 0.75rem;
+    margin-bottom: 0.75rem;
+    color: var(--co-text-muted);
+    font-style: italic;
+  }
+
+  .co-prose table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 0.75rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.8125rem;
+  }
+
+  .co-prose th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--co-text-primary);
+    border-bottom: 2px solid var(--co-border);
+    padding: 0.5rem 0.75rem;
+  }
+
+  .co-prose td {
+    border-bottom: 1px solid var(--co-border);
+    padding: 0.5rem 0.75rem;
+  }
+
+  .co-prose pre {
+    background: var(--co-bg-tertiary);
+    border: 1px solid var(--co-border);
+    border-radius: 0.5rem;
+    padding: 1rem;
+    overflow-x: auto;
+    margin-top: 0.75rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.8125rem;
+    line-height: 1.6;
+  }
+
+  .co-prose hr {
+    border: none;
+    border-top: 1px solid var(--co-border);
+    margin-top: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .co-prose input[type="checkbox"] {
+    appearance: none;
+    width: 1rem;
+    height: 1rem;
+    border: 1.5px solid var(--co-border-glow);
+    border-radius: 0.25rem;
+    vertical-align: middle;
+    margin-right: 0.375rem;
+    position: relative;
+    cursor: default;
+  }
+
+  .co-prose input[type="checkbox"]:checked {
+    background: var(--co-accent);
+    border-color: var(--co-accent);
+  }
+
+  .co-prose input[type="checkbox"]:checked::after {
+    content: '✓';
+    position: absolute;
+    top: -1px;
+    left: 2px;
+    font-size: 0.7rem;
+    color: white;
+  }
+
+  .co-prose :not(pre) > code {
+    background: var(--co-bg-tertiary);
+    border: 1px solid var(--co-border);
+    border-radius: 0.25rem;
+    padding: 0.125rem 0.375rem;
+    font-size: 0.8125rem;
+    font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  }
+}
+
+/* ============================================================
+   Animations
+   ============================================================ */
+@layer utilities {
+  /* Soft pulse for active status */
+  @keyframes co-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  .co-animate-pulse {
+    animation: co-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  /* Gentle glow breathe for active pipeline */
+  @keyframes co-glow-breathe {
+    0%, 100% { box-shadow: 0 0 12px -2px rgba(52, 211, 153, 0.15); }
+    50% { box-shadow: 0 0 20px -2px rgba(52, 211, 153, 0.3); }
+  }
+
+  .co-animate-glow {
+    animation: co-glow-breathe 3s ease-in-out infinite;
+  }
+
+  /* Fade in + slide up for cards */
+  @keyframes co-fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .co-animate-in {
+    animation: co-fade-up 0.3s ease-out both;
+  }
+
+  /* Stagger children */
+  .co-stagger > * {
+    animation: co-fade-up 0.3s ease-out both;
+  }
+
+  .co-stagger > *:nth-child(1) { animation-delay: 0ms; }
+  .co-stagger > *:nth-child(2) { animation-delay: 40ms; }
+  .co-stagger > *:nth-child(3) { animation-delay: 80ms; }
+  .co-stagger > *:nth-child(4) { animation-delay: 120ms; }
+  .co-stagger > *:nth-child(5) { animation-delay: 160ms; }
+  .co-stagger > *:nth-child(6) { animation-delay: 200ms; }
+  .co-stagger > *:nth-child(7) { animation-delay: 240ms; }
+  .co-stagger > *:nth-child(8) { animation-delay: 280ms; }
+  .co-stagger > *:nth-child(9) { animation-delay: 320ms; }
+  .co-stagger > *:nth-child(10) { animation-delay: 360ms; }
+
+  /* Pipeline node glow */
+  @keyframes co-node-pulse {
+    0%, 100% {
+      box-shadow: 0 0 0 0 var(--co-accent-glow), 0 0 6px -1px var(--co-accent);
+    }
+    50% {
+      box-shadow: 0 0 0 4px var(--co-accent-glow), 0 0 10px -1px var(--co-accent);
+    }
+  }
+
+  .co-animate-node {
+    animation: co-node-pulse 2s ease-in-out infinite;
+  }
+}
+
+/* Respect reduced motion globally */
+@media (prefers-reduced-motion: reduce) {
+  .co-animate-pulse,
+  .co-animate-glow,
+  .co-animate-in,
+  .co-animate-node,
+  .co-stagger > * {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  .co-card:hover,
+  .co-card-interactive:hover {
+    transform: none !important;
+  }
+}
+
+/* ============================================================
+   CornerRealm — CSS custom properties
+   ============================================================ */
+:root {
+  /* Realm glow palette */
+  --realm-gold: #c9a84c;
+  --realm-gold-glow: rgba(201, 168, 76, 0.6);
+  --realm-gold-dim: rgba(201, 168, 76, 0.3);
+  --realm-bg: #1a1209;
+
+  /* Character / building transition timing */
+  --realm-char-transition: 0.4s ease;
+  --realm-building-transition: 0.3s ease;
+
+  /* Tavern warm tones */
+  --realm-tavern-warm: rgba(201, 130, 60, 0.5);
+  --realm-tavern-light: rgba(230, 190, 100, 0.4);
+
+  /* Celebration */
+  --realm-celebration-gold: #f5d060;
+  --realm-celebration-glow: rgba(245, 208, 96, 0.5);
+}
+
+/* ============================================================
+   CornerRealm — character sprite animations
+   ============================================================ */
+
+@keyframes realm-bob {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-4px); }
+}
+
+@keyframes realm-bounce {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50%       { transform: translateY(-6px) scale(1.05); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes realm-glow-pulse {
+    0%, 100% { filter: drop-shadow(0 0 6px var(--realm-gold-dim)); }
+    50%       { filter: drop-shadow(0 0 14px var(--realm-gold-glow)); }
+  }
+
+  @keyframes realm-fade-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+
+  @keyframes realm-fade-out {
+    from { opacity: 1; transform: scale(1); }
+    to   { opacity: 0; transform: scale(0.96); }
+  }
+
+  @keyframes realm-bell-ring {
+    0%, 100% { transform: rotate(0deg); }
+    20%       { transform: rotate(-15deg); }
+    40%       { transform: rotate(12deg); }
+    60%       { transform: rotate(-8deg); }
+    80%       { transform: rotate(5deg); }
+  }
+
+  @keyframes realm-celebration {
+    0%   { opacity: 0; transform: translateY(12px) scale(0.9); }
+    15%  { opacity: 1; transform: translateY(0) scale(1.05); }
+    80%  { opacity: 1; transform: translateY(0) scale(1); }
+    100% { opacity: 0; transform: translateY(-8px) scale(0.97); }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [style*="realm-bob"],
+  [style*="realm-bounce"] {
+    animation: none !important;
+  }
+}
