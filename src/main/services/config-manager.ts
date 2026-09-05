@@ -217,8 +217,18 @@ export class ConfigManager {
 
   loadConfig(): AppConfig | null {
     const cfgPath = configPath()
+
     if (!fs.existsSync(cfgPath)) {
-      return null // signals first launch
+      // config.json is absent. Check for a last-known-good backup before calling
+      // this a first launch: an unclean shutdown can lose the file itself, and
+      // reporting "first launch" here wipes the workspaces list just as surely as
+      // a silent reset to defaults would.
+      const recovered = this._recoverFromBackup(cfgPath)
+      if (recovered) {
+        log.warn('[ConfigManager] config.json is missing; recovered from backup (config.json.bak)')
+        return recovered
+      }
+      return null // genuine first launch
     }
 
     // Happy path: read + migrate + validate config.json.
@@ -238,25 +248,40 @@ export class ConfigManager {
     // Preserve the bad file for diagnosis before we replace it.
     this._setAsideCorrupt(cfgPath)
 
-    // Try the last-known-good backup.
-    const bak = backupPath(cfgPath)
-    if (fs.existsSync(bak)) {
-      const recovered = this._readValidated(bak)
-      if (recovered) {
-        log.warn('[ConfigManager] Recovered config from backup (config.json.bak)')
-        // Durably restore the good config so subsequent reads/writes are consistent.
-        try {
-          this.saveConfig(recovered)
-        } catch (err) {
-          log.warn('[ConfigManager] Failed to restore recovered config to disk (non-fatal):', err)
-        }
-        return recovered
-      }
-      log.warn('[ConfigManager] Backup config.json.bak is also invalid; falling back to defaults')
+    const recovered = this._recoverFromBackup(cfgPath)
+    if (recovered) {
+      log.warn('[ConfigManager] Recovered config from backup (config.json.bak)')
+      return recovered
     }
 
     log.warn('[ConfigManager] No usable backup; resetting to defaults')
     return this.getDefaultConfig()
+  }
+
+  /**
+   * Read and validate config.json.bak and durably restore it to config.json, so a
+   * later read does not hit the same missing/corrupt file again. Returns null when
+   * there is no backup or the backup is itself unusable — callers decide whether
+   * that means "first launch" or "fall back to defaults".
+   */
+  private _recoverFromBackup(cfgPath: string): AppConfig | null {
+    const bak = backupPath(cfgPath)
+    if (!fs.existsSync(bak)) {
+      return null
+    }
+
+    const recovered = this._readValidated(bak)
+    if (!recovered) {
+      log.warn('[ConfigManager] Backup config.json.bak is also invalid; cannot recover from it')
+      return null
+    }
+
+    try {
+      this.saveConfig(recovered)
+    } catch (err) {
+      log.warn('[ConfigManager] Failed to restore recovered config to disk (non-fatal):', err)
+    }
+    return recovered
   }
 
   /**
