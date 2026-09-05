@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import yaml from 'js-yaml'
 import { useDocViewerStore } from '../../stores/docviewer-store'
+import { useUnsavedGuard } from '../../hooks/useUnsavedGuard'
 
 interface YamlViewerProps {
   content: string
@@ -62,6 +63,8 @@ function formatValue(value: unknown): string {
 export function YamlViewer({ content }: YamlViewerProps) {
   const openedFromFolder = useDocViewerStore((s) => s.openedFromFolder)
   const navigateBack = useDocViewerStore((s) => s.navigateBack)
+  // Guard: routes navigation through unsaved-changes check (§17 R9)
+  const guard = useUnsavedGuard()
 
   const { parsed, entries, error } = useMemo(() => {
     try {
@@ -78,8 +81,9 @@ export function YamlViewer({ content }: YamlViewerProps) {
     return (
       <div>
         {openedFromFolder && (
+          // Back button — guarded (§17 R9)
           <button
-            onClick={navigateBack}
+            onClick={() => guard(navigateBack)}
             className="flex items-center gap-1.5 text-sm text-co-text-secondary hover:text-co-accent transition-colors mb-4"
           >
             <span>←</span>
@@ -103,8 +107,9 @@ export function YamlViewer({ content }: YamlViewerProps) {
     return (
       <div>
         {openedFromFolder && (
+          // Back button — guarded (§17 R9)
           <button
-            onClick={navigateBack}
+            onClick={() => guard(navigateBack)}
             className="flex items-center gap-1.5 text-sm text-co-text-secondary hover:text-co-accent transition-colors mb-4"
           >
             <span>←</span>
@@ -122,7 +127,7 @@ export function YamlViewer({ content }: YamlViewerProps) {
     <div>
       {openedFromFolder && (
         <button
-          onClick={navigateBack}
+          onClick={() => guard(navigateBack)}
           className="flex items-center gap-1.5 text-sm text-co-text-secondary hover:text-co-accent transition-colors mb-4"
         >
           <span>←</span>

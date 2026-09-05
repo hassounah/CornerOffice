@@ -3,6 +3,7 @@ import { WindowTitleBar } from '../layout/WindowTitleBar'
 import { useRealmStore } from '../../stores/realm-store'
 import { useWorkspaceStore } from '../../stores/workspace-store'
 import { useDocViewerStore } from '../../stores/docviewer-store'
+import { useGuardDialogStore } from '../../hooks/useUnsavedGuard'
 import { useSettingsStore } from '../../stores/settings-store'
 import { KingdomMap } from './views/KingdomMap'
 import { OverlayBackdrop } from './OverlayBackdrop'
@@ -154,14 +155,24 @@ export function RealmShell(): React.ReactElement {
       // 1. Doc viewer file with folder to go back to → navigate back
       if (docViewer.mode === 'file' && docViewer._savedFolderState) {
         e.preventDefault()
-        docViewer.navigateBack()
+        // Guard against discarding unsaved edits (R-01): route through the
+        // unsaved-changes confirm when dirty, matching every other exit path.
+        if (docViewer.isDirty()) {
+          useGuardDialogStore.getState().requestConfirm(() => docViewer.navigateBack())
+        } else {
+          docViewer.navigateBack()
+        }
         return
       }
 
       // 2. Doc viewer open (folder or file) → close doc viewer
       if (docViewer.mode !== 'closed') {
         e.preventDefault()
-        docViewer.close()
+        if (docViewer.isDirty()) {
+          useGuardDialogStore.getState().requestConfirm(() => docViewer.close())
+        } else {
+          docViewer.close()
+        }
         return
       }
 

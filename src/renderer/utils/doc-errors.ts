@@ -5,6 +5,7 @@ export function friendlyDocError(error: unknown): string {
     case 'NOT_FOUND': return 'File or directory not found'
     case 'VALIDATION_ERROR': return e.message ?? 'Invalid request'
     case 'TIMEOUT': return 'Request timed out — try again'
+    case 'STALE_WRITE': return 'File changed on disk. Click Reload to see the latest version — your edits will be restored.'
     default: return 'Something went wrong'
   }
 }

@@ -4,7 +4,7 @@
  */
 
 import type { IpcResponse } from '../main/types/ipc'
-import type { DocTreeResponse, DocFileResponse } from '../main/types/docs'
+import type { DocTreeResponse, DocFileResponse, DocWriteResponse } from '../main/types/docs'
 import type { PluginStatus } from '../main/types/channels'
 
 interface CornerOfficeAPI {
@@ -41,6 +41,7 @@ interface CornerOfficeAPI {
   docs: {
     listTree: (dirPath: string, workspaceSlug: string) => Promise<IpcResponse<DocTreeResponse>>
     readFile: (filePath: string, workspaceSlug: string) => Promise<IpcResponse<DocFileResponse>>
+    writeFile: (filePath: string, workspaceSlug: string, content: string, expectedMtime: string) => Promise<IpcResponse<DocWriteResponse>>
   }
   channels: {
     getSessions: () => Promise<unknown>

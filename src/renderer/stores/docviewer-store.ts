@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { DocTreeResponse, DocFileResponse } from '@main/types/docs'
+import type { DocTreeResponse, DocFileResponse, DocWriteResponse } from '@main/types/docs'
 import type { IpcResponse } from '../utils/ipc'
 
 interface Breadcrumb {
@@ -23,6 +23,16 @@ interface LastAction {
   args: unknown[]
 }
 
+// Edit-mode fields reset applied on close / navigation (§17 R3)
+const EDIT_FIELD_RESET = {
+  editing: false,
+  draft: '',
+  savedContent: '',
+  saving: false,
+  saveError: null as DocError | null,
+  staledDraft: null as string | null,
+}
+
 interface DocViewerState {
   mode: 'closed' | 'folder' | 'file'
   workspaceSlug: string | null
@@ -38,12 +48,27 @@ interface DocViewerState {
   _savedFolderState: SavedFolderState | null
   _lastAction: LastAction | null
 
+  // Edit/dirty/save state (feature #0027)
+  editing: boolean       // true → Edit mode (textarea visible)
+  draft: string          // current textarea content
+  savedContent: string   // baseline content when edit started (dirty = draft !== savedContent)
+  saving: boolean        // docs:writeFile in-flight
+  saveError: DocError | null  // last save error (e.g. STALE_WRITE)
+  staledDraft: string | null  // draft preserved across STALE_WRITE reload (§17 R2)
+
   openFolder: (dirPath: string, workspaceSlug: string) => void
   openFile: (filePath: string, workspaceSlug: string, fromFolder?: boolean) => void
   navigateToDir: (dirPath: string) => void
   navigateBack: () => void
   retry: () => void
   close: () => void
+
+  // Edit mode actions (feature #0027)
+  enterEdit: () => void
+  setDraft: (value: string) => void
+  cancelEdit: () => void
+  save: () => Promise<void>
+  isDirty: () => boolean
 }
 
 function computeBreadcrumbs(currentDirPath: string, featureRoot: string): Breadcrumb[] {
@@ -98,6 +123,9 @@ export const useDocViewerStore = create<DocViewerState>((set, get) => ({
   _savedFolderState: null,
   _lastAction: null,
 
+  // Edit/dirty/save initial state
+  ...EDIT_FIELD_RESET,
+
   openFolder: (dirPath, workspaceSlug) => {
     set({
       mode: 'folder',
@@ -147,6 +175,10 @@ export const useDocViewerStore = create<DocViewerState>((set, get) => ({
       }
     }
 
+    // Reset edit fields on navigation (§17 R3); staledDraft is preserved across the async
+    // boundary so the re-entry logic below can read it after the response arrives.
+    const pendingStale = state.staledDraft
+
     set({
       mode: 'file',
       workspaceSlug,
@@ -156,6 +188,7 @@ export const useDocViewerStore = create<DocViewerState>((set, get) => ({
       openedFromFolder: fromFolder ?? false,
       _savedFolderState: savedState ?? state._savedFolderState,
       _lastAction: { type: 'openFile', args: [filePath, workspaceSlug, fromFolder] },
+      ...EDIT_FIELD_RESET,
     })
 
     void (async () => {
@@ -166,10 +199,25 @@ export const useDocViewerStore = create<DocViewerState>((set, get) => ({
           set({ fileLoading: false, error: response.error })
           return
         }
-        set({
-          file: response.data,
-          fileLoading: false,
-        })
+
+        // §17 R2: if a staledDraft exists from a STALE_WRITE rejection, restore it
+        // into edit mode so the user's work is not lost after reload.
+        if (pendingStale !== null) {
+          set({
+            file: response.data,
+            fileLoading: false,
+            savedContent: response.data!.content,
+            draft: pendingStale,
+            editing: true,
+            staledDraft: null,
+            saveError: null,
+          })
+        } else {
+          set({
+            file: response.data,
+            fileLoading: false,
+          })
+        }
       } catch (err) {
         if (get().mode === 'closed') return
         set({ fileLoading: false, error: extractError(err) })
@@ -188,6 +236,7 @@ export const useDocViewerStore = create<DocViewerState>((set, get) => ({
       treeLoading: true,
       error: null,
       _lastAction: { type: 'navigateToDir', args: [dirPath] },
+      ...EDIT_FIELD_RESET,  // §17 R3: reset edit fields on navigation
     })
 
     void (async () => {
@@ -229,6 +278,7 @@ export const useDocViewerStore = create<DocViewerState>((set, get) => ({
       error: null,
       openedFromFolder: false,
       _savedFolderState: null,
+      ...EDIT_FIELD_RESET,  // §17 R3: reset edit fields on navigation
     })
 
     // Background re-fetch to get fresh data
@@ -282,6 +332,92 @@ export const useDocViewerStore = create<DocViewerState>((set, get) => ({
       openedFromFolder: false,
       _savedFolderState: null,
       _lastAction: null,
+      ...EDIT_FIELD_RESET,  // §17 R3: reset all edit fields on close
     })
+  },
+
+  // ---------------------------------------------------------------------------
+  // Edit/dirty/save actions (feature #0027)
+  // ---------------------------------------------------------------------------
+
+  enterEdit: () => {
+    const { file } = get()
+    if (!file) return
+    set({
+      editing: true,
+      draft: file.content,
+      savedContent: file.content,
+      saveError: null,
+    })
+  },
+
+  setDraft: (value) => {
+    set({ draft: value })
+  },
+
+  isDirty: () => {
+    const state = get()
+    return state.editing && state.draft !== state.savedContent
+  },
+
+  cancelEdit: () => {
+    // Unconditional discard — caller is responsible for showing a confirm guard (§4).
+    set({
+      editing: false,
+      draft: '',
+      savedContent: '',
+      saveError: null,
+    })
+  },
+
+  save: async () => {
+    // Re-entrancy guard (§17 R13): bail if a save is already in-flight.
+    if (get().saving) return
+
+    const { file, workspaceSlug } = get()
+    if (!file || !workspaceSlug) return
+
+    // Snapshot the draft once at save start so it cannot diverge across the await
+    // (a mid-save keystroke must not corrupt the persisted baseline). The bytes we
+    // write to disk, the STALE_WRITE stash, and the post-success savedContent all use
+    // this exact value.
+    const draftToSave = get().draft
+    set({ saving: true, saveError: null })
+
+    try {
+      const response = await (window.cornerOffice.docs.writeFile(
+        file.filePath,
+        workspaceSlug,
+        draftToSave,
+        file.lastModified,
+      ) as Promise<IpcResponse<DocWriteResponse>>)
+
+      if (response.error) {
+        const err = response.error
+        if (err.code === 'STALE_WRITE') {
+          // §17 R2: preserve draft so user can restore it after reload
+          set({ saving: false, saveError: err, staledDraft: draftToSave })
+        } else {
+          set({ saving: false, saveError: err })
+        }
+        return
+      }
+
+      const { size, lastModified } = response.data!
+      set({
+        saving: false,
+        saveError: null,
+        editing: false,
+        savedContent: draftToSave,
+        draft: '',
+        file: { ...get().file!, content: draftToSave, size, lastModified },
+      })
+    } catch (err) {
+      const docErr: DocError = {
+        code: (err as { code?: string }).code ?? 'INTERNAL_ERROR',
+        message: (err as Error).message ?? 'Something went wrong',
+      }
+      set({ saving: false, saveError: docErr })
+    }
   },
 }))

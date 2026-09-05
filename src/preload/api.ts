@@ -71,6 +71,8 @@ export const api = {
       ipcRenderer.invoke('docs:listTree', { dirPath, workspaceSlug }),
     readFile: (filePath: string, workspaceSlug: string) =>
       ipcRenderer.invoke('docs:readFile', { filePath, workspaceSlug }),
+    writeFile: (filePath: string, workspaceSlug: string, content: string, expectedMtime: string) =>
+      ipcRenderer.invoke('docs:writeFile', { filePath, workspaceSlug, content, expectedMtime }),
   },
 
   channels: {

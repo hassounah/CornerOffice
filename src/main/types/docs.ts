@@ -25,3 +25,9 @@ export interface DocFileResponse {
   size: number
   lastModified: string
 }
+
+export interface DocWriteResponse {
+  filePath: string      // resolved real path written
+  size: number          // new byte size on disk
+  lastModified: string  // new mtime ISO — caller updates DocFileResponse with this
+}

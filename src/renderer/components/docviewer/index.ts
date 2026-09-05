@@ -1,4 +1,5 @@
 export { DocViewerOverlay } from './DocViewerOverlay'
+export { DocEditor } from './DocEditor'
 export { FolderBrowser } from './FolderBrowser'
 export { BreadcrumbNav } from './BreadcrumbNav'
 export { FileTreeItem } from './FileTreeItem'

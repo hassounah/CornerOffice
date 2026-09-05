@@ -8,12 +8,14 @@ import type { DocTreeResponse, DocFileResponse } from '@main/types/docs'
 
 const mockListTree = vi.fn()
 const mockReadFile = vi.fn()
+const mockWriteFile = vi.fn()
 
 Object.defineProperty(window, 'cornerOffice', {
   value: {
     docs: {
       listTree: mockListTree,
       readFile: mockReadFile,
+      writeFile: mockWriteFile,
     },
   },
   writable: true,
@@ -84,6 +86,13 @@ describe('docviewer-store', () => {
       openedFromFolder: false,
       _savedFolderState: null,
       _lastAction: null,
+      // Edit/dirty/save fields (feature #0027)
+      editing: false,
+      draft: '',
+      savedContent: '',
+      saving: false,
+      saveError: null,
+      staledDraft: null,
     })
   })
 
@@ -379,6 +388,326 @@ describe('docviewer-store', () => {
       expect(crumbs[0]?.label).toBe('0001-feature')
       expect(crumbs[1]?.label).toBe('.02-impl-team')
       expect(crumbs[2]?.label).toBe('reports')
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// §8.3 — Edit/dirty/save model tests (feature #0027)
+// ---------------------------------------------------------------------------
+
+// Seed the store into file mode with MOCK_FILE loaded
+async function openFileInStore() {
+  mockReadFile.mockResolvedValue({ data: MOCK_FILE, error: null })
+  useDocViewerStore.getState().openFile(MOCK_FILE.filePath, 'test-ws')
+  await flushPromises()
+}
+
+describe('docviewer-store — edit/dirty/save model', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    useDocViewerStore.setState({
+      mode: 'closed',
+      workspaceSlug: null,
+      featureRoot: null,
+      currentDirPath: null,
+      breadcrumbs: [],
+      tree: null,
+      treeLoading: false,
+      file: null,
+      fileLoading: false,
+      error: null,
+      openedFromFolder: false,
+      _savedFolderState: null,
+      _lastAction: null,
+      editing: false,
+      draft: '',
+      savedContent: '',
+      saving: false,
+      saveError: null,
+      staledDraft: null,
+    })
+    await openFileInStore()
+  })
+
+  // ── enterEdit ──────────────────────────────────────────────────────────────
+
+  describe('enterEdit', () => {
+    it('seeds draft and savedContent from file.content', () => {
+      getState().enterEdit()
+      const s = getState()
+      expect(s.editing).toBe(true)
+      expect(s.draft).toBe(MOCK_FILE.content)
+      expect(s.savedContent).toBe(MOCK_FILE.content)
+    })
+
+    it('isDirty is false immediately after enterEdit (draft === savedContent)', () => {
+      getState().enterEdit()
+      expect(getState().isDirty()).toBe(false)
+    })
+
+    it('clears saveError when entering edit', () => {
+      useDocViewerStore.setState({ saveError: { code: 'STALE_WRITE', message: 'stale' } })
+      getState().enterEdit()
+      expect(getState().saveError).toBeNull()
+    })
+
+    it('does nothing if file is null', () => {
+      useDocViewerStore.setState({ file: null })
+      getState().enterEdit()
+      expect(getState().editing).toBe(false)
+    })
+  })
+
+  // ── setDraft / isDirty ─────────────────────────────────────────────────────
+
+  describe('setDraft / isDirty', () => {
+    it('setDraft flips isDirty to true when draft differs from savedContent', () => {
+      getState().enterEdit()
+      getState().setDraft('modified content')
+      expect(getState().isDirty()).toBe(true)
+    })
+
+    it('reverting draft to original content flips isDirty back to false', () => {
+      getState().enterEdit()
+      getState().setDraft('modified')
+      expect(getState().isDirty()).toBe(true)
+      getState().setDraft(MOCK_FILE.content)
+      expect(getState().isDirty()).toBe(false)
+    })
+
+    it('isDirty is false when not in editing mode', () => {
+      // Not in edit mode — isDirty must be false regardless of draft
+      useDocViewerStore.setState({ draft: 'something different', editing: false })
+      expect(getState().isDirty()).toBe(false)
+    })
+  })
+
+  // ── cancelEdit ────────────────────────────────────────────────────────────
+
+  describe('cancelEdit', () => {
+    it('discards draft and returns to View mode', () => {
+      getState().enterEdit()
+      getState().setDraft('changed content')
+      getState().cancelEdit()
+      const s = getState()
+      expect(s.editing).toBe(false)
+      expect(s.draft).toBe('')
+      expect(s.savedContent).toBe('')
+    })
+
+    it('clears saveError', () => {
+      useDocViewerStore.setState({ saveError: { code: 'STALE_WRITE', message: 'stale' } })
+      getState().cancelEdit()
+      expect(getState().saveError).toBeNull()
+    })
+  })
+
+  // ── save — success ────────────────────────────────────────────────────────
+
+  describe('save — success', () => {
+    it('calls writeFile with correct args and updates file on success', async () => {
+      const newMtime = '2026-06-10T12:00:00.000Z'
+      mockWriteFile.mockResolvedValue({
+        data: { filePath: MOCK_FILE.filePath, size: 100, lastModified: newMtime },
+        error: null,
+      })
+
+      getState().enterEdit()
+      getState().setDraft('# Updated content')
+      await getState().save()
+
+      expect(mockWriteFile).toHaveBeenCalledWith(
+        MOCK_FILE.filePath,
+        'test-ws',
+        '# Updated content',
+        MOCK_FILE.lastModified,
+      )
+
+      const s = getState()
+      expect(s.editing).toBe(false)
+      expect(s.saving).toBe(false)
+      expect(s.saveError).toBeNull()
+      expect(s.file!.content).toBe('# Updated content')
+      expect(s.file!.size).toBe(100)
+      expect(s.file!.lastModified).toBe(newMtime)
+    })
+
+    it('sets editing=false and saving=false after success', async () => {
+      mockWriteFile.mockResolvedValue({
+        data: { filePath: MOCK_FILE.filePath, size: 10, lastModified: '2026-06-10T12:00:00.000Z' },
+        error: null,
+      })
+      getState().enterEdit()
+      await getState().save()
+      expect(getState().editing).toBe(false)
+      expect(getState().saving).toBe(false)
+    })
+  })
+
+  // ── save — non-STALE error ────────────────────────────────────────────────
+
+  describe('save — non-STALE error', () => {
+    it('stays in Edit mode on error, sets saveError, preserves draft', async () => {
+      mockWriteFile.mockResolvedValue({
+        data: null,
+        error: { code: 'PERMISSION_DENIED', message: 'Access denied' },
+      })
+
+      getState().enterEdit()
+      getState().setDraft('my edit')
+      await getState().save()
+
+      const s = getState()
+      expect(s.editing).toBe(true)
+      expect(s.saving).toBe(false)
+      expect(s.saveError?.code).toBe('PERMISSION_DENIED')
+      expect(s.draft).toBe('my edit')
+    })
+  })
+
+  // ── save — STALE_WRITE ────────────────────────────────────────────────────
+
+  describe('save — STALE_WRITE', () => {
+    it('sets staledDraft to current draft and stays in Edit mode', async () => {
+      mockWriteFile.mockResolvedValue({
+        data: null,
+        error: { code: 'STALE_WRITE', message: 'File changed on disk' },
+      })
+
+      getState().enterEdit()
+      getState().setDraft('my unsaved edit')
+      await getState().save()
+
+      const s = getState()
+      expect(s.editing).toBe(true)
+      expect(s.saveError?.code).toBe('STALE_WRITE')
+      expect(s.staledDraft).toBe('my unsaved edit')
+      expect(s.draft).toBe('my unsaved edit')
+    })
+
+    it('openFile after STALE_WRITE restores draft into edit mode (§17 R2)', async () => {
+      // Setup: trigger STALE_WRITE
+      mockWriteFile.mockResolvedValue({
+        data: null,
+        error: { code: 'STALE_WRITE', message: 'File changed on disk' },
+      })
+      getState().enterEdit()
+      getState().setDraft('preserved edit')
+      await getState().save()
+      expect(getState().staledDraft).toBe('preserved edit')
+
+      // Now reload the file (simulating user clicking "Reload")
+      const freshFile = { ...MOCK_FILE, content: '# fresh from disk', lastModified: '2026-06-10T13:00:00.000Z' }
+      mockReadFile.mockResolvedValue({ data: freshFile, error: null })
+      getState().openFile(MOCK_FILE.filePath, 'test-ws')
+      await flushPromises()
+
+      const s = getState()
+      expect(s.editing).toBe(true)                   // re-entered edit mode
+      expect(s.draft).toBe('preserved edit')          // user's edit preserved
+      expect(s.savedContent).toBe(freshFile.content)  // baseline = fresh content
+      expect(s.staledDraft).toBeNull()                // consumed
+      expect(s.file!.content).toBe(freshFile.content)
+    })
+  })
+
+  // ── save — re-entrancy guard (§17 R13) ────────────────────────────────────
+
+  describe('save — re-entrancy guard (§17 R13)', () => {
+    it('second concurrent save() no-ops while first is in-flight', async () => {
+      let resolveFirst!: (v: unknown) => void
+      const firstWritePromise = new Promise((resolve) => { resolveFirst = resolve })
+      mockWriteFile.mockReturnValueOnce(firstWritePromise)
+
+      getState().enterEdit()
+      getState().setDraft('edit')
+
+      // Start first save but don't await yet
+      const firstSave = getState().save()
+
+      // Attempt second save while first is pending
+      await getState().save()  // should no-op immediately
+
+      expect(mockWriteFile).toHaveBeenCalledTimes(1)  // only one IPC call
+
+      // Resolve first save
+      resolveFirst({ data: { filePath: MOCK_FILE.filePath, size: 4, lastModified: '2026-06-10T12:00:00.000Z' }, error: null })
+      await firstSave
+    })
+  })
+
+  // ── close — resets all edit fields ────────────────────────────────────────
+
+  describe('close', () => {
+    it('resets all edit fields (editing, draft, savedContent, saving, saveError, staledDraft)', () => {
+      getState().enterEdit()
+      getState().setDraft('in progress')
+      useDocViewerStore.setState({ saving: true, saveError: { code: 'STALE_WRITE', message: 'stale' }, staledDraft: 'stale' })
+
+      getState().close()
+
+      const s = getState()
+      expect(s.editing).toBe(false)
+      expect(s.draft).toBe('')
+      expect(s.savedContent).toBe('')
+      expect(s.saving).toBe(false)
+      expect(s.saveError).toBeNull()
+      expect(s.staledDraft).toBeNull()
+    })
+  })
+
+  // ── navigateBack — resets edit fields (§17 R3) ────────────────────────────
+
+  describe('navigateBack — resets edit fields (§17 R3)', () => {
+    it('resets editing state when navigating back', async () => {
+      // Setup: open folder → file from folder
+      mockListTree.mockResolvedValue({ data: MOCK_TREE, error: null })
+      const filePath = MOCK_FILE.filePath
+      useDocViewerStore.getState().openFolder('/workspace/docs/IN_PROGRESS/0001-feature', 'test-ws')
+      await flushPromises()
+      mockReadFile.mockResolvedValue({ data: MOCK_FILE, error: null })
+      getState().openFile(filePath, 'test-ws', true)
+      await flushPromises()
+
+      // Enter edit with unsaved changes
+      getState().enterEdit()
+      getState().setDraft('unsaved')
+      useDocViewerStore.setState({ staledDraft: 'stale' })
+
+      // Navigate back
+      mockListTree.mockResolvedValue({ data: MOCK_TREE, error: null })
+      getState().navigateBack()
+
+      const s = getState()
+      expect(s.editing).toBe(false)
+      expect(s.draft).toBe('')
+      expect(s.savedContent).toBe('')
+      expect(s.saving).toBe(false)
+      expect(s.saveError).toBeNull()
+      expect(s.staledDraft).toBeNull()
+    })
+  })
+
+  // ── navigateToDir — resets edit fields (§17 R3) ───────────────────────────
+
+  describe('navigateToDir — resets edit fields (§17 R3)', () => {
+    it('resets edit state when navigating to a directory', async () => {
+      // Put the store in folder mode first
+      mockListTree.mockResolvedValue({ data: MOCK_TREE, error: null })
+      getState().openFolder('/workspace/docs/IN_PROGRESS/0001-feature', 'test-ws')
+      await flushPromises()
+
+      // Simulate dirty edit state
+      useDocViewerStore.setState({ editing: true, draft: 'unsaved', savedContent: 'base', staledDraft: 'stale' })
+
+      mockListTree.mockResolvedValue({ data: MOCK_TREE, error: null })
+      getState().navigateToDir('/workspace/docs/IN_PROGRESS/0001-feature/sub')
+      // Check synchronously — reset happens before the async listTree resolves
+      const s = getState()
+      expect(s.editing).toBe(false)
+      expect(s.draft).toBe('')
+      expect(s.staledDraft).toBeNull()
     })
   })
 })

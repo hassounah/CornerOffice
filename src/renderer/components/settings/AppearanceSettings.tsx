@@ -1,5 +1,7 @@
 import React, { useState, useRef } from 'react'
 import { useSettingsStore } from '../../stores/settings-store'
+import { useDocViewerStore } from '../../stores/docviewer-store'
+import { useGuardDialogStore } from '../../hooks/useUnsavedGuard'
 import type { AppConfig } from '@main/types/config'
 
 type ShipStyle = AppConfig['appearance']['shipMomentStyle']
@@ -28,11 +30,16 @@ export function AppearanceSettings(): React.ReactElement {
 
   const realmEnabled = config.realm?.enabled ?? false
 
-  async function handleViewChange(view: 'corner-office' | 'corner-realm'): Promise<void> {
-    try {
-      await updateConfig({ realm: { ...config!.realm, enabled: view === 'corner-realm' } })
-    } catch (e) {
-      console.error(e)
+  function handleViewChange(view: 'corner-office' | 'corner-realm'): void {
+    const doSwitch = () => {
+      void updateConfig({ realm: { ...config!.realm, enabled: view === 'corner-realm' } })
+        .catch((e: unknown) => { console.error(e) })
+    }
+    // Guard: if a document is being edited, confirm before switching skin (§17 R9)
+    if (useDocViewerStore.getState().isDirty()) {
+      useGuardDialogStore.getState().requestConfirm(doSwitch)
+    } else {
+      doSwitch()
     }
   }
 

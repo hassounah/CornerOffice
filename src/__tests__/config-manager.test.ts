@@ -286,4 +286,117 @@ describe('ConfigManager', () => {
       expect(result.realm.mapping.length).toBeLessThanOrEqual(10)
     })
   })
+
+  // ---------------------------------------------------------------------------
+  // Durability + corruption recovery (config-corruption-on-shutdown fix)
+  // ---------------------------------------------------------------------------
+  describe('saveConfig durability', () => {
+    beforeEach(() => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      mockFs.writeFileSync = vi.fn()
+      mockFs.renameSync = vi.fn()
+      mockFs.chmodSync = vi.fn()
+      mockFs.openSync = vi.fn().mockReturnValue(7)
+      mockFs.fsyncSync = vi.fn()
+      mockFs.closeSync = vi.fn()
+      mockFs.copyFileSync = vi.fn()
+    })
+
+    it('fsyncs the temp file before renaming (durable write)', () => {
+      manager.saveConfig(manager.getDefaultConfig())
+      // temp file is opened + fsynced
+      expect(mockFs.openSync).toHaveBeenCalledWith(expect.stringContaining('.tmp'), 'r+')
+      expect(mockFs.fsyncSync).toHaveBeenCalled()
+      // rename happens after we have an fsync
+      expect(mockFs.renameSync).toHaveBeenCalled()
+    })
+
+    it('fsyncs the data directory after renaming', () => {
+      manager.saveConfig(manager.getDefaultConfig())
+      expect(mockFs.openSync).toHaveBeenCalledWith(expect.stringContaining('.corner-office'), 'r')
+    })
+
+    it('refreshes the last-known-good backup (.bak) on save', () => {
+      manager.saveConfig(manager.getDefaultConfig())
+      expect(mockFs.copyFileSync).toHaveBeenCalledWith(
+        expect.stringContaining('config.json'),
+        expect.stringContaining('config.json.bak'),
+      )
+    })
+
+    it('does not throw when fsync is unavailable (best-effort durability)', () => {
+      mockFs.openSync = vi.fn(() => { throw new Error('no fsync here') })
+      expect(() => manager.saveConfig(manager.getDefaultConfig())).not.toThrow()
+      // The write still completes via writeFileSync + renameSync.
+      expect(mockFs.renameSync).toHaveBeenCalled()
+    })
+  })
+
+  describe('loadConfig corruption recovery', () => {
+    const cfgFile = '/home/test/.corner-office/config.json'
+    const bakFile = '/home/test/.corner-office/config.json.bak'
+
+    beforeEach(() => {
+      mockFs.openSync = vi.fn().mockReturnValue(7)
+      mockFs.fsyncSync = vi.fn()
+      mockFs.closeSync = vi.fn()
+      mockFs.copyFileSync = vi.fn()
+      mockFs.writeFileSync = vi.fn()
+      mockFs.renameSync = vi.fn()
+      mockFs.chmodSync = vi.fn()
+      mockFs.mkdirSync = vi.fn()
+    })
+
+    it('recovers workspaces from the backup when config.json is corrupt', () => {
+      const good = manager.getDefaultConfig()
+      good.workspaces = [{
+        slug: 'my-ws', path: '/repos/my-ws', displayName: null,
+        docsRoot: null, pinned: false, archived: false,
+      }]
+
+      mockFs.existsSync = vi.fn().mockReturnValue(true) // config.json AND .bak exist
+      mockFs.readFileSync = vi.fn((p: string) =>
+        p === bakFile ? JSON.stringify(good) : 'torn{garbage',
+      )
+
+      const result = manager.loadConfig()
+
+      // Workspaces are recovered, not silently wiped.
+      expect(result).not.toBeNull()
+      expect(result!.workspaces).toHaveLength(1)
+      expect(result!.workspaces[0].slug).toBe('my-ws')
+      // The corrupt file is preserved for diagnosis.
+      expect(mockFs.copyFileSync).toHaveBeenCalledWith(cfgFile, expect.stringContaining('.corrupt'))
+    })
+
+    it('writes a fresh backup after a successful (good) load', () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(manager.getDefaultConfig()))
+
+      manager.loadConfig()
+
+      expect(mockFs.copyFileSync).toHaveBeenCalledWith(cfgFile, bakFile)
+    })
+
+    it('falls back to defaults when config.json is corrupt and no backup exists', () => {
+      mockFs.existsSync = vi.fn((p: string) => p === cfgFile) // config.json exists, .bak does NOT
+      mockFs.readFileSync = vi.fn().mockReturnValue('totally-not-json')
+
+      const result = manager.loadConfig()
+
+      expect(result).not.toBeNull()
+      expect(result!.version).toBe(3)
+      expect(result!.workspaces).toEqual([])
+    })
+
+    it('falls back to defaults when both config.json and backup are corrupt', () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      mockFs.readFileSync = vi.fn().mockReturnValue('both-bad{{{')
+
+      const result = manager.loadConfig()
+
+      expect(result).not.toBeNull()
+      expect(result!.version).toBe(3)
+    })
+  })
 })

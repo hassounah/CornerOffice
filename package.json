@@ -1,6 +1,6 @@
 {
   "name": "corner-office",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "description": "CEO-view dashboard over the Corner Office Claude Code plugin ecosystem",
   "main": "out/main/index.js",
   "scripts": {

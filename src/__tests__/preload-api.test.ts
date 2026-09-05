@@ -217,6 +217,23 @@ describe('api invoke methods', () => {
     })
   })
 
+  it('docs.writeFile invokes docs:writeFile with exact payload shape', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: { filePath: '/docs/readme.md', size: 42, lastModified: '2026-01-01T00:00:00.000Z' }, error: null })
+    await api.docs.writeFile('/docs/readme.md', 'my-ws', 'new content', '2026-01-01T00:00:00.000Z')
+    expect(mockInvoke).toHaveBeenCalledWith('docs:writeFile', {
+      filePath: '/docs/readme.md',
+      workspaceSlug: 'my-ws',
+      content: 'new content',
+      expectedMtime: '2026-01-01T00:00:00.000Z',
+    })
+  })
+
+  it('docs.writeFile is not a push/on subscription — only invokes, never subscribes', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: { code: 'NOT_FOUND', message: 'not found' } })
+    await api.docs.writeFile('/docs/file.md', 'ws', '', '2026-01-01T00:00:00.000Z')
+    expect(mockOn).not.toHaveBeenCalled()
+  })
+
   it('notifications.dismiss passes id', async () => {
     mockInvoke.mockResolvedValueOnce(undefined)
     await api.notifications.dismiss('abc-123')

@@ -86,6 +86,7 @@ export const MAIN_CHANNELS = {
 export const DOCS_CHANNELS = {
   LIST_TREE: 'docs:listTree',
   READ_FILE: 'docs:readFile',
+  WRITE_FILE: 'docs:writeFile',   // NEW (feature #0027) — invoke only, not in PUSH_CHANNELS
 } as const
 
 // ---------------------------------------------------------------------------
