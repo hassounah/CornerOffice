@@ -147,38 +147,33 @@ export function DocViewerOverlay(): React.ReactElement | null {
         key={isOpen ? 'open' : 'closed'}
         className="bg-co-bg-primary border border-co-border rounded-[0.75rem] shadow-2xl w-[70vw] max-w-5xl h-[80vh] flex flex-col relative co-animate-in"
       >
-        {/* Close button — guard(close) (§17 R9) */}
-        <button
-          onClick={() => guard(close)}
-          className="absolute top-3 right-3 z-10 w-8 h-8 flex items-center justify-center rounded-full text-co-text-muted hover:text-co-text-primary hover:bg-co-bg-tertiary transition-colors"
-          aria-label="Close document viewer"
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M1 1L13 13M13 1L1 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-          </svg>
-        </button>
-
-        {/* File name header + Edit/Save/Cancel cluster.
-            pr-14 reserves space for the absolutely-positioned close (X) button
-            (top-3 right-3, w-8 → ~44px) so the button cluster never sits under
-            its hit-area, which would swallow Edit/Save/Cancel clicks. */}
-        {mode === 'file' && file && !isLoading && !error && (
-          <div className="pl-6 pr-14 pt-4 pb-0 flex items-center justify-between">
-            {/* File name — dirty indicator (§17 R21) */}
-            <h2 className="text-sm font-medium text-co-text-secondary truncate">
+        {/* Header — always rendered so the close (X) button lives in the flex
+            flow next to Edit/Save/Cancel instead of being absolutely positioned
+            over them. The old `absolute top-3 right-3` X had to be cleared by a
+            hand-tuned `pr-14` on the header, which left a dead gutter between
+            the cluster and the X and made both feel cramped. Keeping every
+            control in one row makes the overlap structurally impossible — this
+            mirrors the Realm skin, which was never affected for that reason. */}
+        <div className="flex items-center gap-3 pl-6 pr-3 pt-3 pb-0 flex-shrink-0">
+          {/* File name — dirty indicator (§17 R21) */}
+          {mode === 'file' && file && !isLoading && !error && (
+            <h2 className="min-w-0 truncate text-sm font-medium text-co-text-secondary">
               {file.name}{dirty && <span aria-label="unsaved changes"> ·</span>}
             </h2>
+          )}
 
-            {/* Button cluster */}
-            <div className="flex items-center gap-2 ml-3 flex-shrink-0">
-              {!editing ? (
+          {/* Button cluster — ml-auto pins it right whether or not a title is shown */}
+          <div className="ml-auto flex items-center gap-2 flex-shrink-0">
+            {mode === 'file' && file && !isLoading && !error && (
+              !editing ? (
                 /* View mode: Edit button (§17 R12 — disabled w/ tooltip, never hidden) */
                 <button
+                  type="button"
                   onClick={enterEdit}
                   disabled={!editable}
                   aria-label={editable ? `Edit ${file.name}` : 'Editing not supported for this file type'}
                   title={!editable ? 'Editing not supported for this file type' : undefined}
-                  className="px-3 py-1 text-xs rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-co-accent/10 text-co-accent hover:bg-co-accent/20"
+                  className="px-3 py-1.5 text-xs rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-co-accent/10 text-co-accent hover:bg-co-accent/20"
                 >
                   Edit
                 </button>
@@ -186,24 +181,39 @@ export function DocViewerOverlay(): React.ReactElement | null {
                 /* Edit mode: Save + Cancel (Cancel routes through guard — §17 R9) */
                 <>
                   <button
+                    type="button"
                     onClick={() => { void save() }}
                     disabled={!dirty || saving}
-                    className="px-3 py-1 text-xs rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-co-accent/10 text-co-accent hover:bg-co-accent/20"
+                    className="px-3 py-1.5 text-xs rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-co-accent/10 text-co-accent hover:bg-co-accent/20"
                   >
                     {saving ? 'Saving…' : 'Save'}
                   </button>
                   <button
+                    type="button"
                     onClick={() => guard(cancelEdit)}
                     disabled={saving}
-                    className="px-3 py-1 text-xs rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-co-text-secondary hover:text-co-text-primary bg-co-bg-tertiary hover:bg-co-bg-tertiary/80"
+                    className="px-3 py-1.5 text-xs rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-co-text-secondary hover:text-co-text-primary bg-co-bg-tertiary hover:bg-co-bg-tertiary/80"
                   >
                     Cancel
                   </button>
                 </>
-              )}
-            </div>
+              )
+            )}
+
+            {/* Close — guard(close) (§17 R9). 40x40 hit area (was 32x32 with a
+                14px glyph, which was well under a comfortable click target). */}
+            <button
+              type="button"
+              onClick={() => guard(close)}
+              className="w-10 h-10 flex items-center justify-center rounded-full text-co-text-muted hover:text-co-text-primary hover:bg-co-bg-tertiary transition-colors"
+              aria-label="Close document viewer"
+            >
+              <svg width="16" height="16" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M1 1L13 13M13 1L1 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            </button>
           </div>
-        )}
+        </div>
 
         {/* Save error bar — pinned at top of content area, outside scroll (§17 R18) */}
         {mode === 'file' && saveError && !isLoading && (

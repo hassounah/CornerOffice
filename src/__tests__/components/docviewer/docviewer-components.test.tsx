@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import type { DocTreeEntry } from '@main/types/docs'
 
 // ---------------------------------------------------------------------------
@@ -628,6 +628,35 @@ describe('DocViewerOverlay', () => {
     // hidden: true because buttons are inside a <dialog> that showModal() doesn't open in jsdom
     // aria-label is dynamic: "Edit {file.name}" (§17 R17)
     expect(screen.getByRole('button', { name: 'Edit notes.md', hidden: true })).toBeDefined()
+  })
+
+  // Regression: the close (X) used to be `absolute top-3 right-3` over the header,
+  // cleared only by a hand-tuned `pr-14`. That left a dead gutter beside the Edit
+  // cluster and made both feel cramped/unclickable. Close must stay in flex flow
+  // as a sibling of the action buttons, and must render in every mode.
+  it('close button is a flow sibling of the action cluster, never absolutely positioned', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    render(<DocViewerOverlay />)
+
+    const close = screen.getByRole('button', { name: 'Close document viewer', hidden: true })
+    const edit = screen.getByRole('button', { name: 'Edit notes.md', hidden: true })
+
+    expect(close.className).not.toMatch(/\babsolute\b/)
+    expect(close.parentElement).toBe(edit.parentElement)
+  })
+
+  it('close button renders in folder mode and while loading', () => {
+    mockStore.mode = 'folder'
+    render(<DocViewerOverlay />)
+    expect(screen.getByRole('button', { name: 'Close document viewer', hidden: true })).toBeDefined()
+
+    cleanup()
+
+    mockStore.mode = 'file'
+    mockStore.fileLoading = true
+    render(<DocViewerOverlay />)
+    expect(screen.getByRole('button', { name: 'Close document viewer', hidden: true })).toBeDefined()
   })
 
   it('Edit button is disabled for non-editable file types (§17 R12)', () => {
