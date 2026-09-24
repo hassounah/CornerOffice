@@ -131,6 +131,34 @@ describe('ConfirmDialog — Escape key (§17 R17)', () => {
 // Realm skin (§17 R18)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Top layer — regression: the confirm used to be a `fixed z-[9999]` div, which
+// painted BENEATH the Office doc viewer's modal <dialog> (top layer beats any
+// z-index) and was inert while the viewer was open.
+// ---------------------------------------------------------------------------
+
+describe('ConfirmDialog — top layer', () => {
+  it.each(['office', 'realm'] as const)('%s skin opens as a native modal <dialog>', (skin) => {
+    const showModal = vi.spyOn(HTMLDialogElement.prototype, 'showModal')
+    renderDialog({ skin })
+
+    const dialog = screen.getByRole('alertdialog')
+    expect(dialog.tagName).toBe('DIALOG')
+    expect(showModal).toHaveBeenCalledTimes(1)
+    expect((dialog as HTMLDialogElement).open).toBe(true)
+    showModal.mockRestore()
+  })
+
+  it('blocks the native Escape close so React state stays authoritative', () => {
+    renderDialog()
+    const dialog = screen.getByRole('alertdialog')
+    const cancelEvent = new Event('cancel', { cancelable: true })
+    dialog.dispatchEvent(cancelEvent)
+    expect(cancelEvent.defaultPrevented).toBe(true)
+    expect(defaultProps.onConfirm).not.toHaveBeenCalled()
+  })
+})
+
 describe('ConfirmDialog — realm skin (§17 R18)', () => {
   it('renders title and message in realm skin', () => {
     renderDialog({ skin: 'realm' })

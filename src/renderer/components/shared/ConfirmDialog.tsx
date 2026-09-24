@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useLayoutEffect, useRef } from 'react'
 
 // ---------------------------------------------------------------------------
 // Realm skin style constants (matches RealmDocViewer inline style palette)
@@ -90,6 +90,12 @@ export interface ConfirmDialogProps {
 //   - Escape fires onCancel (never onConfirm)
 // §17 R11: rendered by a single host high in the tree; does not manage its own
 //          portal — the host is responsible for placement.
+//
+// Rendered as a native modal <dialog> (showModal) so it enters the browser top
+// layer. The Office DocViewerOverlay is itself a modal <dialog>: anything
+// outside the top layer paints BENEATH it no matter its z-index, and is inert
+// (unclickable) while it is open. Top-layer elements stack in open order, so a
+// confirm opened from the viewer always lands above it.
 // ---------------------------------------------------------------------------
 
 export function ConfirmDialog({
@@ -105,6 +111,16 @@ export function ConfirmDialog({
   const cancelRef = useRef<HTMLButtonElement>(null)
   const confirmRef = useRef<HTMLButtonElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const dialogRef = useRef<HTMLDialogElement>(null)
+
+  // Enter the top layer before paint so the dialog never flashes non-modal.
+  // Unmounting (open=false → null) removes it from the top layer.
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current
+    if (open && dialog && !dialog.open) {
+      dialog.showModal()
+    }
+  }, [open])
 
   // Focus the cancel button when the dialog opens (safe default per §17 R17)
   useEffect(() => {
@@ -151,20 +167,31 @@ export function ConfirmDialog({
 
   if (!open) return null
 
+  // Shell shared by both skins. Native Escape would close the <dialog> behind
+  // React's back — block it; the keydown handler above routes Escape to onCancel.
+  const renderShell = (children: React.ReactNode): React.ReactElement => (
+    <dialog
+      ref={dialogRef}
+      className="co-confirm-dialog"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="confirm-dialog-title"
+      aria-describedby="confirm-dialog-message"
+      onCancel={(e) => e.preventDefault()}
+    >
+      {children}
+    </dialog>
+  )
+
   if (skin === 'realm') {
-    return (
+    return renderShell(
       <div
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="confirm-dialog-title"
-        aria-describedby="confirm-dialog-message"
         style={{
           position: 'fixed',
           inset: 0,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          zIndex: 9999,
         }}
       >
         {/* Backdrop */}
@@ -190,14 +217,8 @@ export function ConfirmDialog({
   }
 
   // Office skin — co-* Tailwind classes matching DocViewerOverlay
-  return (
-    <div
-      role="alertdialog"
-      aria-modal="true"
-      aria-labelledby="confirm-dialog-title"
-      aria-describedby="confirm-dialog-message"
-      className="fixed inset-0 flex items-center justify-center z-[9999]"
-    >
+  return renderShell(
+    <div className="fixed inset-0 flex items-center justify-center">
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/50" onClick={onCancel} />
       {/* Panel */}

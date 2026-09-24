@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import type { DocTreeEntry } from '@main/types/docs'
@@ -657,6 +659,18 @@ describe('DocViewerOverlay', () => {
     mockStore.fileLoading = true
     render(<DocViewerOverlay />)
     expect(screen.getByRole('button', { name: 'Close document viewer', hidden: true })).toBeDefined()
+  })
+
+  // Regression: Tailwind preflight's `margin: 0` cancelled the UA `margin: auto`
+  // that centers a modal <dialog>, pinning it top-left under the WindowTitleBar's
+  // native drag region — which ate clicks on the upper part of X/Edit/Save/Cancel.
+  // jsdom doesn't apply globals.css, so assert on the rule itself.
+  it('doc viewer dialog is centered and exempt from the title-bar drag region', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/renderer/styles/globals.css'), 'utf8')
+    const rule = /\.co-docviewer-dialog\s*\{([^}]*)\}/.exec(css)?.[1] ?? ''
+
+    expect(rule).toMatch(/(^|[\s;])margin:\s*auto\s*;/)
+    expect(rule).toMatch(/-webkit-app-region:\s*no-drag\s*;/)
   })
 
   it('Edit button is disabled for non-editable file types (§17 R12)', () => {
