@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import type { DocTreeEntry } from '@main/types/docs'
 
 // ---------------------------------------------------------------------------
@@ -17,6 +19,10 @@ vi.mock('gray-matter', () => ({
     // Simple mock: no frontmatter extraction
     return { data: {}, content }
   },
+}))
+
+vi.mock('../../../renderer/components/docviewer/DocEditor', () => ({
+  DocEditor: () => <textarea data-testid="doc-editor" />,
 }))
 
 // Mock dialog.showModal() for jsdom
@@ -42,11 +48,26 @@ const mockStore: Record<string, unknown> = {
   navigateBack: vi.fn(),
   retry: vi.fn(),
   close: vi.fn(),
+  // Edit/dirty/save state (feature #0027)
+  editing: false,
+  draft: '',
+  savedContent: '',
+  saving: false,
+  saveError: null,
+  staledDraft: null,
+  enterEdit: vi.fn(),
+  cancelEdit: vi.fn(),
+  save: vi.fn(),
+  isDirty: vi.fn(() => false),
+  setDraft: vi.fn(),
 }
 
 vi.mock('../../../renderer/stores/docviewer-store', () => ({
-  useDocViewerStore: vi.fn((selector?: (s: typeof mockStore) => unknown) =>
-    selector ? selector(mockStore) : mockStore,
+  useDocViewerStore: Object.assign(
+    vi.fn((selector?: (s: typeof mockStore) => unknown) =>
+      selector ? selector(mockStore) : mockStore,
+    ),
+    { getState: () => mockStore },
   ),
 }))
 
@@ -527,6 +548,13 @@ describe('DocViewerOverlay', () => {
     mockStore.file = null
     mockStore.tree = null
     mockStore.breadcrumbs = []
+    // Edit/dirty/save state reset
+    mockStore.editing = false
+    mockStore.draft = ''
+    mockStore.savedContent = ''
+    mockStore.saving = false
+    mockStore.saveError = null
+    mockStore.save = vi.fn().mockResolvedValue(undefined)
   })
 
   it('renders the dialog element always', () => {
@@ -589,5 +617,267 @@ describe('DocViewerOverlay', () => {
     mockStore.file = { content: '# Test', filePath: '/docs/readme.md', name: 'readme.md', extension: 'md' }
     render(<DocViewerOverlay />)
     expect(screen.getByText('readme.md')).toBeDefined()
+  })
+
+  // ------------------------------------------------------------------
+  // Edit UI — button cluster (§5.3, §17 R12/R13)
+  // ------------------------------------------------------------------
+
+  it('shows Edit button in view mode for an editable file (§17 R17 dynamic label)', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    render(<DocViewerOverlay />)
+    // hidden: true because buttons are inside a <dialog> that showModal() doesn't open in jsdom
+    // aria-label is dynamic: "Edit {file.name}" (§17 R17)
+    expect(screen.getByRole('button', { name: 'Edit notes.md', hidden: true })).toBeDefined()
+  })
+
+  // Regression: the close (X) used to be `absolute top-3 right-3` over the header,
+  // cleared only by a hand-tuned `pr-14`. That left a dead gutter beside the Edit
+  // cluster and made both feel cramped/unclickable. Close must stay in flex flow
+  // as a sibling of the action buttons, and must render in every mode.
+  it('close button is a flow sibling of the action cluster, never absolutely positioned', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    render(<DocViewerOverlay />)
+
+    const close = screen.getByRole('button', { name: 'Close document viewer', hidden: true })
+    const edit = screen.getByRole('button', { name: 'Edit notes.md', hidden: true })
+
+    expect(close.className).not.toMatch(/\babsolute\b/)
+    expect(close.parentElement).toBe(edit.parentElement)
+  })
+
+  it('close button renders in folder mode and while loading', () => {
+    mockStore.mode = 'folder'
+    render(<DocViewerOverlay />)
+    expect(screen.getByRole('button', { name: 'Close document viewer', hidden: true })).toBeDefined()
+
+    cleanup()
+
+    mockStore.mode = 'file'
+    mockStore.fileLoading = true
+    render(<DocViewerOverlay />)
+    expect(screen.getByRole('button', { name: 'Close document viewer', hidden: true })).toBeDefined()
+  })
+
+  // Regression: Tailwind preflight's `margin: 0` cancelled the UA `margin: auto`
+  // that centers a modal <dialog>, pinning it top-left under the WindowTitleBar's
+  // native drag region — which ate clicks on the upper part of X/Edit/Save/Cancel.
+  // jsdom doesn't apply globals.css, so assert on the rule itself.
+  it('doc viewer dialog is centered and exempt from the title-bar drag region', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/renderer/styles/globals.css'), 'utf8')
+    const rule = /\.co-docviewer-dialog\s*\{([^}]*)\}/.exec(css)?.[1] ?? ''
+
+    expect(rule).toMatch(/(^|[\s;])margin:\s*auto\s*;/)
+    expect(rule).toMatch(/-webkit-app-region:\s*no-drag\s*;/)
+  })
+
+  it('Edit button is disabled for non-editable file types (§17 R12)', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '', filePath: '/docs/photo.png', name: 'photo.png', extension: 'png' }
+    render(<DocViewerOverlay />)
+    const btn = screen.getByRole('button', { name: 'Editing not supported for this file type', hidden: true }) as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+    expect(btn.title).toBe('Editing not supported for this file type')
+  })
+
+  it('clicking Edit calls enterEdit()', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    render(<DocViewerOverlay />)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit notes.md', hidden: true }))
+    expect(mockStore.enterEdit).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows Save and Cancel in edit mode', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    render(<DocViewerOverlay />)
+    expect(screen.getByRole('button', { name: 'Save', hidden: true })).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Cancel', hidden: true })).toBeDefined()
+  })
+
+  it('Save button is disabled when not dirty (§17 R13)', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    mockStore.draft = '# Hi'
+    mockStore.savedContent = '# Hi'  // equal → not dirty
+    render(<DocViewerOverlay />)
+    const saveBtn = screen.getByRole('button', { name: 'Save', hidden: true }) as HTMLButtonElement
+    expect(saveBtn.disabled).toBe(true)
+  })
+
+  it('Save button is enabled when dirty', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    mockStore.draft = '# Changed'
+    mockStore.savedContent = '# Hi'
+    render(<DocViewerOverlay />)
+    const saveBtn = screen.getByRole('button', { name: 'Save', hidden: true }) as HTMLButtonElement
+    expect(saveBtn.disabled).toBe(false)
+  })
+
+  it('Save button shows "Saving…" while saving (§17 R13)', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    mockStore.saving = true
+    mockStore.draft = '# Changed'
+    mockStore.savedContent = '# Hi'
+    render(<DocViewerOverlay />)
+    expect(screen.getByRole('button', { name: 'Saving…', hidden: true })).toBeDefined()
+  })
+
+  it('clicking Save calls save()', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    mockStore.draft = '# Changed'
+    mockStore.savedContent = '# Hi'
+    render(<DocViewerOverlay />)
+    fireEvent.click(screen.getByRole('button', { name: 'Save', hidden: true }))
+    expect(mockStore.save).toHaveBeenCalledTimes(1)
+  })
+
+  it('Cancel button is disabled while saving (§17 R13 parity)', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    mockStore.saving = true
+    render(<DocViewerOverlay />)
+    const cancelBtn = screen.getByRole('button', { name: 'Cancel', hidden: true }) as HTMLButtonElement
+    expect(cancelBtn.disabled).toBe(true)
+  })
+
+  it('clicking Cancel calls cancelEdit()', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    render(<DocViewerOverlay />)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel', hidden: true }))
+    expect(mockStore.cancelEdit).toHaveBeenCalledTimes(1)
+  })
+
+  // ------------------------------------------------------------------
+  // Dirty indicator (§17 R21)
+  // ------------------------------------------------------------------
+
+  it('shows dirty indicator (·) when dirty', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    mockStore.draft = '# Changed'
+    mockStore.savedContent = '# Hi'
+    render(<DocViewerOverlay />)
+    expect(screen.getByLabelText('unsaved changes')).toBeDefined()
+  })
+
+  it('no dirty indicator when clean', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    mockStore.draft = '# Hi'
+    mockStore.savedContent = '# Hi'
+    render(<DocViewerOverlay />)
+    expect(screen.queryByLabelText('unsaved changes')).toBeNull()
+  })
+
+  // ------------------------------------------------------------------
+  // Save error bar (§17 R18)
+  // ------------------------------------------------------------------
+
+  it('shows save error bar when saveError is set', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    mockStore.saveError = { code: 'INTERNAL_ERROR', message: 'Write failed' }
+    render(<DocViewerOverlay />)
+    expect(screen.getByText('Something went wrong')).toBeDefined()
+  })
+
+  it('shows "Reload file" button on STALE_WRITE', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.workspaceSlug = 'test-ws'
+    mockStore.editing = true
+    mockStore.saveError = { code: 'STALE_WRITE', message: 'stale' }
+    render(<DocViewerOverlay />)
+    expect(screen.getByRole('button', { name: 'Reload file', hidden: true })).toBeDefined()
+  })
+
+  it('clicking Reload file calls openFile', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.workspaceSlug = 'test-ws'
+    mockStore.editing = true
+    mockStore.saveError = { code: 'STALE_WRITE', message: 'stale' }
+    render(<DocViewerOverlay />)
+    fireEvent.click(screen.getByRole('button', { name: 'Reload file', hidden: true }))
+    expect(mockStore.openFile).toHaveBeenCalledWith('/docs/notes.md', 'test-ws')
+  })
+
+  it('does NOT show Reload file button for non-STALE_WRITE errors', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    mockStore.saveError = { code: 'PERMISSION_DENIED', message: 'denied' }
+    render(<DocViewerOverlay />)
+    expect(screen.queryByRole('button', { name: 'Reload file', hidden: true })).toBeNull()
+  })
+
+  // ------------------------------------------------------------------
+  // DocEditor swap
+  // ------------------------------------------------------------------
+
+  it('renders DocEditor in edit mode', () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    render(<DocViewerOverlay />)
+    expect(screen.getByTestId('doc-editor')).toBeDefined()
+  })
+
+  // ------------------------------------------------------------------
+  // Cmd/Ctrl+S (§17 R20)
+  // ------------------------------------------------------------------
+
+  it('Cmd+S triggers save() when in edit mode', async () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    mockStore.save = vi.fn().mockResolvedValue(undefined)
+    render(<DocViewerOverlay />)
+    await act(async () => {
+      fireEvent.keyDown(document, { key: 's', metaKey: true })
+    })
+    expect(mockStore.save).toHaveBeenCalledTimes(1)
+  })
+
+  it('Ctrl+S triggers save() when in edit mode', async () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = true
+    mockStore.save = vi.fn().mockResolvedValue(undefined)
+    render(<DocViewerOverlay />)
+    await act(async () => {
+      fireEvent.keyDown(document, { key: 's', ctrlKey: true })
+    })
+    expect(mockStore.save).toHaveBeenCalledTimes(1)
+  })
+
+  it('Cmd+S does NOT trigger save() when not in edit mode', async () => {
+    mockStore.mode = 'file'
+    mockStore.file = { content: '# Hi', filePath: '/docs/notes.md', name: 'notes.md', extension: 'md' }
+    mockStore.editing = false
+    mockStore.save = vi.fn().mockResolvedValue(undefined)
+    render(<DocViewerOverlay />)
+    await act(async () => {
+      fireEvent.keyDown(document, { key: 's', metaKey: true })
+    })
+    expect(mockStore.save).not.toHaveBeenCalled()
   })
 })

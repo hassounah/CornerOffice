@@ -44,14 +44,27 @@ const mockHomunculusStore = vi.hoisted(() => ({
 
 const mockDocViewerStore = vi.hoisted(() => ({
   mode: 'closed' as 'closed' | 'folder' | 'file',
-  file: null as { name: string; extension: string; content: string } | null,
+  file: null as { name: string; extension: string; content: string; filePath?: string; size?: number; lastModified?: string } | null,
   treeLoading: false,
   fileLoading: false,
   error: null as { code: string; message: string } | null,
+  openedFromFolder: false,
+  workspaceSlug: 'test-ws',
+  // Edit/dirty/save state (feature #0027)
+  editing: false,
+  draft: '',
+  savedContent: '',
+  saving: false,
+  saveError: null as { code: string; message: string } | null,
   close: vi.fn(),
+  navigateBack: vi.fn(),
   retry: vi.fn(),
   openFolder: vi.fn(),
   openFile: vi.fn(),
+  enterEdit: vi.fn(),
+  cancelEdit: vi.fn(),
+  save: vi.fn().mockResolvedValue(undefined),
+  isDirty: vi.fn(() => false),
 }))
 
 const mockNotificationStore = vi.hoisted(() => ({
@@ -89,8 +102,11 @@ vi.mock('../../../renderer/stores/notification-store', () => ({
 }))
 
 vi.mock('../../../renderer/stores/docviewer-store', () => ({
-  useDocViewerStore: vi.fn((selector: (s: typeof mockDocViewerStore) => unknown) =>
-    selector(mockDocViewerStore)
+  useDocViewerStore: Object.assign(
+    vi.fn((selector: (s: typeof mockDocViewerStore) => unknown) =>
+      selector(mockDocViewerStore)
+    ),
+    { getState: () => mockDocViewerStore },
   ),
 }))
 

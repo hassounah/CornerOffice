@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import log from 'electron-log/main'
 import fs from 'fs'
 import path from 'path'
@@ -27,6 +28,7 @@ import {
   NotificationGetHistorySchema,
   DocsListTreeSchema,
   DocsReadFileSchema,
+  DocsWriteFileSchema,
   ChannelSendMessageSchema,
   ChannelGetHistorySchema,
   ChannelSendPermissionVerdictSchema,
@@ -39,7 +41,7 @@ import {
   TerminalShowContextMenuSchema,
   ShellOpenExternalSchema,
 } from './schemas'
-import type { DocsListTreeInput, DocsReadFileInput } from './schemas'
+import type { DocsListTreeInput, DocsReadFileInput, DocsWriteFileInput } from './schemas'
 import type { TerminalManagerService } from '../services/terminal-manager'
 import type { IpcResponse } from '../types/ipc'
 import { IPC_ERROR_CODES } from '../types/ipc'
@@ -52,6 +54,7 @@ import type {
   DocTreeEntry,
   DocTreeResponse,
   DocFileResponse,
+  DocWriteResponse,
 } from '../types'
 import { WorkspaceDiscoveryService } from '../services/workspace-discovery'
 import { configManager } from '../services/config-manager'
@@ -66,7 +69,7 @@ import type { PluginStatus } from '../types'
 // ---------------------------------------------------------------------------
 
 const ALLOWED_EXTENSIONS = new Set(['md', 'yaml', 'yml', 'txt'])
-const MAX_FILE_SIZE = 2 * 1024 * 1024 // 2 MB
+export const MAX_FILE_SIZE = 2 * 1024 * 1024 // 2 MB — exported so read and write caps stay in lockstep
 
 const KEY_DOCUMENT_NAMES = ['trd.md', 'plan.md', 'prd.md', 'report.md', 'task-list.md']
 const KEY_DOCUMENT_SUFFIX = '-review.md'
@@ -103,6 +106,96 @@ function resolveDocsRoot(workspaceSlug: string, appState: AppState): string {
   return ws.docsRoot
 }
 
+// Convenience error constructors — fixed messages so raw fs details never leak (§17 R7).
+function denied(): Error {
+  return Object.assign(new Error('Access denied'), { code: IPC_ERROR_CODES.PERMISSION_DENIED })
+}
+function notFound(): Error {
+  return Object.assign(new Error('Path not found'), { code: IPC_ERROR_CODES.NOT_FOUND })
+}
+
+/**
+ * Walk each component of the RAW (pre-realpath) filePath from docsRoot down to
+ * the target basename, lstat'ing each component. Reject immediately if any is a
+ * symlink. This must run BEFORE validatePathWithinDocsRoot/realpath — walking the
+ * realpath'd path would be vacuous because realpath resolves all links (§17 R1).
+ *
+ * Threat model: another local process with write access to the user's own docs_root.
+ * The residual validate→rename race is accepted for this single-user desktop app.
+ */
+async function assertNoSymlinkOnPath(docsRoot: string, rawFilePath: string): Promise<void> {
+  // Build the sequence of path components from docsRoot to the target.
+  // path.relative handles both absolute and already-within-root paths.
+  const rel = path.relative(docsRoot, rawFilePath)
+  if (!rel || rel.startsWith('..')) {
+    // Will be caught by containment check; bail early to avoid confusing lstat errors.
+    return
+  }
+  const segments = rel.split(path.sep).filter(Boolean)
+  let current = docsRoot
+  for (const seg of segments) {
+    current = path.join(current, seg)
+    let st: fs.Stats
+    try {
+      st = await fs.promises.lstat(current)
+    } catch {
+      // Component doesn't exist — containment check will reject as NOT_FOUND.
+      return
+    }
+    if (st.isSymbolicLink()) {
+      throw denied()
+    }
+  }
+}
+
+/**
+ * Pre-rename recheck of the target's parent directory (§17 R1). Opens the directory
+ * once with O_NOFOLLOW, so a symlink swapped in for it is refused by the open itself,
+ * then checks the handle with fstat. The caller fsyncs the same handle after the
+ * rename (§17 R15), so the check and the use never re-resolve the path.
+ *
+ * Windows cannot open a directory handle: fall back to an lstat check and return
+ * null (no directory fsync there, as before).
+ */
+async function openParentDir(dir: string): Promise<fs.promises.FileHandle | null> {
+  const writeFailed = (): Error =>
+    Object.assign(new Error('Write failed'), { code: IPC_ERROR_CODES.INTERNAL_ERROR })
+
+  if (process.platform === 'win32') {
+    let st: fs.Stats
+    try {
+      st = await fs.promises.lstat(dir)
+    } catch {
+      throw writeFailed()
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) throw denied()
+    return null
+  }
+
+  const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW } = fs.constants
+  let dirFh: fs.promises.FileHandle
+  try {
+    dirFh = await fs.promises.open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+  } catch (err) {
+    // ELOOP: the directory was replaced by a symlink. ENOTDIR: no longer a directory.
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ELOOP' || code === 'ENOTDIR') throw denied()
+    throw writeFailed()
+  }
+  let st: fs.Stats
+  try {
+    st = await dirFh.stat()
+  } catch {
+    await dirFh.close().catch(() => {})
+    throw writeFailed()
+  }
+  if (!st.isDirectory()) {
+    await dirFh.close().catch(() => {})
+    throw denied()
+  }
+  return dirFh
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number = 5000): Promise<T> {
   return Promise.race([
     promise,
@@ -130,7 +223,7 @@ function stub(channel: string): HandlerFn {
 }
 
 /**
- * Register all 13 request/response IPC channels with NOT_READY stubs.
+ * Register all 14 request/response IPC channels with NOT_READY stubs.
  * Called once at startup, before services are initialized, to ensure
  * no IPC calls go unhandled during the loading phase.
  */
@@ -175,6 +268,10 @@ export function registerHandlers(): void {
   ipcMain.handle(
     DOCS_CHANNELS.READ_FILE,
     wrapHandler(notReadyStub(), DocsReadFileSchema) as HandlerFn,
+  )
+  ipcMain.handle(
+    DOCS_CHANNELS.WRITE_FILE,
+    wrapHandler(notReadyStub(), DocsWriteFileSchema) as HandlerFn,
   )
   // Channels
   ipcMain.handle(CHANNEL_IPC.GET_SESSIONS,   stub(CHANNEL_IPC.GET_SESSIONS))
@@ -791,6 +888,123 @@ export function buildRealHandlers(
         }())
       },
       DocsReadFileSchema,
+    ) as HandlerFn,
+
+    // Threat model: another local process with write access to the user's own docs_root.
+    // The residual validate→rename race is accepted for this single-user desktop app (§17 R1).
+    [DOCS_CHANNELS.WRITE_FILE]: wrapHandler(
+      async ({ filePath, workspaceSlug, content, expectedMtime }: DocsWriteFileInput) => {
+        return withTimeout(async function writeFileImpl(): Promise<DocWriteResponse> {
+          const docsRoot = resolveDocsRoot(workspaceSlug, appState)
+
+          // 1. Symlink guard on raw path BEFORE realpath — walk each component from
+          //    docsRoot to target and lstat; reject any symlink (§17 R1, mirrors #0020).
+          await assertNoSymlinkOnPath(docsRoot, filePath)
+
+          // 2. Containment: realpath both sides, verify target is inside docsRoot.
+          //    validatePathWithinDocsRoot returns only resolvedFile (§17 R19).
+          const resolvedFile = await validatePathWithinDocsRoot(filePath, docsRoot)
+
+          // 3. Must be an existing regular file — edit-existing only, no create.
+          let lst: fs.Stats
+          try {
+            lst = await fs.promises.lstat(resolvedFile)
+          } catch {
+            throw notFound()
+          }
+          if (lst.isSymbolicLink()) throw denied()   // belt-and-braces after realpath
+          if (!lst.isFile()) throw notFound()
+
+          // 4. Extension allowlist on the resolved path (never trust the raw string).
+          const ext = path.extname(resolvedFile).slice(1).toLowerCase()
+          if (!ALLOWED_EXTENSIONS.has(ext)) throw denied()
+
+          // 5. Byte-size cap — authoritative check (Zod .max is UTF-16 code units, §17 R23).
+          const bytes = Buffer.byteLength(content, 'utf-8')
+          if (bytes > MAX_FILE_SIZE) throw denied()
+
+          // 6. Stale-write / lost-update guard (best-effort; renderer-supplied mtime, §17 R16).
+          if (lst.mtime.toISOString() !== expectedMtime) {
+            throw Object.assign(new Error('File changed on disk'), {
+              code: IPC_ERROR_CODES.STALE_WRITE,
+            })
+          }
+
+          // 7. Atomic write: temp file in SAME directory → fsync → rename over target.
+          //    temp created with mode 0o600 (never world-readable plaintext, §17 R6).
+          const dir = path.dirname(resolvedFile)
+          const tmp = path.join(dir, `.${path.basename(resolvedFile)}.${crypto.randomUUID()}.tmp`)
+
+          // Capture original file mode to restore on the temp before rename (§17 R6).
+          let origMode: number
+          try {
+            const origStat = await fs.promises.stat(resolvedFile)
+            origMode = origStat.mode & 0o777
+          } catch {
+            throw notFound()
+          }
+
+          let fh: fs.promises.FileHandle | null = null
+          let dirFh: fs.promises.FileHandle | null = null
+          try {
+            try {
+              fh = await fs.promises.open(tmp, 'wx', 0o600)
+              await fh.writeFile(content, 'utf-8')
+              await fh.sync()
+            } catch (err) {
+              const code = (err as NodeJS.ErrnoException).code
+              if (code === 'EACCES' || code === 'EROFS') throw denied()
+              throw Object.assign(new Error('Write failed'), { code: IPC_ERROR_CODES.INTERNAL_ERROR })
+            } finally {
+              await fh?.close().catch(() => {})
+            }
+
+            // Apply original file permissions to temp (§17 R6).
+            await fs.promises.chmod(tmp, origMode).catch(() => {})
+
+            // Pre-rename recheck: pin the parent dir as a real directory, not a symlink,
+            // immediately before the rename (§17 R1 TOCTOU defense). Errors are fixed
+            // strings so a concurrent-mutation race cannot leak an absolute path (§17 R7).
+            dirFh = await openParentDir(dir)
+
+            try {
+              await fs.promises.rename(tmp, resolvedFile)
+            } catch (err) {
+              const code = (err as NodeJS.ErrnoException).code
+              await fs.promises.unlink(tmp).catch(() => {})
+              if (code === 'EACCES' || code === 'EROFS') throw denied()
+              throw Object.assign(new Error('Write failed'), { code: IPC_ERROR_CODES.INTERNAL_ERROR })
+            }
+          } catch (err) {
+            // Ensure temp is cleaned up on any pre-rename failure (§17 R5).
+            await fs.promises.unlink(tmp).catch(() => {})
+            await dirFh?.close().catch(() => {})
+            throw err
+          }
+
+          // 8. Directory fsync for durability after successful rename (§17 R15), through
+          //    the handle checked above. Non-fatal; no handle on Windows.
+          if (dirFh) {
+            await dirFh.sync().catch(() => {})
+            await dirFh.close().catch(() => {})
+          }
+
+          // Wrapped: a concurrent removal between rename and stat must not leak the
+          // raw error message (absolute path) to the renderer (§17 R7).
+          let stat: fs.Stats
+          try {
+            stat = await fs.promises.stat(resolvedFile)
+          } catch {
+            throw Object.assign(new Error('Write failed'), { code: IPC_ERROR_CODES.INTERNAL_ERROR })
+          }
+          return {
+            filePath: resolvedFile,
+            size: stat.size,
+            lastModified: stat.mtime.toISOString(),
+          }
+        }())
+      },
+      DocsWriteFileSchema,
     ) as HandlerFn,
 
   }

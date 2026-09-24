@@ -167,6 +167,16 @@ export const DocsReadFileSchema = z.object({
 })
 export type DocsReadFileInput = z.infer<typeof DocsReadFileSchema>
 
+// feature #0027 — invoke-only write channel (do NOT add to PUSH_CHANNELS)
+export const DocsWriteFileSchema = z.object({
+  filePath: z.string().min(1).max(4096),
+  workspaceSlug: z.string().min(1).max(256),
+  // NOT a strict byte cap — Buffer.byteLength in the handler is authoritative (§17 R23)
+  content: z.string().max(2 * 1024 * 1024),
+  expectedMtime: z.string().min(1).max(64),
+})
+export type DocsWriteFileInput = z.infer<typeof DocsWriteFileSchema>
+
 // ---------------------------------------------------------------------------
 // Channels
 // ---------------------------------------------------------------------------

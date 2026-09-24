@@ -2,6 +2,8 @@ import React from 'react'
 import { useLocation } from 'react-router'
 import { useGamificationStore } from '../../stores/gamification-store'
 import { useSettingsStore } from '../../stores/settings-store'
+import { useDocViewerStore } from '../../stores/docviewer-store'
+import { useGuardDialogStore } from '../../hooks/useUnsavedGuard'
 
 // ---------------------------------------------------------------------------
 // Trend indicator — subtle arrow
@@ -88,16 +90,23 @@ export function TopBar(): React.ReactElement {
             <span className="tabular-nums">0d</span>
           </span>
         )}
-        {/* Realm toggle */}
+        {/* Realm toggle — guarded if a document is being edited (§17 R9) */}
         <button
           type="button"
           title="Switch to CornerRealm (medieval UI)"
           aria-label="Switch to CornerRealm (medieval UI)"
           className="flex items-center justify-center w-7 h-7 rounded text-co-text-muted hover:text-co-text-primary hover:bg-white/[0.06] transition-colors"
           onClick={() => {
-            void useSettingsStore.getState().updateConfig({
-              realm: { ...(currentRealm ?? { enabled: false, mapping: [], shipCelebration: 'townSquare' as const }), enabled: true },
-            })
+            const switchRealm = () => {
+              void useSettingsStore.getState().updateConfig({
+                realm: { ...(currentRealm ?? { enabled: false, mapping: [], shipCelebration: 'townSquare' as const }), enabled: true },
+              })
+            }
+            if (useDocViewerStore.getState().isDirty()) {
+              useGuardDialogStore.getState().requestConfirm(switchRealm)
+            } else {
+              switchRealm()
+            }
           }}
         >
           {/* Castle / crown icon */}

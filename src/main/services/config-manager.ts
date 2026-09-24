@@ -182,6 +182,18 @@ function tempPath(filePath: string): string {
   return `${filePath}.tmp`
 }
 
+// Last-known-good copy, refreshed on every successful save/load. Used to
+// recover when config.json is found corrupt after an unclean shutdown.
+function backupPath(filePath: string): string {
+  return `${filePath}.bak`
+}
+
+// Where a corrupt config is preserved (not deleted) for diagnosis before we
+// fall back to the backup or to defaults.
+function corruptPath(filePath: string): string {
+  return `${filePath}.corrupt`
+}
+
 // ---------------------------------------------------------------------------
 // ConfigManager
 // ---------------------------------------------------------------------------
@@ -205,16 +217,85 @@ export class ConfigManager {
 
   loadConfig(): AppConfig | null {
     const cfgPath = configPath()
+
     if (!fs.existsSync(cfgPath)) {
-      return null // signals first launch
+      // config.json is absent. Check for a last-known-good backup before calling
+      // this a first launch: an unclean shutdown can lose the file itself, and
+      // reporting "first launch" here wipes the workspaces list just as surely as
+      // a silent reset to defaults would.
+      const recovered = this._recoverFromBackup(cfgPath)
+      if (recovered) {
+        log.warn('[ConfigManager] config.json is missing; recovered from backup (config.json.bak)')
+        return recovered
+      }
+      return null // genuine first launch
     }
 
+    // Happy path: read + migrate + validate config.json.
+    const primary = this._readValidated(cfgPath)
+    if (primary) {
+      // Refresh the last-known-good backup so an unclean shutdown that corrupts
+      // config.json can be recovered from on the next launch.
+      this._writeBackup(cfgPath)
+      return primary
+    }
+
+    // config.json is unreadable / unparseable / schema-invalid. Do NOT silently
+    // reset to empty defaults — that turns a recoverable corruption into permanent
+    // data loss (e.g. losing the workspaces list) the moment the next save lands.
+    log.warn('[ConfigManager] config.json is corrupt or invalid; attempting recovery from backup')
+
+    // Preserve the bad file for diagnosis before we replace it.
+    this._setAsideCorrupt(cfgPath)
+
+    const recovered = this._recoverFromBackup(cfgPath)
+    if (recovered) {
+      log.warn('[ConfigManager] Recovered config from backup (config.json.bak)')
+      return recovered
+    }
+
+    log.warn('[ConfigManager] No usable backup; resetting to defaults')
+    return this.getDefaultConfig()
+  }
+
+  /**
+   * Read and validate config.json.bak and durably restore it to config.json, so a
+   * later read does not hit the same missing/corrupt file again. Returns null when
+   * there is no backup or the backup is itself unusable — callers decide whether
+   * that means "first launch" or "fall back to defaults".
+   */
+  private _recoverFromBackup(cfgPath: string): AppConfig | null {
+    const bak = backupPath(cfgPath)
+    if (!fs.existsSync(bak)) {
+      return null
+    }
+
+    const recovered = this._readValidated(bak)
+    if (!recovered) {
+      log.warn('[ConfigManager] Backup config.json.bak is also invalid; cannot recover from it')
+      return null
+    }
+
+    try {
+      this.saveConfig(recovered)
+    } catch (err) {
+      log.warn('[ConfigManager] Failed to restore recovered config to disk (non-fatal):', err)
+    }
+    return recovered
+  }
+
+  /**
+   * Read a config file, run migrations, repair malformed realm/terminal fields,
+   * and validate against the schema. Returns the validated config, or null if the
+   * file cannot be read, parsed, or validated. Pure w.r.t. config.json — used for
+   * both the primary file and the backup.
+   */
+  private _readValidated(filePath: string): AppConfig | null {
     let raw: unknown
     try {
-      raw = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'))
-    } catch (err) {
-      log.warn('[ConfigManager] Failed to parse config.json, resetting to defaults:', err)
-      return this.getDefaultConfig()
+      raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+    } catch {
+      return null
     }
 
     // Run migrations if needed
@@ -248,8 +329,8 @@ export class ConfigManager {
 
     const result = AppConfigSchema.safeParse(migrated)
     if (!result.success) {
-      log.warn('[ConfigManager] Config schema validation failed, resetting to defaults:', result.error.message)
-      return this.getDefaultConfig()
+      log.warn('[ConfigManager] Config schema validation failed:', result.error.message)
+      return null
     }
 
     return result.data as AppConfig
@@ -262,8 +343,65 @@ export class ConfigManager {
 
     const json = JSON.stringify(config, null, 2)
     fs.writeFileSync(tmp, json, { encoding: 'utf-8', mode: 0o600 })
+    // Flush the temp file's data to disk BEFORE the rename. Without this, an
+    // unclean shutdown can commit the rename (directory metadata) while the temp
+    // file's data blocks are still only in the page cache — leaving a zero-length
+    // or torn config.json after reboot. Mirrors the durable doc-write path (#0027).
+    this._fsyncFile(tmp)
     fs.renameSync(tmp, cfgPath)
     fs.chmodSync(cfgPath, 0o600)
+    // Flush the directory entry so the rename itself survives a crash.
+    this._fsyncDir(dataDir())
+    // Refresh the last-known-good backup from this validated, just-saved config.
+    this._writeBackup(cfgPath)
+  }
+
+  // fsync a file's data to disk (best-effort: durability hardening, never fatal).
+  private _fsyncFile(filePath: string): void {
+    let fd: number | undefined
+    try {
+      fd = fs.openSync(filePath, 'r+')
+      fs.fsyncSync(fd)
+    } catch {
+      // Best-effort — a missing fsync degrades durability but must not fail a save.
+    } finally {
+      if (fd !== undefined) {
+        try { fs.closeSync(fd) } catch { /* ignore */ }
+      }
+    }
+  }
+
+  // fsync a directory entry (best-effort: skipped on Windows EPERM / read-only FS).
+  private _fsyncDir(dir: string): void {
+    let fd: number | undefined
+    try {
+      fd = fs.openSync(dir, 'r')
+      fs.fsyncSync(fd)
+    } catch {
+      // Non-fatal — Windows rejects dir fsync (EPERM), read-only FS, etc.
+    } finally {
+      if (fd !== undefined) {
+        try { fs.closeSync(fd) } catch { /* ignore */ }
+      }
+    }
+  }
+
+  // Copy the current good config.json to config.json.bak (best-effort).
+  private _writeBackup(cfgPath: string): void {
+    try {
+      fs.copyFileSync(cfgPath, backupPath(cfgPath))
+    } catch {
+      // Best-effort — a missing backup only weakens recovery, never breaks a save.
+    }
+  }
+
+  // Preserve a corrupt config.json as config.json.corrupt for diagnosis (best-effort).
+  private _setAsideCorrupt(cfgPath: string): void {
+    try {
+      fs.copyFileSync(cfgPath, corruptPath(cfgPath))
+    } catch {
+      // Best-effort — failure to preserve the bad file must not block recovery.
+    }
   }
 
   async updateConfig(partial: Partial<AppConfig>): Promise<AppConfig> {

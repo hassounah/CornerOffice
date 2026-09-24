@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import matter from 'gray-matter'
 import type { Components } from 'react-markdown'
 import { useDocViewerStore } from '../../stores/docviewer-store'
+import { useUnsavedGuard } from '../../hooks/useUnsavedGuard'
 import { friendlyDocError } from '../../utils/doc-errors'
 import { FrontmatterDisplay } from './FrontmatterDisplay'
 
@@ -16,6 +17,9 @@ export function MarkdownViewer(): React.ReactElement {
   const retry = useDocViewerStore((s) => s.retry)
   const openFile = useDocViewerStore((s) => s.openFile)
   const workspaceSlug = useDocViewerStore((s) => s.workspaceSlug)
+
+  // Guard: routes navigation through unsaved-changes check (§17 R9)
+  const guard = useUnsavedGuard()
 
   const parsed = useMemo(() => {
     if (!file) return null
@@ -82,7 +86,8 @@ export function MarkdownViewer(): React.ReactElement {
             // Resolve relative to current file's directory
             const dir = file.filePath.split('/').slice(0, -1).join('/')
             const resolvedPath = dir + '/' + href
-            openFile(resolvedPath, workspaceSlug, true)
+            // Guard navigation: prompt if there are unsaved edits (§17 R9)
+            guard(() => openFile(resolvedPath, workspaceSlug, true))
           }
         }
         return (
@@ -110,10 +115,10 @@ export function MarkdownViewer(): React.ReactElement {
 
   return (
     <div>
-      {/* Back button */}
+      {/* Back button — guarded (§17 R9) */}
       {openedFromFolder && (
         <button
-          onClick={navigateBack}
+          onClick={() => guard(navigateBack)}
           className="flex items-center gap-1.5 text-sm text-co-text-secondary hover:text-co-accent transition-colors mb-4"
         >
           <span>←</span>

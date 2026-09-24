@@ -112,6 +112,8 @@ global.ResizeObserver = class {
 // ---------------------------------------------------------------------------
 
 import { RealmShell } from '../../../renderer/components/realm/RealmShell'
+import { useDocViewerStore } from '../../../renderer/stores/docviewer-store'
+import { useGuardDialogStore } from '../../../renderer/hooks/useUnsavedGuard'
 import { ShipMomentOverlay } from '../../../renderer/components/gamification/ShipMoment'
 
 // ---------------------------------------------------------------------------
@@ -211,6 +213,42 @@ describe('RealmShell', () => {
     render(<RealmShell />)
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(mockRealmStore.closeOverlay).toHaveBeenCalledOnce()
+  })
+
+  it('Esc while editing a dirty doc routes through the unsaved-changes guard (R-01)', () => {
+    // Impl-review R-01: the RealmShell Escape handler previously called close()/
+    // navigateBack() directly, discarding unsaved edits. It must route through the
+    // guard when dirty. Drive the real doc-viewer store into a dirty edit state.
+    useDocViewerStore.setState({
+      mode: 'file',
+      _savedFolderState: null,
+      editing: true,
+      draft: 'changed',
+      savedContent: 'original',
+    })
+    const requestConfirm = vi
+      .spyOn(useGuardDialogStore.getState(), 'requestConfirm')
+      .mockImplementation(() => {})
+    const closeSpy = vi.spyOn(useDocViewerStore.getState(), 'close')
+    try {
+      render(<RealmShell />)
+      fireEvent.keyDown(document, { key: 'Escape' })
+
+      expect(requestConfirm).toHaveBeenCalledTimes(1)
+      // close() must NOT be called directly while there are unsaved edits
+      expect(closeSpy).not.toHaveBeenCalled()
+    } finally {
+      requestConfirm.mockRestore()
+      closeSpy.mockRestore()
+      // Reset so the doc viewer is closed for the remaining Escape tests
+      useDocViewerStore.setState({
+        mode: 'closed',
+        _savedFolderState: null,
+        editing: false,
+        draft: '',
+        savedContent: '',
+      })
+    }
   })
 
   it('Esc key calls closeOverlay when notification scroll is open', () => {

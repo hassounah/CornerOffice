@@ -10,6 +10,8 @@ import { useChannelsStore } from './stores/channels-store'
 import { useTerminalStore } from './stores/terminal-store'
 import { usePermissionStore } from './stores/permission-store'
 import { useSettingsStore } from './stores/settings-store'
+import { ConfirmDialog } from './components/shared/ConfirmDialog'
+import { useGuardDialogStore } from './hooks/useUnsavedGuard'
 import type { RealmConfig } from '@main/types/config'
 
 // Page placeholders — filled in later phases
@@ -135,20 +137,52 @@ function ClassicAppRoutes(): React.ReactElement {
 // App content — conditionally renders RealmShell or classic routes
 // ---------------------------------------------------------------------------
 
+// Picks the correct skin for ConfirmDialog (§17 R11 — single instance high in tree).
+// Dialog skin follows whichever shell is currently active.
+function GuardConfirmDialog(): React.ReactElement | null {
+  const open = useGuardDialogStore((s) => s.open)
+  const confirm = useGuardDialogStore((s) => s.confirm)
+  const cancel = useGuardDialogStore((s) => s.cancel)
+  const realmActive = useSettingsStore((s) => s.config?.realm?.enabled ?? false)
+
+  return (
+    <ConfirmDialog
+      open={open}
+      title="Unsaved changes"
+      message="You have unsaved edits. If you continue, your changes will be lost."
+      confirmLabel="Discard"
+      cancelLabel="Keep editing"
+      onConfirm={confirm}
+      onCancel={cancel}
+      skin={realmActive ? 'realm' : 'office'}
+    />
+  )
+}
+
 function AppContent(): React.ReactElement {
   const realmEnabled = useSettingsStore((s) => s.config?.realm?.enabled ?? false)
 
   if (realmEnabled) {
     return (
-      <RealmErrorBoundary fallback={<ClassicAppRoutes />}>
-        <React.Suspense fallback={<RealmLoadingScreen />}>
-          <RealmShellLazy />
-        </React.Suspense>
-      </RealmErrorBoundary>
+      <>
+        <RealmErrorBoundary fallback={<ClassicAppRoutes />}>
+          <React.Suspense fallback={<RealmLoadingScreen />}>
+            <RealmShellLazy />
+          </React.Suspense>
+        </RealmErrorBoundary>
+        {/* Single ConfirmDialog instance for unsaved-changes guard (§17 R11) */}
+        <GuardConfirmDialog />
+      </>
     )
   }
 
-  return <ClassicAppRoutes />
+  return (
+    <>
+      <ClassicAppRoutes />
+      {/* Single ConfirmDialog instance for unsaved-changes guard (§17 R11) */}
+      <GuardConfirmDialog />
+    </>
+  )
 }
 
 // ---------------------------------------------------------------------------

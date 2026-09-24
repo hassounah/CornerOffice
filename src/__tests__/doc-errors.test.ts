@@ -22,6 +22,12 @@ describe('friendlyDocError', () => {
     expect(friendlyDocError({ code: 'TIMEOUT' })).toBe('Request timed out — try again')
   })
 
+  it('returns message for STALE_WRITE', () => {
+    expect(friendlyDocError({ code: 'STALE_WRITE' })).toBe(
+      'File changed on disk. Click Reload to see the latest version — your edits will be restored.'
+    )
+  })
+
   it('returns fallback for unknown code', () => {
     expect(friendlyDocError({ code: 'UNKNOWN' })).toBe('Something went wrong')
   })

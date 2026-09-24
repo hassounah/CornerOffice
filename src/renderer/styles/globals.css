@@ -265,7 +265,19 @@
    Document Viewer Dialog
    ============================================================ */
 @layer components {
+  /* margin: auto — Tailwind's preflight zeroes every element's margin, which
+     overrides the UA `margin: auto` that centers a modal <dialog>. Without it
+     the dialog pins to the top-left and its header sits under the 40px
+     WindowTitleBar.
+     app-region: no-drag — the title bar is a native drag region, and the OS
+     resolves drag regions before the DOM sees the click, regardless of
+     z-order or the top layer. Any part of the dialog under it swallows
+     clicks (only the lower part of the X / Edit buttons worked). Exempting
+     the dialog keeps its controls clickable even in a very short window. */
   .co-docviewer-dialog {
+    margin: auto;
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
     border: none;
     background: transparent;
     padding: 0;
@@ -277,6 +289,28 @@
   .co-docviewer-dialog::backdrop {
     background: rgba(0, 0, 0, 0.6);
     backdrop-filter: blur(4px);
+  }
+
+  /* ConfirmDialog shell — a full-window transparent modal <dialog> so it sits
+     in the top layer above the doc viewer. Each skin draws its own backdrop
+     and panel inside it, so the native ::backdrop is cleared. no-drag for the
+     same reason as .co-docviewer-dialog: the shell covers the title bar. */
+  .co-confirm-dialog {
+    margin: 0;
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+    border: none;
+    background: transparent;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .co-confirm-dialog::backdrop {
+    background: transparent;
   }
 }
 

@@ -1,4 +1,5 @@
 import { useDocViewerStore } from '../../stores/docviewer-store'
+import { useUnsavedGuard } from '../../hooks/useUnsavedGuard'
 
 interface PlainTextViewerProps {
   content: string
@@ -7,12 +8,15 @@ interface PlainTextViewerProps {
 export function PlainTextViewer({ content }: PlainTextViewerProps) {
   const openedFromFolder = useDocViewerStore((s) => s.openedFromFolder)
   const navigateBack = useDocViewerStore((s) => s.navigateBack)
+  // Guard: routes navigation through unsaved-changes check (§17 R9)
+  const guard = useUnsavedGuard()
 
   return (
     <div>
+      {/* Back button — guarded (§17 R9) */}
       {openedFromFolder && (
         <button
-          onClick={navigateBack}
+          onClick={() => guard(navigateBack)}
           className="flex items-center gap-1.5 text-sm text-co-text-secondary hover:text-co-accent transition-colors mb-4"
         >
           <span>←</span>

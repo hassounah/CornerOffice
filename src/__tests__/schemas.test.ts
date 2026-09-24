@@ -8,6 +8,7 @@ import {
   NotificationGetHistorySchema,
   DocsListTreeSchema,
   DocsReadFileSchema,
+  DocsWriteFileSchema,
 } from '../main/ipc/schemas'
 
 describe('WorkspaceGetDetailSchema', () => {
@@ -156,5 +157,75 @@ describe('DocsListTreeSchema', () => {
 describe('DocsReadFileSchema', () => {
   it('accepts valid input', () => {
     expect(DocsReadFileSchema.safeParse({ filePath: '/docs/readme.md', workspaceSlug: 'ws' }).success).toBe(true)
+  })
+})
+
+describe('DocsWriteFileSchema', () => {
+  const validPayload = {
+    filePath: '/docs/readme.md',
+    workspaceSlug: 'ws',
+    content: 'Hello, world!',
+    expectedMtime: '2026-01-01T00:00:00.000Z',
+  }
+
+  it('accepts a valid payload', () => {
+    expect(DocsWriteFileSchema.safeParse(validPayload).success).toBe(true)
+  })
+
+  it('accepts empty-string content (0-byte write)', () => {
+    expect(DocsWriteFileSchema.safeParse({ ...validPayload, content: '' }).success).toBe(true)
+  })
+
+  it('rejects missing filePath', () => {
+    const { filePath, ...rest } = validPayload
+    void filePath
+    expect(DocsWriteFileSchema.safeParse(rest).success).toBe(false)
+  })
+
+  it('rejects missing workspaceSlug', () => {
+    const { workspaceSlug, ...rest } = validPayload
+    void workspaceSlug
+    expect(DocsWriteFileSchema.safeParse(rest).success).toBe(false)
+  })
+
+  it('rejects missing content', () => {
+    const { content, ...rest } = validPayload
+    void content
+    expect(DocsWriteFileSchema.safeParse(rest).success).toBe(false)
+  })
+
+  it('rejects missing expectedMtime', () => {
+    const { expectedMtime, ...rest } = validPayload
+    void expectedMtime
+    expect(DocsWriteFileSchema.safeParse(rest).success).toBe(false)
+  })
+
+  it('rejects empty filePath', () => {
+    expect(DocsWriteFileSchema.safeParse({ ...validPayload, filePath: '' }).success).toBe(false)
+  })
+
+  it('rejects empty workspaceSlug', () => {
+    expect(DocsWriteFileSchema.safeParse({ ...validPayload, workspaceSlug: '' }).success).toBe(false)
+  })
+
+  it('rejects empty expectedMtime', () => {
+    expect(DocsWriteFileSchema.safeParse({ ...validPayload, expectedMtime: '' }).success).toBe(false)
+  })
+
+  it('rejects filePath exceeding 4096 characters', () => {
+    expect(DocsWriteFileSchema.safeParse({ ...validPayload, filePath: 'a'.repeat(4097) }).success).toBe(false)
+  })
+
+  it('rejects workspaceSlug exceeding 256 characters', () => {
+    expect(DocsWriteFileSchema.safeParse({ ...validPayload, workspaceSlug: 'a'.repeat(257) }).success).toBe(false)
+  })
+
+  it('rejects content exceeding 2 * 1024 * 1024 characters (loose Zod cap)', () => {
+    // 2 MB + 1 UTF-16 code unit — the Zod cap is a loose upper bound
+    expect(DocsWriteFileSchema.safeParse({ ...validPayload, content: 'a'.repeat(2 * 1024 * 1024 + 1) }).success).toBe(false)
+  })
+
+  it('rejects expectedMtime exceeding 64 characters', () => {
+    expect(DocsWriteFileSchema.safeParse({ ...validPayload, expectedMtime: 'a'.repeat(65) }).success).toBe(false)
   })
 })

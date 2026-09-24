@@ -1,0 +1,6 @@
+name: "CornerOffice CodeQL config"
+
+# Tests build fixtures in private temp dirs and never ship; scanning them only
+# produces false positives (e.g. js/file-system-race on fixture setup).
+paths-ignore:
+  - src/__tests__

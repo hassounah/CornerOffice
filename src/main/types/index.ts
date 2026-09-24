@@ -73,7 +73,7 @@ export type {
 export type { IpcResponse, IpcErrorCode } from './ipc'
 export { IPC_ERROR_CODES } from './ipc'
 
-export type { DocTreeEntry, DocTreeResponse, DocFileResponse } from './docs'
+export type { DocTreeEntry, DocTreeResponse, DocFileResponse, DocWriteResponse } from './docs'
 
 export type {
   ConnectionState,
