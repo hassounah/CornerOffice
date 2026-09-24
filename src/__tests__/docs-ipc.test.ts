@@ -445,6 +445,10 @@ describe('docs:writeFile — happy path', () => {
 
   it('round-trip: write then docs:readFile returns new content and matching mtime', async () => {
     const target = path.join(docsRoot, 'readme.md')
+    // Backdate the fixture so the write below always lands on a different
+    // millisecond mtime; otherwise a fast write can reproduce the same mtime.
+    const past = new Date(Date.now() - 60_000)
+    fs.utimesSync(target, past, past)
     const mtime = await fileMtime(target)
     await invokeWriteFile(target, '# Round-trip', mtime)
 
@@ -553,6 +557,57 @@ describe('docs:writeFile — security: symlink guard (§17 R1)', () => {
     // Even though realpath is inside docsRoot, the symlink must be rejected
     expect(result.error?.code).toBe('PERMISSION_DENIED')
     expect(fs.readFileSync(realFile, 'utf-8')).toBe('# real target')
+  })
+})
+
+describe('docs:writeFile — security: pre-rename parent recheck (§17 R1)', () => {
+  // chmod on the temp file is the last step before the recheck, so swapping the
+  // parent directory there simulates a race between validation and the rename.
+  function swapParentBeforeRename(swap: () => void) {
+    const realChmod = fs.promises.chmod
+    return vi.spyOn(fs.promises, 'chmod').mockImplementationOnce(async (p, mode) => {
+      await realChmod(p, mode)
+      swap()
+    })
+  }
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects when the parent dir is replaced by a symlink just before rename',
+    async () => {
+      const target = path.join(docsRoot, 'subdir', 'nested.md')
+      const mtime = await fileMtime(target)
+      const elsewhere = path.join(tmpDir, 'elsewhere')
+      fs.mkdirSync(elsewhere)
+      fs.writeFileSync(path.join(elsewhere, 'nested.md'), '# elsewhere')
+      const moved = path.join(tmpDir, 'subdir-moved')
+
+      const chmodSpy = swapParentBeforeRename(() => {
+        fs.renameSync(path.join(docsRoot, 'subdir'), moved)
+        fs.symlinkSync(elsewhere, path.join(docsRoot, 'subdir'))
+      })
+      const result = await invokeWriteFile(target, 'evil', mtime)
+      chmodSpy.mockRestore()
+
+      expect(result.error?.code).toBe('PERMISSION_DENIED')
+      expect(fs.readFileSync(path.join(elsewhere, 'nested.md'), 'utf-8')).toBe('# elsewhere')
+      expect(fs.readFileSync(path.join(moved, 'nested.md'), 'utf-8')).toBe('# Nested')
+    },
+  )
+
+  it('rejects when the parent dir is replaced by a regular file just before rename', async () => {
+    const target = path.join(docsRoot, 'subdir', 'nested.md')
+    const mtime = await fileMtime(target)
+    const moved = path.join(tmpDir, 'subdir-moved')
+
+    const chmodSpy = swapParentBeforeRename(() => {
+      fs.renameSync(path.join(docsRoot, 'subdir'), moved)
+      fs.writeFileSync(path.join(docsRoot, 'subdir'), 'not a directory')
+    })
+    const result = await invokeWriteFile(target, 'evil', mtime)
+    chmodSpy.mockRestore()
+
+    expect(result.error?.code).toBe('PERMISSION_DENIED')
+    expect(fs.readFileSync(path.join(moved, 'nested.md'), 'utf-8')).toBe('# Nested')
   })
 })
 

@@ -148,6 +148,54 @@ async function assertNoSymlinkOnPath(docsRoot: string, rawFilePath: string): Pro
   }
 }
 
+/**
+ * Pre-rename recheck of the target's parent directory (§17 R1). Opens the directory
+ * once with O_NOFOLLOW, so a symlink swapped in for it is refused by the open itself,
+ * then checks the handle with fstat. The caller fsyncs the same handle after the
+ * rename (§17 R15), so the check and the use never re-resolve the path.
+ *
+ * Windows cannot open a directory handle: fall back to an lstat check and return
+ * null (no directory fsync there, as before).
+ */
+async function openParentDir(dir: string): Promise<fs.promises.FileHandle | null> {
+  const writeFailed = (): Error =>
+    Object.assign(new Error('Write failed'), { code: IPC_ERROR_CODES.INTERNAL_ERROR })
+
+  if (process.platform === 'win32') {
+    let st: fs.Stats
+    try {
+      st = await fs.promises.lstat(dir)
+    } catch {
+      throw writeFailed()
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) throw denied()
+    return null
+  }
+
+  const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW } = fs.constants
+  let dirFh: fs.promises.FileHandle
+  try {
+    dirFh = await fs.promises.open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+  } catch (err) {
+    // ELOOP: the directory was replaced by a symlink. ENOTDIR: no longer a directory.
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ELOOP' || code === 'ENOTDIR') throw denied()
+    throw writeFailed()
+  }
+  let st: fs.Stats
+  try {
+    st = await dirFh.stat()
+  } catch {
+    await dirFh.close().catch(() => {})
+    throw writeFailed()
+  }
+  if (!st.isDirectory()) {
+    await dirFh.close().catch(() => {})
+    throw denied()
+  }
+  return dirFh
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number = 5000): Promise<T> {
   return Promise.race([
     promise,
@@ -897,6 +945,7 @@ export function buildRealHandlers(
           }
 
           let fh: fs.promises.FileHandle | null = null
+          let dirFh: fs.promises.FileHandle | null = null
           try {
             try {
               fh = await fs.promises.open(tmp, 'wx', 0o600)
@@ -913,17 +962,10 @@ export function buildRealHandlers(
             // Apply original file permissions to temp (§17 R6).
             await fs.promises.chmod(tmp, origMode).catch(() => {})
 
-            // Pre-rename recheck: confirm parent dir is still a real directory, not a symlink.
-            // No await between this lstat and the rename below (§17 R1 TOCTOU defense).
-            // Wrapped so a concurrent-mutation race cannot leak the raw error message
-            // (absolute path) to the renderer via wrapHandler (§17 R7).
-            let dirSt: fs.Stats
-            try {
-              dirSt = await fs.promises.lstat(dir)
-            } catch {
-              throw Object.assign(new Error('Write failed'), { code: IPC_ERROR_CODES.INTERNAL_ERROR })
-            }
-            if (dirSt.isSymbolicLink() || !dirSt.isDirectory()) throw denied()
+            // Pre-rename recheck: pin the parent dir as a real directory, not a symlink,
+            // immediately before the rename (§17 R1 TOCTOU defense). Errors are fixed
+            // strings so a concurrent-mutation race cannot leak an absolute path (§17 R7).
+            dirFh = await openParentDir(dir)
 
             try {
               await fs.promises.rename(tmp, resolvedFile)
@@ -936,17 +978,15 @@ export function buildRealHandlers(
           } catch (err) {
             // Ensure temp is cleaned up on any pre-rename failure (§17 R5).
             await fs.promises.unlink(tmp).catch(() => {})
+            await dirFh?.close().catch(() => {})
             throw err
           }
 
-          // 8. Directory fsync for durability after successful rename (§17 R15).
-          //    Skipped silently on Windows (EPERM on dir open) or any other error.
-          try {
-            const dirFh = await fs.promises.open(dir, 'r')
+          // 8. Directory fsync for durability after successful rename (§17 R15), through
+          //    the handle checked above. Non-fatal; no handle on Windows.
+          if (dirFh) {
             await dirFh.sync().catch(() => {})
             await dirFh.close().catch(() => {})
-          } catch {
-            // Non-fatal — skip silently (Windows EPERM, read-only FS, etc.)
           }
 
           // Wrapped: a concurrent removal between rename and stat must not leak the

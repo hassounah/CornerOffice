@@ -134,6 +134,12 @@ vi.mock('path', async () => {
   return { ...actual, default: actual }
 })
 
+// main/index pulls in the terminal manager; keep the native addon out of the test
+// so it does not depend on a locally compiled pty.node (CI never builds it).
+vi.mock('node-pty', () => ({
+  spawn: vi.fn(),
+}))
+
 // Import the main module to trigger initialization (mocks are already hoisted)
 beforeAll(async () => {
   await import('../main/index')
