@@ -79,6 +79,21 @@ pnpm test:coverage
 pnpm test:e2e
 ```
 
+## Releases
+
+Versioning is automated with [semantic-release](https://github.com/semantic-release/semantic-release). Every push to `main` runs the Release workflow, which reads the commits since the last `v*` tag and, if any warrant a release, bumps `package.json`, updates `CHANGELOG.md`, tags `vX.Y.Z` and publishes a GitHub release.
+
+Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/) (enforced locally by a commitlint `commit-msg` hook):
+
+| Commit | Release |
+|---|---|
+| `fix(scope): ...` | patch (`0.2.18` → `0.2.19`) |
+| `feat(scope): ...` | minor (`0.2.18` → `0.3.0`) |
+| `feat!: ...` or a `BREAKING CHANGE:` footer | major |
+| `chore`, `ci`, `docs`, `refactor`, `test`, ... | no release |
+
+PRs are squash-merged, so the **PR title** becomes the commit on `main` and must follow the same format.
+
 ## Project Structure
 
 ```
