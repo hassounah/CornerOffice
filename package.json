@@ -27,15 +27,23 @@
     "rix"
   ],
   "homepage": "https://corneroffice.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hassounah/CornerOffice.git"
+  },
   "author": {
     "name": "Amer Hassounah",
     "email": "hassounah@gmail.com"
   },
   "license": "MIT",
   "devDependencies": {
+    "@commitlint/cli": "^20.5.3",
+    "@commitlint/config-conventional": "^20.5.3",
     "@eslint/js": "^10.0.1",
     "@fontsource-variable/outfit": "^5.2.8",
     "@playwright/test": "^1.58.2",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
     "@tailwindcss/postcss": "^4.2.2",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
@@ -60,6 +68,7 @@
     "jsdom": "^29.0.0",
     "lint-staged": "^16.4.0",
     "postcss": "^8.5.8",
+    "semantic-release": "^25.0.9",
     "tailwindcss": "^4.2.2",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.57.1",
