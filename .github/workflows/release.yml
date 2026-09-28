@@ -17,7 +17,7 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     permissions:
-      contents: write # push the release commit and tag, create the GitHub release
+      contents: write # push the release tag, create the GitHub release
       issues: write # comment on issues resolved by the release
       pull-requests: write # comment on PRs included in the release
     steps:

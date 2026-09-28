@@ -44,8 +44,6 @@
     "@eslint/js": "^10.0.1",
     "@fontsource-variable/outfit": "^5.2.8",
     "@playwright/test": "^1.58.2",
-    "@semantic-release/changelog": "^6.0.3",
-    "@semantic-release/git": "^10.0.1",
     "@tailwindcss/postcss": "^4.2.2",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
