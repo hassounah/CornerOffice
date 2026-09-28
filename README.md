@@ -81,7 +81,7 @@ pnpm test:e2e
 
 ## Releases
 
-Versioning is automated with [semantic-release](https://github.com/semantic-release/semantic-release). Every push to `main` runs the Release workflow, which reads the commits since the last `v*` tag and, if any warrant a release, bumps `package.json`, updates `CHANGELOG.md`, tags `vX.Y.Z` and publishes a GitHub release.
+Versioning is automated with [semantic-release](https://github.com/semantic-release/semantic-release). Every push to `main` runs the Release workflow, which reads the commits since the last `v*` tag and, if any warrant a release, tags `vX.Y.Z` and publishes a GitHub release with generated notes. Nothing is committed back to `main` (it only accepts pull requests), so the git tag is the source of truth for the version, not `package.json`.
 
 Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/) (enforced locally by a commitlint `commit-msg` hook):
 
