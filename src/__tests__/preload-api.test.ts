@@ -35,8 +35,8 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('ALLOWED_PUSH_CHANNELS', () => {
-  it('has exactly 16 entries', () => {
-    expect(ALLOWED_PUSH_CHANNELS).toHaveLength(16)
+  it('has exactly 17 entries', () => {
+    expect(ALLOWED_PUSH_CHANNELS).toHaveLength(17)
   })
 
   it('contains all expected channel names', () => {
@@ -57,6 +57,7 @@ describe('ALLOWED_PUSH_CHANNELS', () => {
       'channels:permission:request',
       'terminal:data',
       'terminal:exited',
+      'code:changed',
     ]
     expect([...ALLOWED_PUSH_CHANNELS]).toEqual(expected)
   })
@@ -341,5 +342,109 @@ describe('api invoke methods', () => {
     mockInvoke.mockResolvedValueOnce({ data: { sessionKey: 'shell:house_2' }, error: null })
     await api.terminal.spawnShell('house_2', 80, 24)
     expect(mockInvoke).toHaveBeenCalledWith('terminal:spawnShell', { houseId: 'house_2', cols: 80, rows: 24 })
+  })
+
+  it('windowControls.resumeClose calls window:resumeClose', async () => {
+    mockInvoke.mockResolvedValueOnce(undefined)
+    await api.windowControls.resumeClose()
+    expect(mockInvoke).toHaveBeenCalledWith('window:resumeClose')
+  })
+
+  it('code.getStatus passes workspaceSlug and baseline', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: null })
+    await api.code.getStatus('my-ws', 'head')
+    expect(mockInvoke).toHaveBeenCalledWith('code:getStatus', { workspaceSlug: 'my-ws', baseline: 'head' })
+  })
+
+  it('code.listDir passes workspaceSlug, relDir and includeIgnored', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: null })
+    await api.code.listDir('my-ws', 'src', true)
+    expect(mockInvoke).toHaveBeenCalledWith('code:listDir', {
+      workspaceSlug: 'my-ws',
+      relDir: 'src',
+      includeIgnored: true,
+    })
+  })
+
+  it('code.readFile passes workspaceSlug, relPath and reveal', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: null })
+    await api.code.readFile('my-ws', 'src/index.ts', false)
+    expect(mockInvoke).toHaveBeenCalledWith('code:readFile', {
+      workspaceSlug: 'my-ws',
+      relPath: 'src/index.ts',
+      reveal: false,
+    })
+  })
+
+  it('code.readBaseline passes workspaceSlug, relPath, oldPath, baseline and reveal', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: null })
+    await api.code.readBaseline('my-ws', 'src/new.ts', 'branch', true, 'src/old.ts')
+    expect(mockInvoke).toHaveBeenCalledWith('code:readBaseline', {
+      workspaceSlug: 'my-ws',
+      relPath: 'src/new.ts',
+      oldPath: 'src/old.ts',
+      baseline: 'branch',
+      reveal: true,
+    })
+  })
+
+  it('code.readBaseline omits oldPath when not given', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: null })
+    await api.code.readBaseline('my-ws', 'src/index.ts', 'head', false)
+    expect(mockInvoke).toHaveBeenCalledWith('code:readBaseline', {
+      workspaceSlug: 'my-ws',
+      relPath: 'src/index.ts',
+      oldPath: undefined,
+      baseline: 'head',
+      reveal: false,
+    })
+  })
+
+  it('code.writeFile passes workspaceSlug, relPath, content and expectedMtime', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      data: { relPath: 'src/index.ts', size: 5, lastModified: '2026-01-01T00:00:00.000Z' },
+      error: null,
+    })
+    await api.code.writeFile('my-ws', 'src/index.ts', 'hello', '2026-01-01T00:00:00.000Z')
+    expect(mockInvoke).toHaveBeenCalledWith('code:writeFile', {
+      workspaceSlug: 'my-ws',
+      relPath: 'src/index.ts',
+      content: 'hello',
+      expectedMtime: '2026-01-01T00:00:00.000Z',
+    })
+  })
+
+  it('code.getFileIndex passes workspaceSlug and includeIgnored', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: { paths: [], truncated: false }, error: null })
+    await api.code.getFileIndex('my-ws', false)
+    expect(mockInvoke).toHaveBeenCalledWith('code:getFileIndex', { workspaceSlug: 'my-ws', includeIgnored: false })
+  })
+
+  it('code.watch passes workspaceSlug, gen, openFile and expandedDirs', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: { watching: 2, limited: false }, error: null })
+    await api.code.watch('my-ws', 3, 'src/index.ts', ['src', 'src/components'])
+    expect(mockInvoke).toHaveBeenCalledWith('code:watch', {
+      workspaceSlug: 'my-ws',
+      gen: 3,
+      openFile: 'src/index.ts',
+      expandedDirs: ['src', 'src/components'],
+    })
+  })
+
+  it('code.watch accepts a null openFile', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: { watching: 0, limited: false }, error: null })
+    await api.code.watch('my-ws', 0, null, [])
+    expect(mockInvoke).toHaveBeenCalledWith('code:watch', {
+      workspaceSlug: 'my-ws',
+      gen: 0,
+      openFile: null,
+      expandedDirs: [],
+    })
+  })
+
+  it('code.unwatch passes workspaceSlug and gen', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: { ok: true }, error: null })
+    await api.code.unwatch('my-ws', 1)
+    expect(mockInvoke).toHaveBeenCalledWith('code:unwatch', { workspaceSlug: 'my-ws', gen: 1 })
   })
 })

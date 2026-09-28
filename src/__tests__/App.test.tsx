@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import React from 'react'
 
@@ -89,6 +89,12 @@ vi.mock('../renderer/pages/Notifications', () => ({
 vi.mock('../renderer/pages/FirstLaunch', () => ({
   default: () => <div data-testid="page-first-launch">FirstLaunch</div>,
 }))
+// Mocked so its real import graph (code-explorer-store -> @codemirror/state,
+// FileTree, etc.) never loads in this test file's module graph (step 1.21
+// bundle-gate reasoning, 2.7 review) — this page has its own dedicated tests.
+vi.mock('../renderer/pages/CodeExplorerPage', () => ({
+  default: () => <div data-testid="page-code-explorer">CodeExplorerPage</div>,
+}))
 
 // Mock RealmShell for realm mode tests
 vi.mock('../renderer/components/realm/RealmShell', () => ({
@@ -117,6 +123,7 @@ vi.mock('../renderer/components/shared/ErrorBoundary', () => ({
 // ---------------------------------------------------------------------------
 
 import App from '../renderer/App'
+import { registerDirtySource, useGuardDialogStore } from '../renderer/stores/dirty-registry'
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -250,5 +257,112 @@ describe('App', () => {
 
     expect(screen.getByTestId('realm-shell')).toBeInTheDocument()
     expect(screen.queryByTestId('app-shell')).not.toBeInTheDocument()
+  })
+
+  // -------------------------------------------------------------------------
+  // Exit-path row 10: guarded notification navigation (§3.7.2, no scope — all sources)
+  // -------------------------------------------------------------------------
+
+  describe('guarded notification navigation', () => {
+    beforeEach(async () => {
+      // Earlier tests in this file leave useSettingsStore's mock implementation
+      // pinned to realm.enabled: true — reset it so classic routes (with the
+      // real /workspace/:slug route this test navigates to) render here.
+      const { useSettingsStore } = await import('../renderer/stores/settings-store')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.mocked(useSettingsStore).mockImplementation((selector?: any) =>
+        selector ? selector({ config: { realm: { enabled: false } } }) : {}
+      )
+    })
+
+    afterEach(() => {
+      useGuardDialogStore.setState({ open: false, pendingAction: null, scope: undefined })
+    })
+
+    it('navigates immediately when nothing is dirty', async () => {
+      const mock = makeMockCornerOffice()
+      Object.defineProperty(window, 'cornerOffice', { value: mock, writable: true, configurable: true })
+
+      await act(async () => { render(<App />) })
+      await act(async () => { mock._trigger('main:ready', { phase: 'ready' }) })
+
+      await act(async () => { mock._trigger('notification:clicked', { workspace: 'foo' }) })
+
+      expect(screen.getByTestId('page-workspace-detail')).toBeInTheDocument()
+      expect(useGuardDialogStore.getState().open).toBe(false)
+    })
+
+    it('is blocked by ANY dirty source (no scope) and does not navigate until confirmed', async () => {
+      const unregister = registerDirtySource({ id: 'some-source', isDirty: () => true, discard: vi.fn() })
+      try {
+        const mock = makeMockCornerOffice()
+        Object.defineProperty(window, 'cornerOffice', { value: mock, writable: true, configurable: true })
+
+        await act(async () => { render(<App />) })
+        await act(async () => { mock._trigger('main:ready', { phase: 'ready' }) })
+
+        await act(async () => { mock._trigger('notification:clicked', { workspace: 'foo' }) })
+
+        expect(screen.queryByTestId('page-workspace-detail')).not.toBeInTheDocument()
+        expect(useGuardDialogStore.getState().open).toBe(true)
+
+        await act(async () => { useGuardDialogStore.getState().confirm() })
+
+        expect(screen.getByTestId('page-workspace-detail')).toBeInTheDocument()
+      } finally {
+        unregister()
+      }
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // Exit-path row 12: beforeunload (§3.7.3)
+  // -------------------------------------------------------------------------
+
+  describe('beforeunload', () => {
+    afterEach(() => {
+      useGuardDialogStore.setState({ open: false, pendingAction: null, scope: undefined })
+    })
+
+    it('does nothing when nothing is dirty', async () => {
+      const mock = Object.assign(makeMockCornerOffice(), {
+        windowControls: { resumeClose: vi.fn() },
+      })
+      Object.defineProperty(window, 'cornerOffice', { value: mock, writable: true, configurable: true })
+      await act(async () => { render(<App />) })
+      await act(async () => { mock._trigger('main:ready', { phase: 'ready' }) })
+
+      const event = new Event('beforeunload', { cancelable: true })
+      window.dispatchEvent(event)
+
+      expect(event.defaultPrevented).toBe(false)
+      expect(useGuardDialogStore.getState().open).toBe(false)
+    })
+
+    it('prevents unload and opens the confirm dialog when dirty; resumeClose runs on confirm', async () => {
+      const resumeClose = vi.fn()
+      const mock = Object.assign(makeMockCornerOffice(), {
+        windowControls: { resumeClose },
+      })
+      Object.defineProperty(window, 'cornerOffice', { value: mock, writable: true, configurable: true })
+      await act(async () => { render(<App />) })
+      await act(async () => { mock._trigger('main:ready', { phase: 'ready' }) })
+
+      const unregister = registerDirtySource({ id: 'some-source', isDirty: () => true, discard: vi.fn() })
+      try {
+        const event = new Event('beforeunload', { cancelable: true })
+        window.dispatchEvent(event)
+        expect(event.defaultPrevented).toBe(true)
+
+        // requestConfirm runs in a queued microtask
+        await act(async () => { await Promise.resolve() })
+        expect(useGuardDialogStore.getState().open).toBe(true)
+
+        await act(async () => { useGuardDialogStore.getState().confirm() })
+        expect(resumeClose).toHaveBeenCalledTimes(1)
+      } finally {
+        unregister()
+      }
+    })
   })
 })

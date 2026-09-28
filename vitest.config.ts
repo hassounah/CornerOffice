@@ -7,6 +7,12 @@ export default defineConfig({
     globals: true,
     setupFiles: ['src/__tests__/setup.ts'],
     include: ['src/__tests__/**/*.test.ts', 'src/__tests__/**/*.test.tsx'],
+    // Step 4.1's performance harness builds a real 50k-file git repo and
+    // exercises real fs/git operations against it — far too slow for every
+    // PR, and mixing its timing assertions into the normal parallel suite is
+    // exactly what makes them flake under load. Run only via `pnpm test:perf`
+    // (vitest.perf.config.ts), never as part of this default config.
+    exclude: ['src/__tests__/perf/**'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],

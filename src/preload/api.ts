@@ -18,6 +18,7 @@ export const ALLOWED_PUSH_CHANNELS = [
   'channels:permission:request',
   'terminal:data',
   'terminal:exited',
+  'code:changed',
 ] as const
 
 export type AllowedPushChannel = (typeof ALLOWED_PUSH_CHANNELS)[number]
@@ -32,6 +33,7 @@ export const api = {
     maximize: () => ipcRenderer.invoke('window:maximize'),
     close: () => ipcRenderer.invoke('window:close'),
     isMaximized: () => ipcRenderer.invoke('window:isMaximized') as Promise<boolean>,
+    resumeClose: () => ipcRenderer.invoke('window:resumeClose'),
   },
 
   workspace: {
@@ -111,6 +113,30 @@ export const api = {
     getStatus: () => ipcRenderer.invoke('plugin:getStatus'),
     installHooks: () => ipcRenderer.invoke('plugin:installHooks'),
     uninstallHooks: () => ipcRenderer.invoke('plugin:uninstallHooks'),
+  },
+
+  code: {
+    getStatus: (workspaceSlug: string, baseline: 'head' | 'branch') =>
+      ipcRenderer.invoke('code:getStatus', { workspaceSlug, baseline }),
+    listDir: (workspaceSlug: string, relDir: string, includeIgnored: boolean) =>
+      ipcRenderer.invoke('code:listDir', { workspaceSlug, relDir, includeIgnored }),
+    readFile: (workspaceSlug: string, relPath: string, reveal: boolean) =>
+      ipcRenderer.invoke('code:readFile', { workspaceSlug, relPath, reveal }),
+    readBaseline: (
+      workspaceSlug: string,
+      relPath: string,
+      baseline: 'head' | 'branch',
+      reveal: boolean,
+      oldPath?: string,
+    ) => ipcRenderer.invoke('code:readBaseline', { workspaceSlug, relPath, oldPath, baseline, reveal }),
+    writeFile: (workspaceSlug: string, relPath: string, content: string, expectedMtime: string) =>
+      ipcRenderer.invoke('code:writeFile', { workspaceSlug, relPath, content, expectedMtime }),
+    getFileIndex: (workspaceSlug: string, includeIgnored: boolean) =>
+      ipcRenderer.invoke('code:getFileIndex', { workspaceSlug, includeIgnored }),
+    watch: (workspaceSlug: string, gen: number, openFile: string | null, expandedDirs: string[]) =>
+      ipcRenderer.invoke('code:watch', { workspaceSlug, gen, openFile, expandedDirs }),
+    unwatch: (workspaceSlug: string, gen: number) =>
+      ipcRenderer.invoke('code:unwatch', { workspaceSlug, gen }),
   },
 
   /**

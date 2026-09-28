@@ -11,7 +11,8 @@ import { useTerminalStore } from './stores/terminal-store'
 import { usePermissionStore } from './stores/permission-store'
 import { useSettingsStore } from './stores/settings-store'
 import { ConfirmDialog } from './components/shared/ConfirmDialog'
-import { useGuardDialogStore } from './hooks/useUnsavedGuard'
+import { useGuardDialogStore, anyDirty, guardAction } from './hooks/useUnsavedGuard'
+import { useCodeExplorerShortcut } from './hooks/useCodeExplorerShortcut'
 import type { RealmConfig } from '@main/types/config'
 
 // Page placeholders — filled in later phases
@@ -21,6 +22,9 @@ const Homunculus = React.lazy(() => import('./pages/Homunculus'))
 const Settings = React.lazy(() => import('./pages/Settings'))
 const Notifications = React.lazy(() => import('./pages/Notifications'))
 const FirstLaunch = React.lazy(() => import('./pages/FirstLaunch'))
+// Code explorer (#0028, TRD §3.8.1): lazy so code-explorer-store's
+// @codemirror/state import never lands in the entry chunk (step 1.21 gate).
+const CodeExplorerPage = React.lazy(() => import('./pages/CodeExplorerPage'))
 
 // Lazy-load RealmShell — only bundled when needed
 const RealmShellLazy = React.lazy(() =>
@@ -120,6 +124,10 @@ function ClassicAppRoutes(): React.ReactElement {
         {/* First-launch wizard — full-screen, no shell */}
         <Route path="/first-launch" element={<FirstLaunch />} />
 
+        {/* Code explorer — full-window, sibling of AppShell (TRD §3.8.1), its
+            own WindowTitleBar instead of the shell's */}
+        <Route path="/workspace/:slug/code" element={<CodeExplorerPage />} />
+
         {/* Authenticated pages wrapped in AppShell layout */}
         <Route element={<AppShell />}>
           <Route path="/" element={<Dashboard />} />
@@ -206,6 +214,25 @@ function GlobalListeners(): null {
     ]
     return () => cleanups.forEach((fn) => fn())
   }, [])
+
+  // Window close / tray Quit (§3.7.3, exit-path row 12) — checks every dirty
+  // source. Main's `will-prevent-unload` handler shows/focuses the window;
+  // `window:resumeClose` (via the confirm) then actually closes or quits.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (!anyDirty()) return
+      e.preventDefault()
+      e.returnValue = ''
+      queueMicrotask(() => {
+        useGuardDialogStore.getState().requestConfirm(() => {
+          void window.cornerOffice?.windowControls.resumeClose()
+        })
+      })
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [])
+
   return null
 }
 
@@ -216,16 +243,23 @@ function GlobalListeners(): null {
 function NavigationEffects(): null {
   const navigate = useNavigate()
 
+  // Ctrl/Cmd+Shift+E (TRD §2.4 Q7, §3.8.3 FR-2) — mounted here since this is
+  // Office's own always-active, router-context component (step 2.21).
+  useCodeExplorerShortcut()
+
   useEffect(() => {
     const cornerOffice = window.cornerOffice
     if (!cornerOffice) return
 
-    // OS notification click → focus app + navigate to workspace detail
+    // OS notification click → focus app + navigate to workspace detail.
+    // Guarded (exit-path row 10): checks every dirty source, since the
+    // workspace switch this navigation performs is otherwise unreachable
+    // from inside a route that could be holding unsaved edits.
     const unsubNotifClick = cornerOffice.on(
       'notification:clicked',
       (payload: unknown) => {
         const { workspace } = payload as { workspace?: string }
-        if (workspace) navigate(`/workspace/${workspace}`)
+        if (workspace) guardAction(() => navigate(`/workspace/${workspace}`))
       },
     )
 

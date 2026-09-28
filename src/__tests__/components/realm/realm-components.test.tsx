@@ -130,6 +130,19 @@ vi.mock('../../../renderer/stores/terminal-store', () => ({
   }),
 }))
 
+// Step 3.3 (#54): WizardsStudy (via PipelineTrack and its own BrowseCodeBanner
+// wiring) now calls useOpenCodeExplorer(), which calls useNavigate() —
+// unconditionally, on every render, not just on click. None of these tests
+// render inside a <Router>, so react-router's real useNavigate() throws
+// ("may be used only in the context of a <Router> component"). A no-op stub
+// is enough here: these tests don't exercise the Office navigate path
+// (mockSettingsStore.config defaults to null, so realmEnabled is false and
+// the hook's Realm branch is never taken either) — see realm-code-entry.test.tsx
+// for the dedicated Browse Code / Review click-and-focus-return coverage.
+vi.mock('react-router', () => ({
+  useNavigate: () => vi.fn(),
+}))
+
 vi.mock('../../../renderer/components/docviewer/FolderBrowser', () => ({
   FolderBrowser: () => <div data-testid="folder-browser" />,
 }))
@@ -282,6 +295,7 @@ function makeWorkspace(slug: string, overrides: Partial<Workspace> = {}): Worksp
     displayName: `Workspace ${slug}`,
     docsRoot: `/home/user/${slug}/docs`,
     docsRootExists: true,
+    repoRootStatus: 'ok',
     status: 'idle',
     nextFeatureId: null,
     projectContext: 'Some context',

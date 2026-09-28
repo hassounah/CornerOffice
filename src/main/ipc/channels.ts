@@ -71,6 +71,7 @@ export const WINDOW_CHANNELS = {
   MAXIMIZE: 'window:maximize',
   CLOSE: 'window:close',
   IS_MAXIMIZED: 'window:isMaximized',
+  RESUME_CLOSE: 'window:resumeClose', // §D-10 — resumes a close/quit deferred by an unsaved-changes guard
 } as const
 
 // ---------------------------------------------------------------------------
@@ -136,6 +137,22 @@ export const PLUGIN_IPC = {
 } as const
 
 // ---------------------------------------------------------------------------
+// Code Explorer (#0028)
+// ---------------------------------------------------------------------------
+export const CODE_CHANNELS = {
+  GET_STATUS: 'code:getStatus',
+  LIST_DIR: 'code:listDir',
+  READ_FILE: 'code:readFile',
+  READ_BASELINE: 'code:readBaseline',
+  WRITE_FILE: 'code:writeFile',
+  GET_FILE_INDEX: 'code:getFileIndex',
+  WATCH: 'code:watch',
+  UNWATCH: 'code:unwatch',
+  // Push channel
+  CHANGED: 'code:changed',
+} as const
+
+// ---------------------------------------------------------------------------
 // Aggregated push channels (subset consumed by preload whitelist)
 // ---------------------------------------------------------------------------
 export const PUSH_CHANNELS = [
@@ -156,6 +173,7 @@ export const PUSH_CHANNELS = [
   CHANNEL_IPC.PERMISSION_REQUEST,
   TERMINAL_IPC.DATA,
   TERMINAL_IPC.EXITED,
+  CODE_CHANNELS.CHANGED,
 ] as const
 
 export type PushChannel = (typeof PUSH_CHANNELS)[number]

@@ -26,9 +26,17 @@ function stageIndex(pipeline: Pipeline): number {
 
 interface PipelineTrackProps {
   pipeline: Pipeline
+  /** Review changes (TRD §3.8.3 FR-3): "Office PipelineTrack header: a
+   *  plain button (the card is non-interactive)." Unlike FeatureCard, the
+   *  card itself carries no role="button", so this needs no sibling
+   *  restructure — it's just another header control. */
+  onReview?: (pipeline: Pipeline) => void
+  /** Builds the button's workspace-scoped `data-return-focus` id (same
+   *  Fix #130 lesson as FeatureCard/WorkspaceDetail's Browse Code button). */
+  workspaceSlug?: string
 }
 
-export function PipelineTrack({ pipeline }: PipelineTrackProps): React.ReactElement {
+export function PipelineTrack({ pipeline, onReview, workspaceSlug }: PipelineTrackProps): React.ReactElement {
   const isSimple = pipeline.pipelineType !== 'full'
   const activeIdx = stageIndex(pipeline)
   const gatesPassed = pipeline.gate ? pipeline.gate - 1 : 0
@@ -68,6 +76,20 @@ export function PipelineTrack({ pipeline }: PipelineTrackProps): React.ReactElem
           <span className="text-[11px] text-amber-400 shrink-0 font-medium" title="Fix cycles">
             {pipeline.fixCycles} {pipeline.fixCycles === 1 ? 'fix' : 'fixes'}
           </span>
+        )}
+        {onReview && (
+          <button
+            type="button"
+            data-return-focus={workspaceSlug ? `review:${workspaceSlug}:${pipeline.slug}` : undefined}
+            aria-label={`Review changes: ${pipeline.featureName}`}
+            onClick={() => onReview(pipeline)}
+            className="shrink-0 flex items-center gap-1 px-2 py-1 text-[10px] font-semibold uppercase tracking-widest rounded text-co-text-muted border border-white/[0.06] bg-transparent hover:bg-white/[0.04] hover:text-co-accent transition-colors"
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M3 1.5V7.5M3 7.5L1 5.5M3 7.5L5 5.5M7 8.5V2.5M7 2.5L5 4.5M7 2.5L9 4.5" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Review
+          </button>
         )}
       </div>
 

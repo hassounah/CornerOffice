@@ -6,6 +6,7 @@ export interface Workspace {
   displayName: string;             // Custom name or slug, title-cased
   docsRoot: string;                // Absolute path to docs_root
   docsRootExists: boolean;         // Whether the docs_root directory exists on disk
+  repoRootStatus: 'ok' | 'missing' | 'unsafe'; // Runtime-only; drives the code explorer's FR-1 disabled state (#0028, M3)
   status: WorkspaceStatus;
   nextFeatureId: number | null;
   projectContext: string;          // From memory.md Project Context section

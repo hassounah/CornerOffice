@@ -59,6 +59,7 @@ function makeWorkspace(slug: string, path = `/home/user/${slug}`): Workspace {
     status: 'idle',
     docsRoot: null,
     docsRootExists: false,
+    repoRootStatus: 'ok',
     config: {
       slug,
       path,

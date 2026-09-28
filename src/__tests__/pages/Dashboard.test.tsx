@@ -125,6 +125,7 @@ function makeWorkspace(slug: string, overrides: Partial<Workspace> = {}): Worksp
     displayName: `Workspace ${slug}`,
     docsRoot: `/home/user/${slug}/docs`,
     docsRootExists: true,
+    repoRootStatus: 'ok',
     status: 'idle',
     nextFeatureId: null,
     projectContext: '',

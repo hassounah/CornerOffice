@@ -19,11 +19,20 @@ import { eventParserService } from './services/event-parser'
 import { NotificationService } from './services/notification-service'
 import { registerHandlers, swapHandlers, buildRealHandlers } from './ipc/handlers'
 import type { AppState } from './ipc/handlers'
-import { WORKSPACE_CHANNELS, HOMUNCULUS_CHANNELS, ACTIVITY_CHANNELS, GAMIFICATION_CHANNELS, MAIN_CHANNELS, CHANNEL_IPC, NOTIFICATION_CHANNELS } from './ipc/channels'
+import { WORKSPACE_CHANNELS, HOMUNCULUS_CHANNELS, ACTIVITY_CHANNELS, GAMIFICATION_CHANNELS, MAIN_CHANNELS, CHANNEL_IPC, NOTIFICATION_CHANNELS, CODE_CHANNELS } from './ipc/channels'
 import { PluginDetectorService } from './services/plugin-detector'
 import { ChannelDiscoveryService } from './services/channel-discovery'
 import { ChannelConnectionService } from './services/channel-connection'
 import { TerminalManagerService } from './services/terminal-manager'
+import { computeRepoRootStatus, resolveRepoRoot } from './services/repo-path'
+import { createGitService } from './services/git-runner'
+import { createRepoService } from './services/git-service'
+import type { RepoService } from './services/git-service'
+import { createCodeWatcher } from './services/code-watcher'
+import type { CodeWatcher, CodeWatcherGitSnapshot } from './services/code-watcher'
+import { buildCodeHandlers } from './ipc/code-handlers'
+import { makeIsAppOrigin, installNavigationLockdown, onCrossDocumentMainFrameNavigation } from './ipc/app-origin'
+import { createQuitGuard } from './services/quit-guard'
 import type {
   Workspace,
   WorkspaceConfig,
@@ -45,7 +54,23 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let windowStateService: WindowStateService | null = null
 let _hideToTray = true
-let _isQuitting = false
+// codeWatcher is constructed mid-`initialize()` (it needs `appState` and
+// `fileWatcher`, both built well after the window itself), but createWindow()
+// — a separate top-level function — needs to reach it too, for the
+// navigation-lockdown/render-process-gone cleanup wired at window-creation
+// time. A module-level mutable ref, `?.`-guarded until the real instance is
+// assigned, is the same pattern already used here for mainWindow/tray.
+let codeWatcher: CodeWatcher | null = null
+
+// Step 1.20 (Addendum A1): computed once, synchronously — app.isPackaged is
+// a plain property, safe to read before app.whenReady(). Used both to seed
+// registerHandlers()'s NOT_READY code:* stubs (Sec H-1) and to install the
+// real navigation lockdown in createWindow().
+const isAppOrigin = makeIsAppOrigin({
+  isPackaged: app.isPackaged,
+  rendererIndexPath: path.join(__dirname, '../renderer/index.html'),
+  devUrl: process.env.ELECTRON_RENDERER_URL ?? 'http://localhost:5173',
+})
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -107,6 +132,7 @@ function parseWorkspace(
   // docsRoot priority: config override > memory.md > default
   const docsRoot = configEntry?.docsRoot ?? memData.docsRoot ?? path.join(wsPath, 'docs')
   const docsRootExists = fs.existsSync(docsRoot)
+  const repoRootStatus = computeRepoRootStatus(wsPath)
 
   // Parse workspace docs (features, ideation)
   const docsResult = docsParser.scanDocsRoot(docsRoot)
@@ -134,6 +160,7 @@ function parseWorkspace(
     displayName,
     docsRoot,
     docsRootExists,
+    repoRootStatus,
     status: 'idle', // computed below after full ws object exists
     nextFeatureId: memData.nextFeatureId,
     projectContext: memData.projectContext,
@@ -166,6 +193,18 @@ function showAndFocusWindow(): void {
   mainWindow.focus()
 }
 
+// Step 1.20 (TRD §3.7.3, L2): the window-close/app-quit state machine.
+// Constructed once, at module scope — every dep is already safe to
+// reference this early (`app.quit`/`app.exit` exist immediately;
+// `getWindow`/`showAndFocus` are closures resolved lazily, not at
+// construction time).
+const quitGuard = createQuitGuard({
+  app,
+  getWindow: () => mainWindow,
+  showAndFocus: showAndFocusWindow,
+  now: Date.now,
+})
+
 function setupTray(): void {
   const trayIconPath = app.isPackaged
     ? path.join(process.resourcesPath, 'assets/tray-icon.png')
@@ -180,7 +219,7 @@ function setupTray(): void {
     Menu.buildFromTemplate([
       { label: 'Show Corner Office', click: showAndFocusWindow },
       { type: 'separator' },
-      { label: 'Quit', click: () => app.quit() },
+      { label: 'Quit', click: () => quitGuard.onTrayQuit() },
     ]),
   )
   tray.on('click', showAndFocusWindow)
@@ -250,6 +289,27 @@ async function createWindow(): Promise<void> {
 
   if (savedState.maximized) mainWindow.maximize()
 
+  // Step 1.20 (Addendum A1): installed BEFORE loadURL/loadFile, so no
+  // navigation — including the very first one — is ever unguarded.
+  installNavigationLockdown(mainWindow.webContents, isAppOrigin)
+
+  // Sec M-6: only a genuine cross-document main-frame navigation (a reload,
+  // or a lockdown-defeated attempt that still got this far) closes the
+  // active watch — a same-document MemoryRouter route change must not.
+  onCrossDocumentMainFrameNavigation(mainWindow.webContents, () => {
+    void codeWatcher?.closeAll()
+  })
+  mainWindow.webContents.on('render-process-gone', () => {
+    void codeWatcher?.closeAll()
+  })
+
+  // TRD §3.7.3: the renderer's beforeunload preventDefault (a dirty source)
+  // surfaces here. No event.preventDefault() call in onWillPreventUnload —
+  // leaving the unload cancelled is the intended effect.
+  mainWindow.webContents.on('will-prevent-unload', () => {
+    quitGuard.onWillPreventUnload()
+  })
+
   // Signal loading phase as soon as renderer is ready to receive IPC
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow?.webContents.send(MAIN_CHANNELS.READY, { phase: 'loading' })
@@ -267,7 +327,7 @@ async function createWindow(): Promise<void> {
   mainWindow.show()
 
   mainWindow.on('close', (event) => {
-    if (_hideToTray && tray && !_isQuitting) {
+    if (_hideToTray && tray && !quitGuard.isQuitting()) {
       event.preventDefault()
       mainWindow?.hide()
       return
@@ -300,8 +360,12 @@ async function initialize(): Promise<void> {
 
   // Register all IPC channels as NOT_READY stubs immediately.
   // This ensures no call goes unhandled if the renderer sends IPC before
-  // services have initialized.
-  registerHandlers()
+  // services have initialized. code:* stubs still carry the real sender/
+  // origin check (Sec H-1) — swapHandlers later replaces the whole
+  // function, not just the body behind it, so a stub registered without
+  // this check would have a gap the real implementation's own check could
+  // never retroactively close.
+  registerHandlers({ getMainWindow: () => mainWindow, isAppOrigin })
 
   // Window control IPC handlers — frameless window needs these for the custom title bar
   ipcMain.handle('window:minimize', () => {
@@ -320,6 +384,11 @@ async function initialize(): Promise<void> {
   })
   ipcMain.handle('window:isMaximized', () => {
     return BrowserWindow.getFocusedWindow()?.isMaximized() ?? false
+  })
+  // Step 1.20 (TRD §3.7.3, §D-10): resumes a close/quit the unsaved-changes
+  // guard deferred. quitGuard itself checks event.sender (Sec L-6).
+  ipcMain.handle('window:resumeClose', (event) => {
+    quitGuard.resumeClose(event)
   })
 
   // ── Phase 2: Create window (shows loading spinner) ────────────────────────
@@ -499,6 +568,34 @@ async function initialize(): Promise<void> {
     fileWatcher.addWorkspace(ws.path, ws.docsRoot)
   }
   fileWatcher.startGlobal()
+
+  // ── Phase 9b: Code Explorer services (git-runner, git-service, code-watcher) ──
+  // Step 1.20: constructed once here — "Git is not probed at startup" (both
+  // factories are pure/synchronous; the first actual `git` process only
+  // spawns on the first code:* call). repoService/codeWatcher feed
+  // buildCodeHandlers at Phase 11, and codeWatcher is ALSO reachable via the
+  // module-level ref createWindow() already wired (navigation-lockdown/
+  // render-process-gone cleanup, set up before this point existed).
+  const gitService = createGitService()
+  const repoService: RepoService = createRepoService(gitService)
+  codeWatcher = createCodeWatcher({
+    resolveRepoRoot: (slug) => resolveRepoRoot(slug, appState),
+    getGitSnapshot: (root): CodeWatcherGitSnapshot | undefined => {
+      const cached = repoService.getCachedEntry(root)
+      if (!cached) return undefined
+      return {
+        gitDir: cached.gitDir,
+        commonDir: cached.commonDir,
+        gitDirValid: cached.gitDirValid,
+        branch: cached.branch,
+        baseBranchName: cached.baseBranchName,
+      }
+    },
+    abortRoot: (root) => gitService.abortRoot(root),
+    resetRoot: (root) => repoService.resetRoot(root),
+    fileWatcher,
+    onChanged: (payload) => mainWindow?.webContents.send(CODE_CHANNELS.CHANGED, payload),
+  })
 
   // ── Phase 10: EventRotator + NotificationService ─────────────────────────
   // Hydrate event file offsets from state cache so we only ingest events
@@ -787,6 +884,14 @@ async function initialize(): Promise<void> {
   const realHandlers = buildRealHandlers(appState, () => mainWindow)
   swapHandlers(realHandlers)
 
+  const codeHandlers = buildCodeHandlers(appState, {
+    getMainWindow: () => mainWindow,
+    isAppOrigin,
+    repoService,
+    codeWatcher,
+  })
+  swapHandlers(codeHandlers)
+
   // ── Phase 12: Signal renderer that app is ready ───────────────────────────
   mainWindow?.webContents.send(MAIN_CHANNELS.READY, { phase: 'ready' })
 
@@ -799,10 +904,10 @@ async function initialize(): Promise<void> {
   }
 
   // ── Cleanup on quit ───────────────────────────────────────────────────────
-  // before-quit fires before will-quit — set _isQuitting here so tray-hide
-  // logic works correctly (P17: do not remove this handler).
+  // before-quit fires before will-quit — mark quitGuard's isQuitting here so
+  // tray-hide logic works correctly (P17: do not remove this handler).
   app.on('before-quit', () => {
-    _isQuitting = true
+    quitGuard.onBeforeQuit()
   })
 
   app.on('will-quit', (event) => {
@@ -812,6 +917,7 @@ async function initialize(): Promise<void> {
         if (appState.terminalManager) {
           await appState.terminalManager.destroyAll()
         }
+        await codeWatcher?.closeAll()
         fileWatcher.destroy()
         eventRotator.stop()
         notificationService.stopIdleCheck()

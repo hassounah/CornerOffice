@@ -12,6 +12,7 @@ export const IPC_ERROR_CODES = {
   LOCK_TIMEOUT: 'LOCK_TIMEOUT',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
   STALE_WRITE: 'STALE_WRITE',
+  TIMEOUT: 'TIMEOUT',
 } as const;
 
 export type IpcErrorCode = (typeof IPC_ERROR_CODES)[keyof typeof IPC_ERROR_CODES];

@@ -9,15 +9,21 @@ import { describe, it, expect, vi, beforeAll } from 'vitest'
 
 const capturedPrefs: { webPreferences?: Record<string, unknown> } = {}
 const capturedCSPHeaders: string[] = []
+const capturedWindowOpenHandler: { fn?: () => { action: string } } = {}
 
 vi.mock('electron', () => {
   const webContents = {
+    // Step 1.20: index.ts now also registers 'render-process-gone',
+    // 'will-prevent-unload' and (via app-origin.ts) 'will-navigate' —
+    // this mock must tolerate all of them, not just 'did-finish-load'.
     on: vi.fn((_event: string, cb: () => void) => {
-      // Trigger did-finish-load immediately so main:ready is exercised
       if (_event === 'did-finish-load') cb()
     }),
     send: vi.fn(),
     openDevTools: vi.fn(),
+    setWindowOpenHandler: vi.fn((fn: () => { action: string }) => {
+      capturedWindowOpenHandler.fn = fn
+    }),
   }
 
   const win = {
@@ -203,6 +209,12 @@ describe('Main process security hardening', () => {
     const { app } = await import('electron')
     expect(app.on).toHaveBeenCalledWith('second-instance', expect.any(Function))
   })
+
+  // Step 1.20, Addendum A1: every window.open() attempt is denied outright.
+  it('installs a setWindowOpenHandler that denies every window.open() attempt', () => {
+    expect(capturedWindowOpenHandler.fn).toBeTypeOf('function')
+    expect(capturedWindowOpenHandler.fn?.()).toEqual({ action: 'deny' })
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -227,8 +239,8 @@ describe('Preload channel whitelist', () => {
     }
   })
 
-  it('whitelist has exactly 16 entries', () => {
-    expect(ALLOWED_PUSH_CHANNELS).toHaveLength(16)
+  it('whitelist has exactly 17 entries', () => {
+    expect(ALLOWED_PUSH_CHANNELS).toHaveLength(17)
   })
 
   it('includes notification:clicked channel', () => {

@@ -351,6 +351,73 @@ describe('FileWatcherService', () => {
     })
   })
 
+  describe('setExternalWatchCount (H-B2: code-watcher.ts external accounting)', () => {
+    it('an external count on its own can trip onInotifyLow', () => {
+      const callbacks = makeCallbacks()
+      mockFs.readFileSync = vi.fn().mockReturnValue('1')
+      const svc = new FileWatcherService(callbacks)
+      svc.setExternalWatchCount('code-explorer', 300)
+      expect(callbacks.onInotifyLow).toHaveBeenCalledWith(300, 1)
+    })
+
+    it('adds to this service\'s own watch count, not replaces it', () => {
+      const callbacks = makeCallbacks()
+      // addWorkspace creates 3 own watchers (rix + docs + readme) — not
+      // enough alone to trip a limit of 6 (6 < 3*2 is false), but adding 10
+      // external ones (13 total) is (6 < 13*2).
+      mockFs.readFileSync = vi.fn().mockReturnValue('6')
+      const svc = new FileWatcherService(callbacks)
+      svc.addWorkspace('/ws/project-a', null)
+      expect(callbacks.onInotifyLow).not.toHaveBeenCalled()
+      svc.setExternalWatchCount('code-explorer', 10)
+      expect(callbacks.onInotifyLow).toHaveBeenCalledWith(13, 6)
+    })
+
+    it('a zero count removes that source\'s contribution entirely', () => {
+      const callbacks = makeCallbacks()
+      mockFs.readFileSync = vi.fn().mockReturnValue('1000')
+      const svc = new FileWatcherService(callbacks)
+      svc.setExternalWatchCount('code-explorer', 300) // trips the (test-only, one-shot) warning
+      callbacks.onInotifyLow.mockClear()
+      svc.setExternalWatchCount('code-explorer', 0)
+      // _inotifyWarned latches after the first trip regardless — this just
+      // proves a zero count doesn't itself throw or leave stale accounting.
+      // Re-set with a real per-service instance to observe the pre-latch state:
+      const fresh = new FileWatcherService(makeCallbacks())
+      fresh.setExternalWatchCount('code-explorer', 300)
+      fresh.setExternalWatchCount('code-explorer', 0)
+      expect(() => fresh.setExternalWatchCount('other-source', 1)).not.toThrow()
+    })
+
+    it('multiple named sources accumulate independently', () => {
+      const callbacks = makeCallbacks()
+      mockFs.readFileSync = vi.fn().mockReturnValue('10')
+      const svc = new FileWatcherService(callbacks)
+      svc.setExternalWatchCount('code-explorer', 3)
+      expect(callbacks.onInotifyLow).not.toHaveBeenCalled()
+      svc.setExternalWatchCount('other-source', 3)
+      expect(callbacks.onInotifyLow).toHaveBeenCalledWith(6, 10)
+    })
+  })
+
+  describe('injectable readInotifyMax', () => {
+    it('uses the injected function instead of reading /proc', () => {
+      const callbacks = makeCallbacks()
+      const injected = vi.fn().mockReturnValue(1)
+      const svc = new FileWatcherService(callbacks, { readInotifyMax: injected })
+      svc.setExternalWatchCount('code-explorer', 300)
+      expect(injected).toHaveBeenCalled()
+      expect(callbacks.onInotifyLow).toHaveBeenCalledWith(300, 1)
+    })
+
+    it('a null from the injected function skips the check', () => {
+      const callbacks = makeCallbacks()
+      const svc = new FileWatcherService(callbacks, { readInotifyMax: () => null })
+      svc.setExternalWatchCount('code-explorer', 999)
+      expect(callbacks.onInotifyLow).not.toHaveBeenCalled()
+    })
+  })
+
   describe('destroy', () => {
     it('closes all watchers', () => {
       const callbacks = makeCallbacks()

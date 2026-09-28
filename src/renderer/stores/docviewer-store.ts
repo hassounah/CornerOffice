@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { DocTreeResponse, DocFileResponse, DocWriteResponse } from '@main/types/docs'
 import type { IpcResponse } from '../utils/ipc'
+import { registerDirtySource } from './dirty-registry'
 
 interface Breadcrumb {
   label: string
@@ -421,3 +422,11 @@ export const useDocViewerStore = create<DocViewerState>((set, get) => ({
     }
   },
 }))
+
+// Register with the generalized unsaved-changes guard (TRD §3.7.1) — the
+// registry, not this module, decides which sources are in scope for a guard.
+registerDirtySource({
+  id: 'docviewer',
+  isDirty: () => useDocViewerStore.getState().isDirty(),
+  discard: () => useDocViewerStore.getState().cancelEdit(),
+})

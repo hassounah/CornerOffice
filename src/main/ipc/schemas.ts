@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { hasGitSegment } from '../services/repo-path'
 
 // ---------------------------------------------------------------------------
 // Workspace
@@ -200,7 +201,7 @@ export const ChannelSendPermissionVerdictSchema = z.object({
 // Terminal
 // ---------------------------------------------------------------------------
 
-const terminalSlug = z.string().min(1).max(256).regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/)
+export const terminalSlug = z.string().min(1).max(256).regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/)
 const shellSessionKey = z.string().regex(/^shell:(house_[1-4]|office_shell)$/)
 const terminalSessionKey = z.union([terminalSlug, shellSessionKey])
 
@@ -247,6 +248,119 @@ export const ShellOpenExternalSchema = z.object({
 })
 
 // ---------------------------------------------------------------------------
+// Code Explorer (#0028) — repo-relative path contract (TRD §3.3.1, H2)
+// ---------------------------------------------------------------------------
+
+const REL_PATH_MAX_LEN = 4096
+// Windows reserved device names, with or without an extension (e.g. "CON", "con.txt").
+const WIN32_RESERVED_NAME = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i
+
+/**
+ * Validate a repo-relative path per §3.3.1. Returns an error message, or null
+ * if valid. `platform` is injectable (mirrors `hasGitSegment`) so the win32
+ * and POSIX branches are both unit-testable on any host.
+ */
+export function relPathError(
+  rel: string,
+  opts: { platform?: NodeJS.Platform; allowEmpty?: boolean } = {},
+): string | null {
+  const platform = opts.platform ?? process.platform
+  const allowEmpty = opts.allowEmpty ?? false
+
+  if (rel.length > REL_PATH_MAX_LEN) return 'Path is too long'
+  if (rel === '') return allowEmpty ? null : 'Path must not be empty'
+  if (rel.startsWith('/')) return 'Path must be relative'
+  if (rel.includes('\\')) return 'Path must use forward slashes'
+  if (rel.includes('\u0000')) return 'Path contains a NUL byte'
+
+  const segments = rel.split('/')
+  for (const seg of segments) {
+    if (seg === '') return 'Path contains an empty segment'
+    if (seg === '.' || seg === '..') return 'Path must not contain . or .. segments'
+    if (platform === 'win32') {
+      if (seg.includes(':')) return 'Path contains a reserved character'
+      const base = seg.replace(/[. ]+$/, '') // NTFS trailing dot/space aliasing
+      if (WIN32_RESERVED_NAME.test(base)) return 'Path uses a reserved device name'
+      // Fix #132: a segment like '.. ' or '. ' is a disguised navigation
+      // token, not caught above — the raw check above only matches an EXACT
+      // '.' / '..' string, and `base` (stripped of trailing dots AND spaces)
+      // can never equal '.' or '..' either: any trailing run of dots/spaces
+      // is greedily consumed in full by that same regex, so a dot-only
+      // string always strips to '' (confirmed empirically; `base` exists
+      // only to normalize e.g. 'CON.' / 'CON ' down to 'CON' for the
+      // reserved-name check above, a different quirk). What Windows path
+      // resolution actually does with '.. ' is strip the trailing SPACE
+      // only, revealing '..' underneath, which is then read as a real
+      // parent-directory reference — so this needs its own, narrower strip.
+      const spaceStripped = seg.replace(/ +$/, '')
+      if (spaceStripped === '.' || spaceStripped === '..') return 'Path must not contain . or .. segments'
+    }
+  }
+
+  if (hasGitSegment(rel, platform)) return 'Path must not reference .git'
+  return null
+}
+
+function relPathRefine(rel: string, ctx: z.RefinementCtx, allowEmpty: boolean): void {
+  const message = relPathError(rel, { allowEmpty })
+  if (message) ctx.addIssue({ code: z.ZodIssueCode.custom, message })
+}
+
+// Shared by every code:* input. '' is allowed only via RelDirSchema (listDir.relDir).
+export const RelPathSchema = z.string().superRefine((rel, ctx) => relPathRefine(rel, ctx, false))
+export const RelDirSchema = z.string().superRefine((rel, ctx) => relPathRefine(rel, ctx, true))
+
+export const CodeGetStatusSchema = z.object({
+  workspaceSlug: terminalSlug,
+  baseline: z.enum(['head', 'branch']),
+})
+
+export const CodeListDirSchema = z.object({
+  workspaceSlug: terminalSlug,
+  relDir: RelDirSchema,
+  includeIgnored: z.boolean(),
+})
+
+export const CodeReadFileSchema = z.object({
+  workspaceSlug: terminalSlug,
+  relPath: RelPathSchema,
+  reveal: z.boolean(),
+})
+
+export const CodeReadBaselineSchema = z.object({
+  workspaceSlug: terminalSlug,
+  relPath: RelPathSchema,
+  oldPath: RelPathSchema.optional(),
+  baseline: z.enum(['head', 'branch']),
+  reveal: z.boolean(),
+})
+
+export const CodeWriteFileSchema = z.object({
+  workspaceSlug: terminalSlug,
+  relPath: RelPathSchema,
+  // NOT a strict byte cap — Buffer.byteLength in the handler is authoritative (§17 R23)
+  content: z.string().max(2 * 1024 * 1024),
+  expectedMtime: z.string().min(1).max(64),
+})
+
+export const CodeGetFileIndexSchema = z.object({
+  workspaceSlug: terminalSlug,
+  includeIgnored: z.boolean(),
+})
+
+export const CodeWatchSchema = z.object({
+  workspaceSlug: terminalSlug,
+  gen: z.number().int().nonnegative(),
+  openFile: RelPathSchema.nullable(),
+  expandedDirs: z.array(RelPathSchema).max(512),
+})
+
+export const CodeUnwatchSchema = z.object({
+  workspaceSlug: terminalSlug,
+  gen: z.number().int().nonnegative(),
+})
+
+// ---------------------------------------------------------------------------
 // Type exports (inferred from schemas)
 // ---------------------------------------------------------------------------
 
@@ -267,3 +381,11 @@ export type TerminalKillInput = z.infer<typeof TerminalKillSchema>
 export type TerminalGetScrollbackInput = z.infer<typeof TerminalGetScrollbackSchema>
 export type TerminalShowContextMenuInput = z.infer<typeof TerminalShowContextMenuSchema>
 export type ShellOpenExternalInput = z.infer<typeof ShellOpenExternalSchema>
+export type CodeGetStatusInput = z.infer<typeof CodeGetStatusSchema>
+export type CodeListDirInput = z.infer<typeof CodeListDirSchema>
+export type CodeReadFileInput = z.infer<typeof CodeReadFileSchema>
+export type CodeReadBaselineInput = z.infer<typeof CodeReadBaselineSchema>
+export type CodeWriteFileInput = z.infer<typeof CodeWriteFileSchema>
+export type CodeGetFileIndexInput = z.infer<typeof CodeGetFileIndexSchema>
+export type CodeWatchInput = z.infer<typeof CodeWatchSchema>
+export type CodeUnwatchInput = z.infer<typeof CodeUnwatchSchema>

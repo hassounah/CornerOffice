@@ -69,6 +69,7 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     displayName: 'Test Workspace',
     docsRoot: '/home/amer/test-ws/docs',
     docsRootExists: true,
+    repoRootStatus: 'ok',
     status: 'idle',
     nextFeatureId: 1,
     projectContext: '',
