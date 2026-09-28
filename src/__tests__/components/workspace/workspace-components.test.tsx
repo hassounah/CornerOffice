@@ -47,8 +47,10 @@ vi.mock('../../../renderer/stores/workspace-store', () => ({
 }))
 
 // Mock react-router
+const mockNavigate = vi.fn()
 vi.mock('react-router', () => ({
   useParams: vi.fn().mockReturnValue({ slug: 'test-ws' }),
+  useNavigate: () => mockNavigate,
 }))
 
 const mockDocViewerStore = vi.hoisted(() => ({
@@ -97,6 +99,8 @@ import { FeatureBoard } from '../../../renderer/components/workspace/FeatureBoar
 import { MemoryPanel } from '../../../renderer/components/workspace/MemoryPanel'
 import { HistoryTimeline } from '../../../renderer/components/workspace/HistoryTimeline'
 import WorkspaceDetail from '../../../renderer/pages/WorkspaceDetail'
+import { setPendingReturnFocus } from '../../../renderer/utils/code-explorer-return-focus'
+import { assertNoNestedInteractive } from '../../helpers/a11y'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -180,6 +184,7 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     displayName: 'Test Workspace',
     docsRoot: '/home/user/test-ws/docs',
     docsRootExists: true,
+    repoRootStatus: 'ok',
     status: 'active',
     nextFeatureId: 2,
     projectContext: 'A test project.',
@@ -240,6 +245,48 @@ describe('PipelineTrack', () => {
   it('shows fix cycles when > 0', () => {
     render(<PipelineTrack pipeline={makePipeline({ fixCycles: 2 })} />)
     expect(screen.getByText('2 fixes')).toBeInTheDocument()
+  })
+
+  // --- Review changes (TRD §3.8.3 FR-3, step 2.22) -------------------------
+
+  it('renders a Review button when onReview is provided and calls it with the pipeline', () => {
+    const onReview = vi.fn()
+    const pipeline = makePipeline()
+    render(<PipelineTrack pipeline={pipeline} onReview={onReview} workspaceSlug="ws" />)
+    fireEvent.click(screen.getByRole('button', { name: /review/i }))
+    expect(onReview).toHaveBeenCalledWith(pipeline)
+  })
+
+  it('does not render a Review button when onReview is omitted (card stays non-interactive)', () => {
+    const { container } = render(<PipelineTrack pipeline={makePipeline()} />)
+    expect(screen.queryByRole('button', { name: /review/i })).not.toBeInTheDocument()
+    assertNoNestedInteractive(container)
+  })
+
+  it('Review button carries a workspace-scoped data-return-focus id', () => {
+    render(<PipelineTrack pipeline={makePipeline({ slug: '0009-x' })} onReview={vi.fn()} workspaceSlug="ws" />)
+    expect(screen.getByRole('button', { name: /review/i })).toHaveAttribute('data-return-focus', 'review:ws:0009-x')
+  })
+
+  // Fix #137 (HIGH): the accessible name must distinguish which pipeline a
+  // Review button belongs to — "Review" alone is identical across every
+  // pipeline on the page.
+  it("Review button's accessible name includes the pipeline's feature name", () => {
+    render(<PipelineTrack pipeline={makePipeline({ featureName: 'Webhook Retry' })} onReview={vi.fn()} workspaceSlug="ws" />)
+    expect(screen.getByRole('button', { name: /review changes:.*webhook retry/i })).toBeInTheDocument()
+  })
+
+  it('two PipelineTracks with different feature names get distinct Review button accessible names', () => {
+    render(
+      <>
+        <PipelineTrack pipeline={makePipeline({ featureName: 'Webhook Retry', slug: 'a' })} onReview={vi.fn()} workspaceSlug="ws" />
+        <PipelineTrack pipeline={makePipeline({ featureName: 'Slug Directories', slug: 'b' })} onReview={vi.fn()} workspaceSlug="ws" />
+      </>,
+    )
+    const buttons = screen.getAllByRole('button', { name: /review changes:/i })
+    expect(buttons).toHaveLength(2)
+    expect(buttons[0]).toHaveAccessibleName('Review changes: Webhook Retry')
+    expect(buttons[1]).toHaveAccessibleName('Review changes: Slug Directories')
   })
 })
 
@@ -302,6 +349,74 @@ describe('FeatureCard', () => {
   it('shows pipeline type badge', () => {
     render(<FeatureCard feature={makeFeature({ pipelineType: 'light' })} />)
     expect(screen.getByText('light')).toBeInTheDocument()
+  })
+
+  // --- Card body click/keyboard activation (role="button" operability) -----
+
+  it('calls onClick when the card body is clicked', () => {
+    const onClick = vi.fn()
+    const feature = makeFeature()
+    render(<FeatureCard feature={feature} onClick={onClick} />)
+    fireEvent.click(screen.getByRole('button', { name: /feature:/i }))
+    expect(onClick).toHaveBeenCalledWith(feature)
+  })
+
+  it('calls onClick on Enter key (role="button" must be keyboard-operable)', () => {
+    const onClick = vi.fn()
+    const feature = makeFeature()
+    render(<FeatureCard feature={feature} onClick={onClick} />)
+    fireEvent.keyDown(screen.getByRole('button', { name: /feature:/i }), { key: 'Enter' })
+    expect(onClick).toHaveBeenCalledWith(feature)
+  })
+
+  it('calls onClick on Space key', () => {
+    const onClick = vi.fn()
+    const feature = makeFeature()
+    render(<FeatureCard feature={feature} onClick={onClick} />)
+    fireEvent.keyDown(screen.getByRole('button', { name: /feature:/i }), { key: ' ' })
+    expect(onClick).toHaveBeenCalledWith(feature)
+  })
+
+  it('ignores other keys (no-op, no crash)', () => {
+    const onClick = vi.fn()
+    render(<FeatureCard feature={makeFeature()} onClick={onClick} />)
+    fireEvent.keyDown(screen.getByRole('button', { name: /feature:/i }), { key: 'a' })
+    expect(onClick).not.toHaveBeenCalled()
+  })
+
+  // --- Review changes sibling button (TRD §3.8.3 FR-3, H-U1 pattern, 2.22) --
+
+  it('renders a sibling Review button (not nested inside role=button) when onReview is provided', () => {
+    const onReview = vi.fn()
+    const feature = makeFeature()
+    const { container } = render(
+      <FeatureCard feature={feature} onClick={vi.fn()} onReview={onReview} workspaceSlug="ws" />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /review changes/i }))
+    expect(onReview).toHaveBeenCalledWith(feature)
+    assertNoNestedInteractive(container)
+  })
+
+  it('does not render a Review button when onReview is omitted', () => {
+    render(<FeatureCard feature={makeFeature()} onClick={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: /review changes/i })).not.toBeInTheDocument()
+  })
+
+  it('Review button carries a workspace-scoped data-return-focus id', () => {
+    render(<FeatureCard feature={makeFeature({ slug: '0009-x' })} onReview={vi.fn()} workspaceSlug="ws" />)
+    expect(screen.getByRole('button', { name: /review changes/i })).toHaveAttribute(
+      'data-return-focus',
+      'review-card:ws:0009-x',
+    )
+  })
+
+  it('clicking Review does not also trigger the card onClick (sibling, not nested)', () => {
+    const onClick = vi.fn()
+    const onReview = vi.fn()
+    render(<FeatureCard feature={makeFeature()} onClick={onClick} onReview={onReview} workspaceSlug="ws" />)
+    fireEvent.click(screen.getByRole('button', { name: /review changes/i }))
+    expect(onReview).toHaveBeenCalledTimes(1)
+    expect(onClick).not.toHaveBeenCalled()
   })
 })
 
@@ -410,6 +525,30 @@ describe('FeatureBoard', () => {
     render(<FeatureBoard features={[]} ideationItems={[item]} workspaceSlug="test-ws" />)
     fireEvent.click(screen.getByLabelText(/Cool Idea/))
     expect(mockDocViewerStore.openFile).toHaveBeenCalledWith('/ideas/big-idea.md', 'test-ws')
+  })
+
+  // --- Review changes: In Progress column only (TRD §3.8.3 FR-3, 2.22) -----
+
+  it('wires onReview only into the In Progress column, not TODO or Done', () => {
+    const onReview = vi.fn()
+    const features = [
+      makeFeature({ slug: 'f1', name: 'Todo Item', status: 'todo' }),
+      makeFeature({ slug: 'f2', name: 'WIP Item', status: 'in_progress' }),
+      makeFeature({ slug: 'f3', name: 'Done Item', status: 'done' }),
+    ]
+    render(<FeatureBoard features={features} ideationItems={[]} workspaceSlug="test-ws" onReview={onReview} />)
+    fireEvent.click(screen.getByRole('button', { name: /review changes: wip item/i }))
+    expect(onReview).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: /review changes: todo item/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /review changes: done item/i })).not.toBeInTheDocument()
+  })
+
+  it('does not render Review buttons without a workspaceSlug', () => {
+    const onReview = vi.fn()
+    render(
+      <FeatureBoard features={[makeFeature({ status: 'in_progress' })]} ideationItems={[]} onReview={onReview} />,
+    )
+    expect(screen.queryByRole('button', { name: /review changes/i })).not.toBeInTheDocument()
   })
 })
 
@@ -626,5 +765,147 @@ describe('WorkspaceDetail', () => {
     const btn = screen.getByRole('button', { name: /browse docs/i })
     expect(btn).not.toBeDisabled()
     expect(btn).not.toHaveAttribute('title')
+  })
+
+  // --- Browse Code (TRD §3.8.3 FR-1, §3.3.1, step 2.21) ---------------------
+
+  it('renders a Browse Code button with a workspace-scoped data-return-focus id (Fix #130)', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace()]
+    render(<WorkspaceDetail />)
+    const btn = screen.getByRole('button', { name: /browse code/i })
+    expect(btn).toHaveAttribute('data-return-focus', 'browse-code:test-ws')
+  })
+
+  it('is enabled with a shortcut tooltip when repoRootStatus is ok', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace({ repoRootStatus: 'ok' })]
+    render(<WorkspaceDetail />)
+    const btn = screen.getByRole('button', { name: /browse code/i })
+    expect(btn).not.toBeDisabled()
+    expect(btn.getAttribute('title')).toMatch(/Shift\+E/)
+  })
+
+  it('is disabled with the missing-folder tooltip when repoRootStatus is missing', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace({ repoRootStatus: 'missing' })]
+    render(<WorkspaceDetail />)
+    const btn = screen.getByRole('button', { name: /browse code/i })
+    expect(btn).toBeDisabled()
+    expect(btn).toHaveAttribute('title', 'Workspace folder not found — try refreshing')
+  })
+
+  it('is disabled with the unsafe-root tooltip when repoRootStatus is unsafe', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace({ repoRootStatus: 'unsafe' })]
+    render(<WorkspaceDetail />)
+    const btn = screen.getByRole('button', { name: /browse code/i })
+    expect(btn).toBeDisabled()
+    expect(btn).toHaveAttribute('title', 'Code explorer is disabled for your home folder or a drive root')
+  })
+
+  it('navigates to the code explorer route when clicked', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace()]
+    render(<WorkspaceDetail />)
+    fireEvent.click(screen.getByRole('button', { name: /browse code/i }))
+    expect(mockNavigate).toHaveBeenCalledWith('/workspace/test-ws/code?entry=browse')
+  })
+
+  it('restores focus to the Browse Code button on mount when a return-focus id is pending (TRD §3.8.1)', () => {
+    setPendingReturnFocus('browse-code:test-ws')
+    mockWorkspaceStore.workspaces = [makeWorkspace()]
+    render(<WorkspaceDetail />)
+    expect(screen.getByRole('button', { name: /browse code/i })).toHaveFocus()
+  })
+
+  // Fix #130 (HIGH, review-2.21.md): the id must be workspace-scoped, or
+  // navigating from workspace A's explorer to workspace B's detail page (not
+  // "Back") steals focus onto B's Browse Code button, which nobody clicked.
+  // Reproduces the exact bug: before the fix, EVERY workspace's button used
+  // the same flat 'browse-code' id, so a pending id captured from workspace
+  // A's own trigger (also 'browse-code', pre-fix) would incorrectly match
+  // workspace B's button too. This workspace's own scoped id is
+  // 'browse-code:test-ws' (see useParams mock above), which the flat legacy
+  // string must NOT match.
+  it('does NOT steal focus for a pending id captured from a different workspace (pre-fix flat id)', () => {
+    setPendingReturnFocus('browse-code')
+    mockWorkspaceStore.workspaces = [makeWorkspace()] // slug: 'test-ws'
+    render(<WorkspaceDetail />)
+    expect(screen.getByRole('button', { name: /browse code/i })).not.toHaveFocus()
+  })
+
+  // --- Review entries (TRD §3.8.3 FR-3, §4.2, step 2.22) --------------------
+
+  describe('Review entries', () => {
+    it('PipelineTrack Review opens the explorer with changed/branch/review params', () => {
+      mockWorkspaceStore.workspaces = [
+        makeWorkspace({
+          activePipelines: [makePipeline({ slug: '0001-my-feature', branch: 'feat/my-feature' })],
+        }),
+      ]
+      render(<WorkspaceDetail />)
+      fireEvent.click(screen.getByRole('button', { name: /review/i }))
+      expect(mockNavigate).toHaveBeenCalledWith(
+        '/workspace/test-ws/code?changed=1&baseline=branch&branch=feat%2Fmy-feature&entry=review',
+      )
+    })
+
+    it('PipelineTrack Review carries a workspace-scoped data-return-focus id', () => {
+      mockWorkspaceStore.workspaces = [
+        makeWorkspace({ activePipelines: [makePipeline({ slug: '0001-my-feature' })] }),
+      ]
+      render(<WorkspaceDetail />)
+      expect(screen.getByRole('button', { name: /review/i })).toHaveAttribute(
+        'data-return-focus',
+        'review:test-ws:0001-my-feature',
+      )
+    })
+
+    it('FeatureCard Review (In Progress) opens the explorer with the matching pipeline branch', () => {
+      mockWorkspaceStore.workspaces = [
+        makeWorkspace({
+          features: [makeFeature({ slug: '0002-thing', name: 'Thing', status: 'in_progress' })],
+          activePipelines: [makePipeline({ slug: '0002-thing', branch: 'feat/thing' })],
+        }),
+      ]
+      render(<WorkspaceDetail />)
+      fireEvent.click(screen.getByRole('button', { name: /review changes: thing/i }))
+      expect(mockNavigate).toHaveBeenCalledWith(
+        '/workspace/test-ws/code?changed=1&baseline=branch&branch=feat%2Fthing&entry=review',
+      )
+    })
+
+    it('FeatureCard Review falls back to no expected branch when no active pipeline matches the slug', () => {
+      mockWorkspaceStore.workspaces = [
+        makeWorkspace({
+          features: [makeFeature({ slug: '0003-orphan', name: 'Orphan', status: 'in_progress' })],
+          activePipelines: [],
+        }),
+      ]
+      render(<WorkspaceDetail />)
+      fireEvent.click(screen.getByRole('button', { name: /review changes: orphan/i }))
+      expect(mockNavigate).toHaveBeenCalledWith('/workspace/test-ws/code?changed=1&baseline=branch&entry=review')
+    })
+
+    it('does not render a Review button on TODO or Done FeatureCards', () => {
+      mockWorkspaceStore.workspaces = [
+        makeWorkspace({
+          features: [
+            makeFeature({ slug: '0004-todo', name: 'Todo Thing', status: 'todo' }),
+            makeFeature({ slug: '0005-done', name: 'Done Thing', status: 'done' }),
+          ],
+        }),
+      ]
+      render(<WorkspaceDetail />)
+      expect(screen.queryByRole('button', { name: /review changes: todo thing/i })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /review changes: done thing/i })).not.toBeInTheDocument()
+    })
+
+    it('has no nested interactive elements anywhere on the page (assertNoNestedInteractive)', () => {
+      mockWorkspaceStore.workspaces = [
+        makeWorkspace({
+          activePipelines: [makePipeline({ slug: '0001-my-feature' })],
+          features: [makeFeature({ slug: '0001-my-feature', status: 'in_progress' })],
+        }),
+      ]
+      const { container } = render(<WorkspaceDetail />)
+      assertNoNestedInteractive(container)
+    })
   })
 })

@@ -10,6 +10,11 @@ interface FeatureBoardProps {
   features: Feature[]
   ideationItems: IdeationItem[]
   workspaceSlug?: string
+  /** Review changes (TRD §3.8.3 FR-3, step 2.22): only wired into the In
+   *  Progress column's FeatureCard — "In-progress FeatureCard: restructure
+   *  so the card body keeps role=button and a sibling Review icon button
+   *  is absolutely positioned in the corner." TODO/Done cards never get it. */
+  onReview?: (feature: Feature) => void
 }
 
 interface Column {
@@ -19,7 +24,7 @@ interface Column {
   items: React.ReactNode[]
 }
 
-export function FeatureBoard({ features, ideationItems, workspaceSlug }: FeatureBoardProps): React.ReactElement {
+export function FeatureBoard({ features, ideationItems, workspaceSlug, onReview }: FeatureBoardProps): React.ReactElement {
   const compactView = useSettingsStore((s) => s.config?.appearance.compactView ?? false)
   const openFolder = useDocViewerStore((s) => s.openFolder)
   const openFile = useDocViewerStore((s) => s.openFile)
@@ -62,7 +67,13 @@ export function FeatureBoard({ features, ideationItems, workspaceSlug }: Feature
       label: 'In Progress',
       accent: 'bg-co-accent-teal/60',
       items: inProgressFeatures.map((f) => (
-        <FeatureCard key={f.slug} feature={f} onClick={workspaceSlug ? handleFeatureClick : undefined} />
+        <FeatureCard
+          key={f.slug}
+          feature={f}
+          onClick={workspaceSlug ? handleFeatureClick : undefined}
+          onReview={workspaceSlug ? onReview : undefined}
+          workspaceSlug={workspaceSlug}
+        />
       )),
     },
     {

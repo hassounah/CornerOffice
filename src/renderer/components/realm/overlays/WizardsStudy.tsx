@@ -11,6 +11,7 @@ import { RealmDocViewer } from './RealmDocViewer'
 import { useSettingsStore } from '../../../stores/settings-store'
 import { useTerminalStore } from '../../../stores/terminal-store'
 import { TerminalOverlay } from '../../terminal/TerminalOverlay'
+import { useOpenCodeExplorer, browseCodeTooltip } from '../../../utils/code-explorer-nav'
 
 // ---------------------------------------------------------------------------
 // Asset imports
@@ -40,6 +41,7 @@ import pillarLeft from '../../../../../assets/realm/study/Pillar_Left.png'
 import pillarRight from '../../../../../assets/realm/study/Pillar_Right.png'
 import bannerRoyalPurple from '../../../../../assets/realm/documents/Banner_Royal_Purple.png'
 import bannerNavyBlue from '../../../../../assets/realm/documents/Banner_Navy_Blue.png'
+import bannerRed from '../../../../../assets/realm/documents/Banner_Red.png'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -77,8 +79,9 @@ function windowFilter(status: WorkspaceStatus): string {
 // Sub-sections
 // ---------------------------------------------------------------------------
 
-function PipelineTrack({ pipeline }: { pipeline: Pipeline }): React.ReactElement {
+function PipelineTrack({ pipeline, workspaceSlug }: { pipeline: Pipeline; workspaceSlug: string | null }): React.ReactElement {
   const gates = gemCount(pipeline.pipelineType)
+  const openCodeExplorer = useOpenCodeExplorer()
 
   const gemSlots = gates > 0
     ? Array.from({ length: gates }, (_, i) => gemSrc(i + 1, pipeline.gate))
@@ -127,6 +130,34 @@ function PipelineTrack({ pipeline }: { pipeline: Pipeline }): React.ReactElement
           <img src={pillarRight} alt="" aria-hidden="true" style={{ width: 44, height: 63, objectFit: 'contain' }} />
         </div>
       )}
+
+      {/* Review changes (TRD §3.8.3 FR-3): a plain button — this card carries
+       *  no role="button" of its own, so nothing here can ever be a nested-
+       *  interactive violation. Workspace-scoped data-return-focus id (Fix
+       *  #130's lesson, applied here too): pipeline slugs are per-workspace
+       *  counters, so a flat id could collide across two different
+       *  workspaces' Realms the same way the old flat browse-code id did. */}
+      <button
+        type="button"
+        data-return-focus={workspaceSlug ? `realm-review:${workspaceSlug}:${pipeline.slug}` : undefined}
+        onClick={() => {
+          if (workspaceSlug) {
+            openCodeExplorer(workspaceSlug, { changedOnly: true, baseline: 'branch', entry: 'review', expectedBranch: pipeline.branch })
+          }
+        }}
+        style={{
+          flexShrink: 0,
+          background: 'rgba(201,168,76,0.08)',
+          border: '1px solid rgba(201,168,76,0.3)',
+          borderRadius: 4,
+          color: '#c9a84c',
+          fontSize: 13,
+          padding: '6px 10px',
+          cursor: 'pointer',
+        }}
+      >
+        ⚖ Review
+      </button>
     </section>
   )
 }
@@ -158,10 +189,14 @@ const QUEST_STAGE: Record<string, { label: string; icon: string; color: string }
   done:        { label: 'Completed Quests', icon: '🏆', color: '#6b8a4a' },
 }
 
-function FeatureRow({ feature, workspaceSlug, onOpen }: {
+function FeatureRow({ feature, workspaceSlug, onOpen, onReview }: {
   feature: Feature
   workspaceSlug: string | null
   onOpen: (f: Feature) => void
+  /** Review changes (TRD §3.8.3 FR-3, H-U1): only passed for Active Quests
+   *  rows — FeatureBoard's own decision, same convention as Office's
+   *  FeatureCard onReview prop (step 2.22). */
+  onReview?: (f: Feature) => void
 }): React.ReactElement {
   const isDone = feature.status === 'done'
   const isTodo = feature.status === 'todo'
@@ -170,36 +205,70 @@ function FeatureRow({ feature, workspaceSlug, onOpen }: {
   const iconOpacity = isDone ? 0.5 : isTodo ? 0.6 : 1
 
   return (
-    <div
-      style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        cursor: workspaceSlug ? 'pointer' : 'default',
-        borderRadius: 3, padding: '3px 6px',
-      }}
-      onClick={() => onOpen(feature)}
-      role={workspaceSlug ? 'button' : undefined}
-      tabIndex={workspaceSlug ? 0 : undefined}
-      aria-label={workspaceSlug ? `Open ${feature.name}` : undefined}
-      onKeyDown={(e) => { if (workspaceSlug && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(feature) } }}
-      onMouseEnter={(e) => { if (workspaceSlug) (e.currentTarget as HTMLElement).style.background = 'rgba(201,168,76,0.1)' }}
-      onMouseLeave={(e) => { if (workspaceSlug) (e.currentTarget as HTMLElement).style.background = 'transparent' }}
-    >
-      <img src={iconImg} alt="" aria-hidden="true" style={{ width: 22, height: 22, objectFit: 'contain', opacity: iconOpacity }} />
-      <span style={{ fontSize: 14, color: textColor, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-        {feature.name}
-      </span>
-      {feature.pipelineType && (
-        <img
-          src={shieldSrc(feature.pipelineType)}
-          alt={feature.pipelineType}
-          style={{ width: 18, height: 22, objectFit: 'contain', opacity: 0.6, flexShrink: 0 }}
-        />
+    // Restructure (TRD §3.8.3 FR-3, H-U1): the row is now a plain flex div
+    // (no role) containing the existing role="button" element as one child
+    // and, for Active Quests rows only, a SIBLING Review button — never
+    // nested inside role="button" (the exact defect assertNoNestedInteractive
+    // exists to catch; mirrors Office's FeatureCard restructure, step 2.22).
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+      <div
+        style={{
+          flex: 1, minWidth: 0,
+          display: 'flex', alignItems: 'center', gap: 8,
+          cursor: workspaceSlug ? 'pointer' : 'default',
+          borderRadius: 3, padding: '3px 6px',
+        }}
+        onClick={() => onOpen(feature)}
+        role={workspaceSlug ? 'button' : undefined}
+        tabIndex={workspaceSlug ? 0 : undefined}
+        aria-label={workspaceSlug ? `Open ${feature.name}` : undefined}
+        onKeyDown={(e) => { if (workspaceSlug && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(feature) } }}
+        onMouseEnter={(e) => { if (workspaceSlug) (e.currentTarget as HTMLElement).style.background = 'rgba(201,168,76,0.1)' }}
+        onMouseLeave={(e) => { if (workspaceSlug) (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+      >
+        <img src={iconImg} alt="" aria-hidden="true" style={{ width: 22, height: 22, objectFit: 'contain', opacity: iconOpacity }} />
+        <span style={{ fontSize: 14, color: textColor, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+          {feature.name}
+        </span>
+        {feature.pipelineType && (
+          <img
+            src={shieldSrc(feature.pipelineType)}
+            alt={feature.pipelineType}
+            style={{ width: 18, height: 22, objectFit: 'contain', opacity: 0.6, flexShrink: 0 }}
+          />
+        )}
+      </div>
+      {onReview && (
+        <button
+          type="button"
+          data-return-focus={workspaceSlug ? `realm-review-feature:${workspaceSlug}:${feature.slug}` : undefined}
+          onClick={() => onReview(feature)}
+          style={{
+            flexShrink: 0,
+            background: 'rgba(201,168,76,0.08)',
+            border: '1px solid rgba(201,168,76,0.3)',
+            borderRadius: 4,
+            color: '#c9a84c',
+            fontSize: 12,
+            padding: '3px 7px',
+            cursor: 'pointer',
+          }}
+        >
+          ⚖ Review
+        </button>
       )}
     </div>
   )
 }
 
-function FeatureBoard({ features, workspaceSlug }: { features: Feature[]; workspaceSlug: string | null }): React.ReactElement {
+function FeatureBoard({ features, workspaceSlug, onReview }: {
+  features: Feature[]
+  workspaceSlug: string | null
+  /** Review changes (TRD §3.8.3 FR-3, H-U1): passed down to FeatureRow only
+   *  for the Active Quests (in_progress) group — same per-column gating as
+   *  Office's FeatureBoard/FeatureCard (step 2.22). */
+  onReview?: (f: Feature) => void
+}): React.ReactElement {
   const openFolder = useDocViewerStore((s) => s.openFolder)
 
   const inProgress = features.filter((f) => f.status === 'in_progress')
@@ -252,7 +321,13 @@ function FeatureBoard({ features, workspaceSlug }: { features: Feature[]; worksp
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   {items.map((f) => (
-                    <FeatureRow key={f.id} feature={f} workspaceSlug={workspaceSlug} onOpen={handleFeatureClick} />
+                    <FeatureRow
+                      key={f.id}
+                      feature={f}
+                      workspaceSlug={workspaceSlug}
+                      onOpen={handleFeatureClick}
+                      onReview={key === 'in_progress' ? onReview : undefined}
+                    />
                   ))}
                 </div>
               </div>
@@ -465,6 +540,45 @@ function DocsRootBanner({ docsRootExists, onOpen }: { docsRootExists: boolean; o
   )
 }
 
+// BrowseCodeBanner (TRD §3.8.3 FR-1, step 3.3) — the third banner, next to
+// ReadmeBanner (Royal Purple) and DocsRootBanner (Navy Blue): same import,
+// sizing and hover pattern, USER DECISION 2026-09-25. Disabled with a
+// reason (never hidden) when repoRootStatus !== 'ok', same rule and tooltip
+// copy as Office's own Browse Code button (browseCodeTooltip, code-explorer-
+// nav.ts) so the two skins never drift on wording.
+function BrowseCodeBanner({ workspaceSlug, repoRootStatus, onOpen }: {
+  workspaceSlug: string | null
+  repoRootStatus: 'ok' | 'missing' | 'unsafe'
+  onOpen: () => void
+}): React.ReactElement {
+  const enabled = workspaceSlug !== null && repoRootStatus === 'ok'
+  return (
+    <div
+      role={enabled ? 'button' : undefined}
+      tabIndex={enabled ? 0 : undefined}
+      aria-label={enabled ? 'Browse Code' : browseCodeTooltip(repoRootStatus)}
+      title={browseCodeTooltip(repoRootStatus)}
+      data-return-focus={workspaceSlug ? `realm-browse-code:${workspaceSlug}` : undefined}
+      onClick={enabled ? onOpen : undefined}
+      onKeyDown={(e) => { if (enabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen() } }}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        cursor: enabled ? 'pointer' : 'default',
+        opacity: enabled ? 1 : 0.35,
+        transition: 'opacity 0.15s ease',
+      }}
+    >
+      <img
+        src={bannerRed}
+        alt="Browse Code"
+        style={{ width: 80, height: 'auto', objectFit: 'contain' }}
+      />
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // WizardsStudy
 // ---------------------------------------------------------------------------
@@ -475,6 +589,25 @@ export function WizardsStudy({ workspaceSlug }: { workspaceSlug: string | null }
   const fetchOne = useWorkspaceStore((s) => s.fetchOne)
   const docViewerClose = useDocViewerStore((s) => s.close)
   const openFolder = useDocViewerStore((s) => s.openFolder)
+  const openCodeExplorer = useOpenCodeExplorer()
+
+  // Review changes (TRD §3.8.3 FR-3, §4.2, H-U1): a Feature carries no
+  // branch of its own — only its matching Pipeline card does, when one is
+  // actively tracking it (same slug convention as Office's own
+  // handleFeatureReview, step 2.22's WorkspaceDetail.tsx). Falls back to no
+  // expected branch (fs-diff still works via 'head'; no mismatch banner)
+  // when no active pipeline matches.
+  function handleFeatureReview(feature: Feature): void {
+    if (!workspace || !workspaceSlug) return
+    const pipeline = workspace.activePipelines.find((p) => p.slug === feature.slug)
+    openCodeExplorer(workspaceSlug, {
+      changedOnly: true,
+      baseline: 'branch',
+      entry: 'review',
+      expectedBranch: pipeline?.branch ?? null,
+    })
+  }
+
   const hasSessions = useChannelsStore((s) => {
     if (!workspace) return false
     const normalizedPath = workspace.path.replace(/\/+$/, '')
@@ -748,18 +881,23 @@ export function WizardsStudy({ workspaceSlug }: { workspaceSlug: string | null }
 
         {/* Pipeline track */}
         {activePipelines.length > 0
-          ? activePipelines.map((p) => <PipelineTrack key={p.slug} pipeline={p} />)
+          ? activePipelines.map((p) => <PipelineTrack key={p.slug} pipeline={p} workspaceSlug={workspaceSlug} />)
           : <EmptyPipelineState />
         }
 
         {/* Main grid: feature board + right column + chat column (always 3-col) */}
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 0.5fr) minmax(180px, 0.5fr) 1fr', gap: 10, flex: 1, minHeight: 0 }}>
-          <FeatureBoard features={features} workspaceSlug={workspaceSlug} />
+          <FeatureBoard features={features} workspaceSlug={workspaceSlug} onReview={handleFeatureReview} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <Bookshelf items={ideationItems.slice(0, 8)} workspaceSlug={workspaceSlug} />
             <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
               <ReadmeBanner content={workspace.readmeContent} onOpen={() => setReadmeOverlayVisible(true)} />
               <DocsRootBanner docsRootExists={workspace.docsRootExists} onOpen={() => { if (workspaceSlug) openFolder(workspace.docsRoot, workspaceSlug) }} />
+              <BrowseCodeBanner
+                workspaceSlug={workspaceSlug}
+                repoRootStatus={workspace.repoRootStatus}
+                onOpen={() => { if (workspaceSlug) openCodeExplorer(workspaceSlug, { entry: 'browse' }) }}
+              />
             </div>
             <MemoryScrollZone context={projectContext} />
           </div>

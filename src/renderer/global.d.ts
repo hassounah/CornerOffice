@@ -6,6 +6,15 @@
 import type { IpcResponse } from '../main/types/ipc'
 import type { DocTreeResponse, DocFileResponse, DocWriteResponse } from '../main/types/docs'
 import type { PluginStatus } from '../main/types/channels'
+import type {
+  CodeStatusResponse,
+  CodeListDirResponse,
+  CodeFileResponse,
+  CodeBaselineResponse,
+  CodeWriteResponse,
+  CodeFileIndexResponse,
+  CodeWatchResponse,
+} from '../main/types/code'
 
 interface CornerOfficeAPI {
   windowControls: {
@@ -13,6 +22,7 @@ interface CornerOfficeAPI {
     maximize: () => Promise<void>
     close: () => Promise<void>
     isMaximized: () => Promise<boolean>
+    resumeClose: () => Promise<void>
   }
   workspace: {
     discover: () => Promise<unknown>
@@ -65,6 +75,22 @@ interface CornerOfficeAPI {
     getStatus: () => Promise<IpcResponse<PluginStatus>>
     installHooks: () => Promise<IpcResponse<{ installed: true }>>
     uninstallHooks: () => Promise<IpcResponse<{ uninstalled: true }>>
+  }
+  code: {
+    getStatus: (workspaceSlug: string, baseline: 'head' | 'branch') => Promise<IpcResponse<CodeStatusResponse>>
+    listDir: (workspaceSlug: string, relDir: string, includeIgnored: boolean) => Promise<IpcResponse<CodeListDirResponse>>
+    readFile: (workspaceSlug: string, relPath: string, reveal: boolean) => Promise<IpcResponse<CodeFileResponse>>
+    readBaseline: (
+      workspaceSlug: string,
+      relPath: string,
+      baseline: 'head' | 'branch',
+      reveal: boolean,
+      oldPath?: string,
+    ) => Promise<IpcResponse<CodeBaselineResponse>>
+    writeFile: (workspaceSlug: string, relPath: string, content: string, expectedMtime: string) => Promise<IpcResponse<CodeWriteResponse>>
+    getFileIndex: (workspaceSlug: string, includeIgnored: boolean) => Promise<IpcResponse<CodeFileIndexResponse>>
+    watch: (workspaceSlug: string, gen: number, openFile: string | null, expandedDirs: string[]) => Promise<IpcResponse<CodeWatchResponse>>
+    unwatch: (workspaceSlug: string, gen: number) => Promise<IpcResponse<{ ok: true }>>
   }
   on: (channel: string, listener: (...args: unknown[]) => void) => () => void
   off: (channel: string) => void

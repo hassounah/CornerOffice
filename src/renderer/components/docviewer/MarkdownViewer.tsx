@@ -1,12 +1,8 @@
-import React, { useMemo } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import matter from 'gray-matter'
-import type { Components } from 'react-markdown'
+import React from 'react'
 import { useDocViewerStore } from '../../stores/docviewer-store'
 import { useUnsavedGuard } from '../../hooks/useUnsavedGuard'
 import { friendlyDocError } from '../../utils/doc-errors'
-import { FrontmatterDisplay } from './FrontmatterDisplay'
+import { MarkdownContent } from './MarkdownContent'
 
 export function MarkdownViewer(): React.ReactElement {
   const file = useDocViewerStore((s) => s.file)
@@ -21,16 +17,19 @@ export function MarkdownViewer(): React.ReactElement {
   // Guard: routes navigation through unsaved-changes check (§17 R9)
   const guard = useUnsavedGuard()
 
-  const parsed = useMemo(() => {
-    if (!file) return null
-    try {
-      const { data, content } = matter(file.content, { engines: {} })
-      return { frontmatter: data, content }
-    } catch {
-      // On gray-matter failure, render entire content as markdown
-      return { frontmatter: {}, content: file.content }
-    }
-  }, [file])
+  // §D-3: today's exact predicate, minus the http/// checks — MarkdownContent
+  // now classifies any scheme-having or protocol-relative href as external
+  // unconditionally, before this is ever called.
+  const resolveLink = (href: string): (() => void) | null => {
+    if (!href.endsWith('.md')) return null
+    if (href.includes('..')) return null
+    if (href.startsWith('/')) return null
+    if (href.includes('\\')) return null
+    if (!workspaceSlug || !file) return null
+    const dir = file.filePath.split('/').slice(0, -1).join('/')
+    const resolvedPath = dir + '/' + href
+    return () => guard(() => openFile(resolvedPath, workspaceSlug, true))
+  }
 
   if (fileLoading) {
     return (
@@ -57,61 +56,7 @@ export function MarkdownViewer(): React.ReactElement {
     )
   }
 
-  if (!file || !parsed) return <></>
-
-  const hasFrontmatter = Object.keys(parsed.frontmatter).length > 0
-
-  // Custom components for react-markdown (A.7, A.10)
-  const components: Components = {
-    // A.7: External links render as span, relative .md links intercept
-    a: ({ href, children }) => {
-      if (!href) {
-        return <span>{children}</span>
-      }
-
-      // Anchor links — scroll behavior
-      if (href.startsWith('#')) {
-        return <a href={href}>{children}</a>
-      }
-
-      // Relative .md links — intercept and openFile
-      if (href.endsWith('.md') && !href.startsWith('http') && !href.startsWith('//')) {
-        // Reject path traversal attempts
-        if (href.includes('..')) {
-          return <span>{children}</span>
-        }
-        const handleClick = (e: React.MouseEvent) => {
-          e.preventDefault()
-          if (workspaceSlug && file) {
-            // Resolve relative to current file's directory
-            const dir = file.filePath.split('/').slice(0, -1).join('/')
-            const resolvedPath = dir + '/' + href
-            // Guard navigation: prompt if there are unsaved edits (§17 R9)
-            guard(() => openFile(resolvedPath, workspaceSlug, true))
-          }
-        }
-        return (
-          <a href={href} onClick={handleClick} className="cursor-pointer">
-            {children}
-          </a>
-        )
-      }
-
-      // External links — render as span (A.7)
-      return (
-        <span className="co-prose-link-blocked" title="External links are disabled">
-          {children}
-        </span>
-      )
-    },
-
-    // A.10: Image placeholder
-    img: ({ alt }) => (
-      <span className="inline-flex items-center gap-1.5 px-2 py-1 bg-co-bg-tertiary border border-co-border rounded text-xs text-co-text-muted">
-        🖼️ {alt || 'Image'}
-      </span>
-    ),
-  }
+  if (!file) return <></>
 
   return (
     <div>
@@ -126,19 +71,7 @@ export function MarkdownViewer(): React.ReactElement {
         </button>
       )}
 
-      {/* Frontmatter */}
-      {hasFrontmatter && <FrontmatterDisplay data={parsed.frontmatter} />}
-
-      {/* Markdown content */}
-      <div className="co-prose">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[]}
-          components={components}
-        >
-          {parsed.content}
-        </ReactMarkdown>
-      </div>
+      <MarkdownContent content={file.content} resolveLink={resolveLink} />
     </div>
   )
 }

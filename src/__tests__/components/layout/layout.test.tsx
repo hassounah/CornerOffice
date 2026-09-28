@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router'
 
@@ -23,10 +23,13 @@ const mockGamificationStore = vi.hoisted(() => ({
   error: null,
 }))
 
+const mockUpdateConfig = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+
 const mockSettingsStore = vi.hoisted(() => ({
   config: null as { companyName: string; appearance: { theme: string } } | null,
   loading: false,
   error: null,
+  updateConfig: mockUpdateConfig,
 }))
 
 vi.mock('../../../renderer/stores/workspace-store', () => ({
@@ -42,8 +45,9 @@ vi.mock('../../../renderer/stores/gamification-store', () => ({
 }))
 
 vi.mock('../../../renderer/stores/settings-store', () => ({
-  useSettingsStore: vi.fn((selector: (s: typeof mockSettingsStore) => unknown) =>
-    selector(mockSettingsStore),
+  useSettingsStore: Object.assign(
+    vi.fn((selector: (s: typeof mockSettingsStore) => unknown) => selector(mockSettingsStore)),
+    { getState: () => mockSettingsStore },
   ),
 }))
 
@@ -55,6 +59,7 @@ import { AppShell } from '../../../renderer/components/layout/AppShell'
 import { OrgSidebar } from '../../../renderer/components/layout/OrgSidebar'
 import { TopBar } from '../../../renderer/components/layout/TopBar'
 import type { Workspace } from '@main/types/workspace'
+import { registerDirtySource, useGuardDialogStore } from '../../../renderer/stores/dirty-registry'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -67,6 +72,7 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     displayName: 'Test WS',
     docsRoot: '/home/test/test-ws/docs',
     docsRootExists: true,
+    repoRootStatus: 'ok',
     status: 'idle',
     nextFeatureId: null,
     projectContext: '',
@@ -254,5 +260,30 @@ describe('TopBar', () => {
   it('shows "Overview" on dashboard path', () => {
     renderInRouter(<TopBar />, '/')
     expect(screen.getByText('Overview')).toBeInTheDocument()
+  })
+
+  describe('Realm toggle — skin-switch guard (§D-1: no scope, checks every dirty source)', () => {
+    afterEach(() => {
+      useGuardDialogStore.setState({ open: false, pendingAction: null, scope: undefined })
+    })
+
+    it('switches immediately when nothing is dirty', () => {
+      renderInRouter(<TopBar />)
+      fireEvent.click(screen.getByLabelText('Switch to CornerRealm (medieval UI)'))
+      expect(mockUpdateConfig).toHaveBeenCalledTimes(1)
+      expect(useGuardDialogStore.getState().open).toBe(false)
+    })
+
+    it('is blocked by a dirty source that is NOT the doc viewer — proves the scope is "all", not ["docviewer"]', () => {
+      const unregister = registerDirtySource({ id: 'not-docviewer', isDirty: () => true, discard: vi.fn() })
+      try {
+        renderInRouter(<TopBar />)
+        fireEvent.click(screen.getByLabelText('Switch to CornerRealm (medieval UI)'))
+        expect(mockUpdateConfig).not.toHaveBeenCalled()
+        expect(useGuardDialogStore.getState().open).toBe(true)
+      } finally {
+        unregister()
+      }
+    })
   })
 })

@@ -75,9 +75,31 @@ export class FileWatcherService {
   private _eventStreamWatcher: FSWatcher | null = null
   private _totalWatchCount = 0
   private _inotifyWarned = false
+  private _readInotifyMax: () => number | null
+  // External watchers this service does not own (e.g. code-watcher.ts,
+  // #0028 §3.3.6 H-B2) but whose real directory-watch count still counts
+  // against the same OS inotify limit. Keyed by source name so more than
+  // one external contributor can report independently.
+  private _externalWatchCounts = new Map<string, number>()
 
-  constructor(callbacks: FileWatcherCallbacks) {
+  constructor(callbacks: FileWatcherCallbacks, opts: { readInotifyMax?: () => number | null } = {}) {
     this._callbacks = callbacks
+    this._readInotifyMax = opts.readInotifyMax ?? readInotifyMax
+  }
+
+  /**
+   * Report an external watcher's real directory-watch count (H-B2): the
+   * pre-existing `_recalcWatchCount()` below only ever counted this
+   * service's own FSWatcher *instances*, not directories, which already
+   * undercounts even this service's own cost — but code-watcher.ts's
+   * per-root, depth-0 directory watches are a new, potentially much larger
+   * contributor this check must also see. Re-runs the limit check.
+   */
+  setExternalWatchCount(source: string, count: number): void {
+    if (count > 0) this._externalWatchCounts.set(source, count)
+    else this._externalWatchCounts.delete(source)
+    this._recalcWatchCount()
+    this._checkInotifyLimit()
   }
 
   // ---------------------------------------------------------------------------
@@ -138,6 +160,7 @@ export class FileWatcherService {
     this._readmeWatchers.clear()
     this._homunculusWatcher = null
     this._eventStreamWatcher = null
+    this._externalWatchCounts.clear()
     this._totalWatchCount = 0
   }
 
@@ -342,17 +365,20 @@ export class FileWatcherService {
   // ---------------------------------------------------------------------------
 
   private _recalcWatchCount(): void {
+    let externalTotal = 0
+    for (const count of this._externalWatchCounts.values()) externalTotal += count
     this._totalWatchCount =
       this._rixWatchers.size +
       this._docsWatchers.size +
       this._readmeWatchers.size +
       (this._homunculusWatcher ? 1 : 0) +
-      (this._eventStreamWatcher ? 1 : 0)
+      (this._eventStreamWatcher ? 1 : 0) +
+      externalTotal
   }
 
   private _checkInotifyLimit(): void {
     if (this._inotifyWarned) return
-    const max = readInotifyMax()
+    const max = this._readInotifyMax()
     if (max === null) return
     if (max < this._totalWatchCount * 2) {
       this._inotifyWarned = true

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router'
+import type { Pipeline, Feature } from '@main/types/workspace'
 import { useWorkspaceStore } from '../stores/workspace-store'
 import { useChannelsStore } from '../stores/channels-store'
 import { useSettingsStore } from '../stores/settings-store'
@@ -15,6 +16,8 @@ import { ChatPanel } from '../components/channels/ChatPanel'
 import { PermissionButton } from '../components/channels/PermissionButton'
 import { TerminalOverlay } from '../components/terminal/TerminalOverlay'
 import { useDocViewerStore } from '../stores/docviewer-store'
+import { useOpenCodeExplorer, browseCodeTooltip } from '../utils/code-explorer-nav'
+import { consumeReturnFocus } from '../utils/code-explorer-return-focus'
 
 const STATUS_COLORS: Record<string, string> = {
   active:    'bg-co-status-active',
@@ -52,6 +55,47 @@ export default function WorkspaceDetail(): React.ReactElement {
       })
     return () => { cancelled = true }
   }, [slug, fetchOne])
+
+  // Focus return from the code explorer (TRD §3.8.1, step 2.21): once this
+  // page's own DOM — including the `browse-code` trigger button below — has
+  // (re)rendered, restore focus to whatever last opened the explorer.
+  // consumeReturnFocus() is a no-op when nothing is pending (e.g. a normal
+  // navigation here, not a "Back" from the explorer).
+  useEffect(() => {
+    if (workspace) consumeReturnFocus()
+  }, [workspace])
+
+  const openCodeExplorer = useOpenCodeExplorer()
+
+  // Review entry points (TRD §3.8.3 FR-3, §4.2, step 2.22): changed-only,
+  // baseline branch, entry 'review'. expectedBranch feeds the persistent
+  // branch-mismatch banner already built in CodeExplorer.tsx (2.13/U-M2) —
+  // this page only needs to supply it, never render the banner itself.
+  function handlePipelineReview(pipeline: Pipeline): void {
+    if (!workspace) return
+    openCodeExplorer(workspace.slug, {
+      changedOnly: true,
+      baseline: 'branch',
+      entry: 'review',
+      expectedBranch: pipeline.branch,
+    })
+  }
+
+  // A Feature (from docs-parser's TODO/IN_PROGRESS scan) carries no branch
+  // of its own — only its matching Pipeline card does, when one is actively
+  // tracking it (same slug convention, §4.2 sequence diagram: "expectedBranch:
+  // pipeline?.branch"). Falls back to no expected branch (fs-diff still
+  // works via 'head'; no mismatch banner) when no active pipeline matches.
+  function handleFeatureReview(feature: Feature): void {
+    if (!workspace) return
+    const pipeline = workspace.activePipelines.find((p) => p.slug === feature.slug)
+    openCodeExplorer(workspace.slug, {
+      changedOnly: true,
+      baseline: 'branch',
+      entry: 'review',
+      expectedBranch: pipeline?.branch ?? null,
+    })
+  }
 
   const loading = storeLoading && !workspace
 
@@ -224,7 +268,12 @@ export default function WorkspaceDetail(): React.ReactElement {
         <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-5 co-stagger">
           {/* Active pipelines */}
           {workspace.activePipelines.map((pipeline) => (
-            <PipelineTrack key={pipeline.slug} pipeline={pipeline} />
+            <PipelineTrack
+              key={pipeline.slug}
+              pipeline={pipeline}
+              onReview={handlePipelineReview}
+              workspaceSlug={workspace.slug}
+            />
           ))}
 
           {/* Parked pipelines */}
@@ -245,7 +294,12 @@ export default function WorkspaceDetail(): React.ReactElement {
           )}
 
           {/* Feature board */}
-          <FeatureBoard features={workspace.features} ideationItems={workspace.ideationItems} workspaceSlug={workspace.slug} />
+          <FeatureBoard
+            features={workspace.features}
+            ideationItems={workspace.ideationItems}
+            workspaceSlug={workspace.slug}
+            onReview={handleFeatureReview}
+          />
 
           {/* Memory panel */}
           {workspace.projectContext && (
@@ -267,6 +321,18 @@ export default function WorkspaceDetail(): React.ReactElement {
                 <path d="M1 3.5C1 2.94772 1.44772 2.5 2 2.5H4.5L5.5 3.5H10C10.5523 3.5 11 3.94772 11 4.5V9C11 9.55228 10.5523 10 10 10H2C1.44772 10 1 9.55228 1 9V3.5Z" stroke="currentColor" strokeWidth="1" strokeLinejoin="round"/>
               </svg>
               Browse Docs
+            </button>
+            <button
+              data-return-focus={`browse-code:${workspace.slug}`}
+              onClick={() => openCodeExplorer(workspace.slug, { entry: 'browse' })}
+              disabled={workspace.repoRootStatus !== 'ok'}
+              title={browseCodeTooltip(workspace.repoRootStatus)}
+              className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest rounded text-co-text-muted border border-white/[0.06] bg-transparent hover:bg-white/[0.04] transition-colors ${workspace.repoRootStatus !== 'ok' ? 'opacity-40 cursor-not-allowed' : ''}`}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M4 3L1.5 6L4 9M8 3L10.5 6L8 9" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Browse Code
             </button>
           </div>
 

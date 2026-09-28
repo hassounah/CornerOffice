@@ -76,6 +76,22 @@ export { IPC_ERROR_CODES } from './ipc'
 export type { DocTreeEntry, DocTreeResponse, DocFileResponse, DocWriteResponse } from './docs'
 
 export type {
+  CodeTreeEntry,
+  CodeListDirResponse,
+  CodeFileResponse,
+  CodeFileIndexResponse,
+  RepoState,
+  RepoInfo,
+  CodeChangeStatus,
+  CodeChange,
+  CodeStatusResponse,
+  CodeWriteResponse,
+  CodeBaselineResponse,
+  CodeWatchResponse,
+  CodeChangedPayload,
+} from './code'
+
+export type {
   ConnectionState,
   ChannelSession,
   ChatMessage,

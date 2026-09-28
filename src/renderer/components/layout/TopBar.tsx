@@ -2,8 +2,7 @@ import React from 'react'
 import { useLocation } from 'react-router'
 import { useGamificationStore } from '../../stores/gamification-store'
 import { useSettingsStore } from '../../stores/settings-store'
-import { useDocViewerStore } from '../../stores/docviewer-store'
-import { useGuardDialogStore } from '../../hooks/useUnsavedGuard'
+import { guardAction } from '../../hooks/useUnsavedGuard'
 
 // ---------------------------------------------------------------------------
 // Trend indicator — subtle arrow
@@ -102,11 +101,8 @@ export function TopBar(): React.ReactElement {
                 realm: { ...(currentRealm ?? { enabled: false, mapping: [], shipCelebration: 'townSquare' as const }), enabled: true },
               })
             }
-            if (useDocViewerStore.getState().isDirty()) {
-              useGuardDialogStore.getState().requestConfirm(switchRealm)
-            } else {
-              switchRealm()
-            }
+            // Skin switch checks every dirty source, not just the doc viewer (§D-1).
+            guardAction(switchRealm)
           }}
         >
           {/* Castle / crown icon */}

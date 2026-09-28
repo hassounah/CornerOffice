@@ -55,6 +55,7 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     displayName: 'Test WS',
     docsRoot: '/test/docs',
     docsRootExists: true,
+    repoRootStatus: 'ok',
     status: 'idle',
     nextFeatureId: null,
     projectContext: '',

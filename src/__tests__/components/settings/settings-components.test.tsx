@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { AppConfig, WorkspaceConfig } from '@main/types/config'
 
@@ -56,6 +56,7 @@ import { NotificationSettings } from '../../../renderer/components/settings/Noti
 import { HookSettings } from '../../../renderer/components/settings/HookSettings'
 import { WorkspaceSettings } from '../../../renderer/components/settings/WorkspaceSettings'
 import Settings from '../../../renderer/pages/Settings'
+import { registerDirtySource, useGuardDialogStore } from '../../../renderer/stores/dirty-registry'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -175,6 +176,24 @@ describe('AppearanceSettings', () => {
     fireEvent.change(input, { target: { value: '' } })
     fireEvent.blur(input)
     expect(await screen.findByText('Company name cannot be empty')).toBeInTheDocument()
+  })
+
+  describe('skin switch guard (§D-1: no scope, checks every dirty source)', () => {
+    afterEach(() => {
+      useGuardDialogStore.setState({ open: false, pendingAction: null, scope: undefined })
+    })
+
+    it('is blocked by a dirty source that is NOT the doc viewer', () => {
+      const unregister = registerDirtySource({ id: 'not-docviewer', isDirty: () => true, discard: vi.fn() })
+      try {
+        render(<AppearanceSettings />)
+        fireEvent.click(screen.getByRole('button', { name: 'Corner Realm' }))
+        expect(mockSettingsStore.updateConfig).not.toHaveBeenCalled()
+        expect(useGuardDialogStore.getState().open).toBe(true)
+      } finally {
+        unregister()
+      }
+    })
   })
 })
 

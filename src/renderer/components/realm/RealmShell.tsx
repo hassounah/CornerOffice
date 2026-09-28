@@ -3,7 +3,8 @@ import { WindowTitleBar } from '../layout/WindowTitleBar'
 import { useRealmStore } from '../../stores/realm-store'
 import { useWorkspaceStore } from '../../stores/workspace-store'
 import { useDocViewerStore } from '../../stores/docviewer-store'
-import { useGuardDialogStore } from '../../hooks/useUnsavedGuard'
+import { useCodeExplorerStore } from '../../stores/code-explorer-store'
+import { guardAction } from '../../hooks/useUnsavedGuard'
 import { useSettingsStore } from '../../stores/settings-store'
 import { KingdomMap } from './views/KingdomMap'
 import { OverlayBackdrop } from './OverlayBackdrop'
@@ -112,6 +113,9 @@ const NotificationScroll = React.lazy(() =>
 const TownSquareCelebration = React.lazy(() =>
   import('./overlays/TownSquareCelebration').then((m) => ({ default: m.TownSquareCelebration }))
 )
+const RealmCodeExplorer = React.lazy(() =>
+  import('./overlays/RealmCodeExplorer').then((m) => ({ default: m.RealmCodeExplorer }))
+)
 
 // ---------------------------------------------------------------------------
 // RealmShell
@@ -127,16 +131,22 @@ export function RealmShell(): React.ReactElement {
   const dismissCelebration = useRealmStore((s) => s.dismissCelebration)
   const openOverlay = useRealmStore((s) => s.openOverlay)
   const fetchWorkspaces = useWorkspaceStore((s) => s.fetchAll)
+  const codeOpen = useCodeExplorerStore((s) => s.open)
+  const closeCodeExplorer = useCodeExplorerStore((s) => s.closeExplorer)
 
   const realmConfig = useSettingsStore((s) => s.config?.realm)
   const [firstRunDismissed, setFirstRunDismissed] = useState(false)
   const announcement = useMemo(() => {
+    // Fix #144: the code-explorer layer (z 110) is the topmost of every
+    // layer this memo covers and pre-empts all of them (§3.7.2 row 2) —
+    // checked first, matching that same priority.
+    if (codeOpen) return 'Code Explorer opened'
     if (notificationScrollOpen) return 'Notification scroll opened'
     if (primaryOverlay === 'wizards-study') return "Wizard's Study opened"
     if (primaryOverlay === 'settings-chamber') return 'Settings Chamber opened'
     if (primaryOverlay === 'tower') return 'Tower View opened'
     return ''
-  }, [primaryOverlay, notificationScrollOpen])
+  }, [codeOpen, primaryOverlay, notificationScrollOpen])
 
   // Wire up store subscriptions and hydrate workspace data
   useEffect(() => {
@@ -145,34 +155,49 @@ export function RealmShell(): React.ReactElement {
     return cleanup
   }, [fetchWorkspaces, ensureListeners])
 
-  // Esc key: peel off one overlay layer at a time (innermost first)
+  // Esc key: peel off one overlay layer at a time (innermost first) — TRD
+  // §3.7.2 rows 2/2a (C2). Re-ordered so the code explorer PRE-EMPTS every
+  // branch below it.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+
+      // Step 0: something already consumed this Escape (e.g. a CodeMirror
+      // keymap command clearing a search panel or a selection calls
+      // preventDefault), or focus is still inside a live CodeMirror editor's
+      // own content — never fall through to peeling off a layer underneath
+      // it for either of those.
+      if (e.defaultPrevented) return
+      if ((e.target as Element | null)?.closest?.('.cm-content')) return
+
+      // Step 1: the code explorer, when open, pre-empts EVERY branch below —
+      // its layer (z 110) visually covers all of them (doc viewer 10,
+      // celebration 50, notification scroll 60, the Study's TerminalOverlay
+      // 100) and makes them inert while open (see the inert effect below).
+      // Row 2a: a doc viewer open underneath is left completely untouched by
+      // this — a SECOND Escape (codeOpen now false) is what reaches the
+      // doc-viewer branches below, unchanged.
+      if (codeOpen) {
+        e.preventDefault()
+        guardAction(closeCodeExplorer, ['code-explorer'])
+        return
+      }
 
       const docViewer = useDocViewerStore.getState()
 
       // 1. Doc viewer file with folder to go back to → navigate back
       if (docViewer.mode === 'file' && docViewer._savedFolderState) {
         e.preventDefault()
-        // Guard against discarding unsaved edits (R-01): route through the
-        // unsaved-changes confirm when dirty, matching every other exit path.
-        if (docViewer.isDirty()) {
-          useGuardDialogStore.getState().requestConfirm(() => docViewer.navigateBack())
-        } else {
-          docViewer.navigateBack()
-        }
+        // Guard against discarding unsaved edits (R-01), scoped to the doc
+        // viewer only — matches every other doc-viewer-only exit path.
+        guardAction(() => docViewer.navigateBack(), ['docviewer'])
         return
       }
 
       // 2. Doc viewer open (folder or file) → close doc viewer
       if (docViewer.mode !== 'closed') {
         e.preventDefault()
-        if (docViewer.isDirty()) {
-          useGuardDialogStore.getState().requestConfirm(() => docViewer.close())
-        } else {
-          docViewer.close()
-        }
+        guardAction(() => docViewer.close(), ['docviewer'])
         return
       }
 
@@ -198,11 +223,17 @@ export function RealmShell(): React.ReactElement {
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [notificationScrollOpen, primaryOverlay, closeOverlay, celebration.active, dismissCelebration])
+  }, [codeOpen, closeCodeExplorer, notificationScrollOpen, primaryOverlay, closeOverlay, celebration.active, dismissCelebration])
 
 
   // Ref for focus-trap: inert background content when an overlay is open
   const mapContainerRef = useRef<HTMLDivElement>(null)
+  // §3.8.2: while the code explorer is open, `inert` also goes on the
+  // primary-overlay wrapper, the notification-scroll layer, the celebration
+  // layer and the map — all four are siblings inside THIS single container
+  // div, so one ref/toggle covers all of them at once (Tab cannot escape the
+  // explorer into any of them).
+  const primaryLayerContainerRef = useRef<HTMLDivElement>(null)
 
   // Toggle inert on the map+exit-button container when any primary overlay is open
   useEffect(() => {
@@ -212,6 +243,20 @@ export function RealmShell(): React.ReactElement {
       mapContainerRef.current?.removeAttribute('inert')
     }
   }, [primaryOverlay])
+
+  // §3.8.2: while the code explorer is open, inert goes on the primary
+  // overlay, notification scroll, celebration and map — everything the
+  // explorer's own z-110 layer visually covers — via the single shared
+  // container ref above. Independent of (and layered on top of) the
+  // primary-overlay-only toggle right above: that one still runs on its own
+  // primaryOverlay-driven schedule for the non-code-explorer case.
+  useEffect(() => {
+    if (codeOpen) {
+      primaryLayerContainerRef.current?.setAttribute('inert', '')
+    } else {
+      primaryLayerContainerRef.current?.removeAttribute('inert')
+    }
+  }, [codeOpen])
 
   // First-run detection: all 10 mappings unassigned
   const isFirstRun = !firstRunDismissed &&
@@ -260,7 +305,7 @@ export function RealmShell(): React.ReactElement {
       <WindowTitleBar />
 
       {/* Kingdom map — always rendered as base layer */}
-      <div className="relative flex-1 overflow-hidden" style={{ minWidth: 900, minHeight: 700 }}>
+      <div ref={primaryLayerContainerRef} className="relative flex-1 overflow-hidden" style={{ minWidth: 900, minHeight: 700 }}>
         {/* Map is inert when an overlay is open (focus trap) */}
         <div ref={mapContainerRef}>
           <KingdomMap />
@@ -283,6 +328,23 @@ export function RealmShell(): React.ReactElement {
           </React.Suspense>
         )}
       </div>
+
+      {/* Code Explorer overlay layer (TRD §3.8.2, step 3.1) — a direct child
+          of THIS root, a sibling AFTER the map container above (not inside
+          it): the root is the containing block for this `absolute` layer,
+          so `top-10` (40px, matching WindowTitleBar's own h-10) starts it
+          exactly below the title bar — the root's first child — without
+          ever covering it or double-offsetting. `z-[110]` outranks every
+          other Realm layer (doc viewer 10, celebration 50, notification
+          scroll 60, the Study's TerminalOverlay 100); `ConfirmDialog` is
+          top-layer, so it still always paints above regardless. */}
+      {codeOpen && (
+        <div className="co-realm-code-explorer absolute inset-x-0 top-10 bottom-0 z-[110] flex flex-col">
+          <React.Suspense fallback={null}>
+            <RealmCodeExplorer />
+          </React.Suspense>
+        </div>
+      )}
 
       {/* Screen reader live region — announces overlay transitions */}
       <div className="sr-only" aria-live="polite" aria-atomic="true">
