@@ -1,7 +1,7 @@
 appId: com.corneroffice.app
 productName: CornerOffice
 copyright: Corner Office
-artifactName: CornerOffice-${version}.${ext}
+artifactName: CornerOffice-${version}-${arch}.${ext}
 
 directories:
   output: release

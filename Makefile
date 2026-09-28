@@ -1,6 +1,10 @@
 NODE_BIN := node_modules/.bin
 REQUIRED_NODE_MAJOR := 20
 
+# ARCH=x64 or ARCH=arm64 builds a single arch; empty builds every arch in electron-builder.yml
+ARCH ?=
+ARCH_FLAG := $(if $(ARCH),--$(ARCH))
+
 .PHONY: setup dev build package-deb package-rpm package-appimage dist clean install test test-watch lint help
 .DEFAULT_GOAL := help
 
@@ -33,20 +37,20 @@ build:
 # packaging targets (all depend on build)
 # ──────────────────────────────────────────────────────────────────────────────
 package-deb: build
-	$(NODE_BIN)/electron-builder --linux deb
+	$(NODE_BIN)/electron-builder --linux deb $(ARCH_FLAG)
 
 package-rpm: build
 	@command -v rpmbuild >/dev/null 2>&1 || { echo "Error: rpmbuild not found. Install with: sudo apt-get install rpm"; exit 1; }
-	$(NODE_BIN)/electron-builder --linux rpm
+	$(NODE_BIN)/electron-builder --linux rpm $(ARCH_FLAG)
 
 package-appimage: build
-	$(NODE_BIN)/electron-builder --linux AppImage
+	$(NODE_BIN)/electron-builder --linux AppImage $(ARCH_FLAG)
 
 # dist: build available Linux package formats (skips rpm if rpmbuild not installed)
 dist: build
 	@TARGETS="deb AppImage"; \
 	if command -v rpmbuild >/dev/null 2>&1; then TARGETS="deb rpm AppImage"; fi; \
-	$(NODE_BIN)/electron-builder --linux $$TARGETS
+	$(NODE_BIN)/electron-builder --linux $$TARGETS $(ARCH_FLAG)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # clean: remove build artifacts
@@ -94,3 +98,5 @@ help:
 	@echo "  make test-watch       Run tests in watch mode"
 	@echo "  make lint             Run ESLint + TypeScript type check"
 	@echo "  make clean            Remove build artifacts"
+	@echo ""
+	@echo "  Packaging targets accept ARCH=x64 or ARCH=arm64 (default: all arches)"
