@@ -35,6 +35,20 @@ Built for solo devs, indie hackers, and small team founders who run Claude Code 
 | Linting | ESLint 10 (flat config), TypeScript 5.9 |
 | IPC validation | Zod 4 |
 
+## Install
+
+Download the package for your distro and CPU from the [latest release](https://github.com/hassounah/CornerOffice/releases/latest), then:
+
+```bash
+# Debian/Ubuntu (arm64.deb on ARM)
+sudo apt install ./CornerOffice-<version>-amd64.deb
+
+# Fedora/RHEL (aarch64.rpm on ARM)
+sudo dnf install ./CornerOffice-<version>-x86_64.rpm
+```
+
+Each release also includes a `SHA256SUMS` file (`sha256sum -c SHA256SUMS --ignore-missing`).
+
 ## Requirements
 
 - Node.js 20+
@@ -61,6 +75,9 @@ make package-deb      # .deb (Debian/Ubuntu)
 make package-rpm      # .rpm (Fedora/RHEL)
 make package-appimage # .AppImage (portable)
 make dist             # all formats
+
+# Single architecture (default builds every arch in electron-builder.yml)
+make package-deb ARCH=x64
 ```
 
 ## Testing
@@ -81,7 +98,7 @@ pnpm test:e2e
 
 ## Releases
 
-Versioning is automated with [semantic-release](https://github.com/semantic-release/semantic-release). Every push to `main` runs the Release workflow, which reads the commits since the last `v*` tag and, if any warrant a release, tags `vX.Y.Z` and publishes a GitHub release with generated notes. Nothing is committed back to `main` (it only accepts pull requests), so the git tag is the source of truth for the version, not `package.json`.
+Versioning is automated with [semantic-release](https://github.com/semantic-release/semantic-release). Every push to `main` runs the Release workflow, which reads the commits since the last `v*` tag and, if any warrant a release, tags `vX.Y.Z` and publishes a GitHub release with generated notes. Nothing is committed back to `main` (it only accepts pull requests), so the git tag is the source of truth for the version, not `package.json`. Each new release then runs the Package workflow, which builds `.deb` and `.rpm` packages for x64 and arm64 with `make package-deb package-rpm ARCH=<arch>` and attaches them to the release with a `SHA256SUMS` file. To (re)package an existing tag, run the Package workflow manually from the Actions tab.
 
 Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/) (enforced locally by a commitlint `commit-msg` hook):
 

@@ -16,6 +16,8 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     permissions:
       contents: write # push the release tag, create the GitHub release
       issues: write # comment on issues resolved by the release
@@ -54,3 +56,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm exec semantic-release
+
+      # Empty when semantic-release found nothing to release.
+      - name: Detect new release tag
+        id: tag
+        run: echo "tag=$(git tag --points-at HEAD --list 'v*' | head -n1)" >> "$GITHUB_OUTPUT"
+
+  package:
+    name: Package
+    needs: release
+    if: needs.release.outputs.tag != ''
+    permissions:
+      contents: write # attach packages to the release
+    uses: ./.github/workflows/package.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
