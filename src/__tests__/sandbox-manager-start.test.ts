@@ -7,6 +7,7 @@ import { ensure, resolveBase, identity as realIdentity } from '../main/services/
 import type { EnsureResult } from '../main/services/sandbox-worktree'
 import { containerName, LABEL, FIREWALL_INIT_TIMEOUT_MS } from '../main/services/sandbox-spec'
 import type { SandboxImageService } from '../main/services/sandbox-image'
+import { claudeConfigDetail } from '../main/types/claude-config'
 import { cleanupHarness, setup, prepareRepo, IMAGE_ID, PORT_CONFLICT_ERROR, fakeImage } from './helpers/sandbox-session-harness'
 
 afterEach(cleanupHarness)
@@ -127,6 +128,21 @@ describe('startSession', () => {
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.code).toBe('RECREATE_REQUIRED')
     expect(h.discovery.addCalls).toEqual([])
+  })
+
+  it('CLAUDE_CONFIG_INVALID (with fixed detail) when ~/.claude/settings.json is not valid JSON; nothing reaches docker and the slug is idle again', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    prepareRepo(h)
+    fs.writeFileSync(path.join(h.realHome, '.claude', 'settings.json'), '{ broken')
+    const manager = createSandboxManager(h.makeDeps())
+
+    const result = await manager.startSession(h.opts())
+
+    expect(result).toEqual({ ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: claudeConfigDetail('settings.json', 'invalid-json') })
+    expect(h.docker.calls.some((c) => ['create', 'start', 'rm'].includes(c.args[0]))).toBe(false)
+    expect(h.terminal.spawnCalls).toHaveLength(0)
+    expect((await manager.getStatus('myslug')).session.state).toBe('idle')
   })
 
   it('CONTAINER_FAILED when container ensure fails for a structural reason', async () => {

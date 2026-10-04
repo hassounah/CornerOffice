@@ -32,6 +32,7 @@ export type RecreateFailureCode = Extract<RecreateResult, { ok: false }>['code']
 export const ELIGIBILITY_COPY: Record<EligibilityReason, string> = {
   'sandbox-disabled': 'Sandbox is disabled in this build.',
   'claude-home-missing': 'Run Claude Code on this machine once first, then try again.',
+  'claude-config-invalid': 'An entry in ~/.claude is a symbolic link or the wrong type. Replace it with a real file or folder, then try again.',
   'docker-not-installed': "Docker isn't installed. Install Docker Engine 28 or newer, then press Check again.",
   'docker-daemon-down': "The Docker daemon isn't running. Start it, then press Check again.",
   'docker-no-permission': "Your user can't access Docker. Add it to the docker group and log in again.",
@@ -113,6 +114,9 @@ export const STILL_STOPPING = 'The sandbox is still stopping. Try again in a few
 /** After a recreate: the new container is ready, and Start is still the user's. */
 export const RECREATED_COPY = 'The sandbox was recreated. Press Start to begin the session.'
 const COULDNT_FINISH = `Couldn't finish. Some sandbox files may remain. ${APP_LOG_HINT}`
+// #0030: the detail main sends already names the file and the fix, so no log hint.
+const CLAUDE_CONFIG_COPY = "Your Claude Code configuration couldn't be prepared for the sandbox, so nothing was started."
+const CLAUDE_CONFIG_RECREATE_COPY = "Your Claude Code configuration couldn't be prepared for the sandbox, so it wasn't recreated. Your existing sandbox is unchanged."
 
 /** `null` means "not an error": the flow continues (`NOT_ELIGIBLE` shows the eligibility reason instead). */
 export const START_FAILURE_COPY: Record<StartFailureCode, string | null> = {
@@ -127,6 +131,7 @@ export const START_FAILURE_COPY: Record<StartFailureCode, string | null> = {
   DOCKER_UNAVAILABLE: 'Docker stopped responding. Check that the Docker daemon is running.',
   FIREWALL_FAILED: `The sandbox firewall couldn't start, so the session wasn't started. Nothing ran unprotected. Try Start again. ${APP_LOG_HINT}`,
   SPAWN_FAILED: `The sandbox started, but Claude Code couldn't be launched in it. The container was stopped. Try Start again. ${APP_LOG_HINT}`,
+  CLAUDE_CONFIG_INVALID: CLAUDE_CONFIG_COPY,
 }
 
 export const HAND_OFF_FAILURE_COPY: Record<HandOffFailureCode, string | null> = {
@@ -147,6 +152,7 @@ export const DELETE_FAILURE_COPY: Record<DeleteFailureCode, string> = {
 export const RECREATE_FAILURE_COPY: Record<RecreateFailureCode, string> = {
   SESSION_RUNNING: 'End the sandbox session first.',
   PLAN_CHANGED: 'The sandbox settings changed again. Review them before recreating.',
+  CLAUDE_CONFIG_INVALID: CLAUDE_CONFIG_RECREATE_COPY,
   DOCKER_UNAVAILABLE: 'Docker stopped responding. Check that the Docker daemon is running.',
   FAILED: COULDNT_FINISH,
 }
@@ -160,9 +166,16 @@ export const SANDBOX_UNAVAILABLE_COPY = "The sandbox isn't available right now. 
 export const PORT_CONFLICT_NO_RECREATE_COPY = "Another program is using the sandbox's channel port. Close it and try again."
 
 /** The message for a failed start, or `null` when the code isn't an error (build / recreate flows). */
-export function startFailureMessage(code: StartFailureCode, eligibilityReason?: EligibilityReason | null): string | null {
+export function startFailureMessage(code: StartFailureCode, eligibilityReason?: EligibilityReason | null, detail?: string | null): string | null {
   if (code === 'NOT_ELIGIBLE') return eligibilityReason ? ELIGIBILITY_COPY[eligibilityReason] : "Sandbox isn't available for this workspace."
-  return START_FAILURE_COPY[code]
+  const message = START_FAILURE_COPY[code]
+  return code === 'CLAUDE_CONFIG_INVALID' && message !== null && detail ? `${detail} ${message}` : message
+}
+
+/** The message for a failed recreate. `detail` is the fixed copy main built for `CLAUDE_CONFIG_INVALID`, e.g. "~/.claude/commands exists but isn't a folder." */
+export function recreateFailureMessage(code: RecreateFailureCode, detail?: string | null): string {
+  const message = RECREATE_FAILURE_COPY[code]
+  return code === 'CLAUDE_CONFIG_INVALID' && detail ? `${detail} ${message}` : message
 }
 
 // ── Chooser copy (§3.15.2, UX-C, D10) ───────────────────────────────────────

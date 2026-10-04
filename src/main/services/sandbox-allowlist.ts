@@ -86,6 +86,9 @@ export const AllowlistSchema = z.array(AllowlistEntrySchema).max(MAX_ALLOWLIST_E
 // addendum, it's added here as part of that sign-off, not before.
 export const DEFAULT_ALLOWLIST = [
   'api.anthropic.com',
+  // Claude Code's OAuth TOKEN_URL (#0030): without it the in-container
+  // token refresh is blocked and the session dies when the token expires.
+  'platform.claude.com',
   'statsig.anthropic.com',
   'sentry.io',
   'registry.npmjs.org',

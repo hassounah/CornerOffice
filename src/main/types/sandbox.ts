@@ -31,12 +31,16 @@ export interface SandboxEnvironment {
  *    Checked after the Docker reasons but before any path or mount check
  *    (Appendix C item 10) — it preempts `unsafe-path`. CornerOffice never
  *    creates either path itself.
+ *  - `claude-config-invalid` (#0030): an entry under `~/.claude` that the
+ *    sandbox mounts over is a symlink or the wrong type. Checked right after
+ *    `claude-home-missing`, with the same lstat rules Start's prepare uses.
  * The check order itself lives in `SandboxManager.getEligibility` (step 3.4),
  * not in this type.
  */
 export type EligibilityReason =
   | 'sandbox-disabled'
   | 'claude-home-missing'
+  | 'claude-config-invalid'
   | 'docker-not-installed'
   | 'docker-daemon-down'
   | 'docker-no-permission'
@@ -126,6 +130,7 @@ export type StartResult =
         | 'DOCKER_UNAVAILABLE'
         | 'FIREWALL_FAILED'
         | 'SPAWN_FAILED'
+        | 'CLAUDE_CONFIG_INVALID'
       /** Fixed copy, never raw stderr. */
       detail: string | null
     }
@@ -143,7 +148,11 @@ export interface DeletePreview {
 
 export type DeleteResult = { ok: true } | { ok: false; code: 'SESSION_RUNNING' | 'DIRTY_NOT_ACKNOWLEDGED' | 'FAILED' }
 
-export type RecreateResult = { ok: true } | { ok: false; code: 'SESSION_RUNNING' | 'PLAN_CHANGED' | 'FAILED' | 'DOCKER_UNAVAILABLE' }
+export type RecreateResult =
+  | { ok: true }
+  | { ok: false; code: 'SESSION_RUNNING' | 'PLAN_CHANGED' | 'FAILED' | 'DOCKER_UNAVAILABLE' }
+  /** `detail` is fixed copy built by `claudeConfigDetail`, never a raw path or file content. */
+  | { ok: false; code: 'CLAUDE_CONFIG_INVALID'; detail: string | null }
 
 /** `sandbox:buildImage` outcome. `detail` is fixed copy, never raw docker output. */
 export type BuildImageResult = { ok: true } | { ok: false; cancelled: boolean; detail: string | null }

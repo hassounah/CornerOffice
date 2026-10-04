@@ -69,6 +69,21 @@ describe('sandbox-paths', () => {
       expect(paths.eventsRoot).toBe(path.join(realHome, '.corner-office', 'events'))
     })
 
+    it('derives the read-only claude config paths from realHome and keeps them out of rwMountRoots (0030 §4.3)', async () => {
+      const { sandboxPaths } = await import('../main/services/sandbox-paths')
+      const realHome = path.join(path.sep, 'home', 'test')
+      const paths = sandboxPaths(realHome)
+
+      expect(paths.claudeSettings).toBe(path.join(realHome, '.claude', 'settings.json'))
+      expect(paths.claudeMd).toBe(path.join(realHome, '.claude', 'CLAUDE.md'))
+      expect(paths.claudeRoDirs).toEqual(
+        ['plugins', 'commands', 'agents', 'skills', 'hooks'].map((d) => path.join(realHome, '.claude', d)),
+      )
+      for (const p of [paths.claudeSettings, paths.claudeMd, ...paths.claudeRoDirs]) {
+        expect(paths.rwMountRoots).not.toContain(p)
+      }
+    })
+
     it('rwMountRoots is exactly claudeDir, sandboxesRoot, sandboxStateRoot and eventsRoot', async () => {
       const { sandboxPaths } = await import('../main/services/sandbox-paths')
       const paths = sandboxPaths(path.join(path.sep, 'home', 'test'))

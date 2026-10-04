@@ -10,6 +10,7 @@ import {
   READ_ONLY_PROTECTIONS_COPY,
   RECREATE_FAILURE_COPY,
   SANDBOX_UNAVAILABLE_COPY,
+  recreateFailureMessage,
 } from '../../utils/sandbox-copy'
 
 // ---------------------------------------------------------------------------
@@ -125,7 +126,7 @@ export function RecreateDialog({ slug, plan: initialPlan, newPort = false, skin 
         }
         return
       }
-      setError(RECREATE_FAILURE_COPY[result.code])
+      setError(recreateFailureMessage(result.code, 'detail' in result ? result.detail : null))
     } catch {
       setError(SANDBOX_UNAVAILABLE_COPY)
     } finally {

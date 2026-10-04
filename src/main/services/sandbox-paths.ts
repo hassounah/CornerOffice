@@ -31,6 +31,19 @@ export interface SandboxPaths {
   claudeDir: string
   /** `<realHome>/.claude.json` — single-file read-write bind mount. */
   claudeJson: string
+  /** `<realHome>/.claude/settings.json` — host original; a sanitized per-sandbox copy is mounted over it read-only. */
+  claudeSettings: string
+  /** `<realHome>/.claude/CLAUDE.md` — read-only mount. */
+  claudeMd: string
+  /** `<realHome>/.claude/settings.local.json` — read-only mount, so the agent can't plant one the host may load. */
+  claudeSettingsLocal: string
+  /** `<realHome>/.claude/{plugins,commands,agents,skills,hooks}` — read-only mounts layered over `claudeDir`. */
+  claudeRoDirs: readonly string[]
+  /**
+   * `<realHome>/.claude/{shell-snapshots,session-env,backups,security,ide}` — host-executed state the
+   * in-container Claude Code also writes, so each is shadowed by a per-sandbox read-write dir (#0030 C1).
+   */
+  claudeShadowDirs: readonly string[]
   /** `<realHome>/.corner-office/events` — read-write mount source for host/sandbox event attribution. */
   eventsRoot: string
   /**
@@ -66,6 +79,11 @@ export function sandboxPaths(realHome: string): SandboxPaths {
   const sandboxStateRoot = path.join(realHome, '.corner-office', 'sandbox')
   const claudeDir = path.join(realHome, '.claude')
   const claudeJson = path.join(realHome, '.claude.json')
+  const claudeSettings = path.join(claudeDir, 'settings.json')
+  const claudeMd = path.join(claudeDir, 'CLAUDE.md')
+  const claudeSettingsLocal = path.join(claudeDir, 'settings.local.json')
+  const claudeRoDirs = ['plugins', 'commands', 'agents', 'skills', 'hooks'].map((d) => path.join(claudeDir, d))
+  const claudeShadowDirs = ['shell-snapshots', 'session-env', 'backups', 'security', 'ide'].map((d) => path.join(claudeDir, d))
   const eventsRoot = path.join(realHome, '.corner-office', 'events')
 
   return {
@@ -73,6 +91,11 @@ export function sandboxPaths(realHome: string): SandboxPaths {
     sandboxStateRoot,
     claudeDir,
     claudeJson,
+    claudeSettings,
+    claudeMd,
+    claudeSettingsLocal,
+    claudeRoDirs,
+    claudeShadowDirs,
     eventsRoot,
     rwMountRoots: [claudeDir, sandboxesRoot, sandboxStateRoot, eventsRoot],
   }

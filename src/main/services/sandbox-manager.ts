@@ -15,6 +15,9 @@ import {
   worktreePath,
   worktreePin,
   cardDir,
+  settingsOverlayPath,
+  sandboxClaudeJsonPath,
+  claudeShadowSource,
   containerName,
   versionArgv,
   infoOsArgv,
@@ -41,6 +44,9 @@ import {
   psArgv,
 } from './sandbox-spec'
 import { planMounts } from './sandbox-spec'
+import { prepareClaudeConfig, seedClaudeJson, checkClaudeConfigSources } from './sandbox-claude-config'
+import type { ClaudeConfigResult } from './sandbox-claude-config'
+import { claudeConfigDetail } from '../types/claude-config'
 import type { PlanMountsFacts, DocsRootFacts, OldMount, ParsedInspect, PermMode } from './sandbox-spec'
 import { effectiveAllowlist } from './sandbox-allowlist'
 import { createSandboxNetwork } from './sandbox-network'
@@ -205,6 +211,7 @@ export type EnsureContainerResult =
   | { ok: false; code: 'RECREATE_REQUIRED'; plan: RecreatePlan }
   | { ok: false; code: 'CONTAINER_FAILED' }
   | { ok: false; code: 'DOCKER_UNAVAILABLE' }
+  | { ok: false; code: 'CLAUDE_CONFIG_INVALID'; detail: string | null }
 
 export interface SandboxManagerService extends SandboxSessionDelegate {
   getEnvironment(opts: { refresh: boolean }): Promise<SandboxEnvironment>
@@ -677,13 +684,44 @@ async function buildMountPlanContext(
  * already exists, so this is safe to call on every `ensureContainer`/
  * `recreate`, not just the first one.
  */
-function precreateMountTargets(paths: SandboxPaths, repo: string, wt: string, slug: string): void {
+function precreateMountTargets(paths: SandboxPaths, repo: string, wt: string, slug: string): ClaudeConfigResult {
   fs.mkdirSync(path.join(wt, '.rix'), { recursive: true })
   fs.mkdirSync(cardDir(paths, slug), { recursive: true, mode: 0o700 })
   fs.mkdirSync(path.join(repo, '.git', 'hooks'), { recursive: true })
   fs.mkdirSync(path.join(repo, '.git', 'modules'), { recursive: true }) // M2: always
   fs.mkdirSync(path.join(paths.eventsRoot, slug), { recursive: true })
   fs.mkdirSync(path.join(paths.claudeDir, 'channels'), { recursive: true, mode: 0o700 }) // SEC-M3
+  // #0030: the read-only Claude config sources, the settings copy and the first `claude.json` seed.
+  return prepareClaudeConfig(paths, slug)
+}
+
+/**
+ * #0030 §4.5: the sources `prepareClaudeConfig` creates. Eligibility runs the real `planMounts`
+ * only once they all exist (a plain `existsSync`, no side effects); before that, such as right
+ * after an upgrade, the advisory `fixedMountSourcesSafe` check stands in.
+ */
+function claudeConfigSourcesExist(paths: SandboxPaths, slug: string): boolean {
+  return [
+    settingsOverlayPath(paths, slug),
+    sandboxClaudeJsonPath(paths, slug),
+    paths.claudeSettings,
+    paths.claudeMd,
+    paths.claudeSettingsLocal,
+    ...paths.claudeRoDirs,
+    ...paths.claudeShadowDirs,
+    ...paths.claudeShadowDirs.map((d) => claudeShadowSource(paths, slug, d)),
+  ].every((p) => fs.existsSync(p))
+}
+
+/** Delete's teardown of the per-slug Claude config files and shadow dirs (#0030 D3, C1). */
+function clearClaudeConfigFiles(paths: SandboxPaths, slug: string): void {
+  fs.rmSync(settingsOverlayPath(paths, slug), { force: true })
+  fs.rmSync(sandboxClaudeJsonPath(paths, slug), { force: true })
+  fs.rmSync(path.dirname(claudeShadowSource(paths, slug, paths.claudeShadowDirs[0])), { recursive: true, force: true })
+}
+
+function configInvalid(result: Extract<ClaudeConfigResult, { ok: false }>): { ok: false; code: 'CLAUDE_CONFIG_INVALID'; detail: string } {
+  return { ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: claudeConfigDetail(result.label, result.problem) }
 }
 
 /** `docker inspect`'s `.HostConfig.PortBindings` keys look like `"20123/tcp"`. `null` when absent or unparseable. */
@@ -929,6 +967,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     // host-environment precondition, unrelated to any specific workspace.
     const paths = sandboxPaths(realHome)
     if (!claudeHomeOk(paths)) return { ok: false, reason: 'claude-home-missing' }
+    // #0030: the same lstat checks Start's prepare runs, so a symlinked or wrong-type ~/.claude entry shows here, not at Start.
+    if (!checkClaudeConfigSources(paths).ok) return { ok: false, reason: 'claude-config-invalid' }
 
     // 4. repo-unsafe.
     if (workspace.repoRootStatus !== 'ok') return { ok: false, reason: 'repo-unsafe' }
@@ -962,7 +1002,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const wtExists = fs.existsSync(wt)
     let mountResult: ReturnType<typeof planMounts> | null = null
 
-    if (wtExists) {
+    if (wtExists && claudeConfigSourcesExist(paths, slug)) {
       mountResult = planMounts(mountFacts)
       if (!mountResult.ok && mountResult.reason === 'unsafe-path') return { ok: false, reason: 'unsafe-path' }
     } else if (!fixedMountSourcesSafe({ home: realHome, repo, paths, indexExists, hooksPathInsideGit })) {
@@ -1078,7 +1118,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const paths = sandboxPaths(realHome)
     const wt = worktreePath(paths, slug)
 
-    precreateMountTargets(paths, repo, wt, slug)
+    const prepared = precreateMountTargets(paths, repo, wt, slug)
+    if (!prepared.ok) return configInvalid(prepared)
 
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
     const baseResult = await worktree.resolveBase(git, repoCtx)
@@ -1118,6 +1159,10 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
           },
         }
       }
+
+      // #0030 D6: a new container means fresh state, so re-seed `claude.json` from the host. Never on reuse.
+      const seeded = seedClaudeJson(paths, slug)
+      if (!seeded.ok) return configInvalid(seeded)
 
       try {
         await docker.run(createArgv({ c, slug, uid, gid, port, home: realHome, base, specHash: hash, mounts: mountResult.mounts, workTree: wt }), { timeoutMs: CREATE_TIMEOUT_MS })
@@ -1184,7 +1229,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const paths = sandboxPaths(realHome)
     const wt = worktreePath(paths, slug)
 
-    precreateMountTargets(paths, repo, wt, slug)
+    const prepared = precreateMountTargets(paths, repo, wt, slug)
+    if (!prepared.ok) return configInvalid(prepared)
 
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
     const baseResult = await worktree.resolveBase(git, repoCtx)
@@ -1241,6 +1287,10 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const containerExists = existence.state === 'present'
 
     const finalHash = finalPort === port ? hash : specHash({ plan: mountResult.mounts, port: finalPort, uid, gid, home: realHome, base, imageId })
+
+    // #0030 D6: after the hash check (it can't cause PLAN_CHANGED) and before any rm/create.
+    const seeded = seedClaudeJson(paths, slug)
+    if (!seeded.ok) return configInvalid(seeded)
 
     try {
       if (containerExists) await docker.run(rmArgv(c))
@@ -1320,6 +1370,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
     discovery.removeSandboxSource(slug)
     clearCardDir(paths, slug)
+    clearClaudeConfigFiles(paths, slug)
     recreatePendingSlugs.delete(slug)
     recreatePlans.delete(slug)
     rejectedCardSlugs.delete(slug)
@@ -1347,11 +1398,11 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
    *  (B-M1): always leaves the session state idle again; `removeSource`
    *  distinguishes a step-6-or-later failure (source was added, must be
    *  removed) from an earlier one (source was never added). */
-  function failPreparing(slug: string, code: StartFailureCode, removeSource: boolean): StartResult {
+  function failPreparing(slug: string, code: StartFailureCode, removeSource: boolean, detail: string | null = null): StartResult {
     log.warn(`[sandbox-manager] start failed for ${slug}: ${code}`)
     sessionStates.delete(slug)
     if (removeSource) discovery.removeSandboxSource(slug)
-    return { ok: false, code, detail: null }
+    return { ok: false, code, detail }
   }
 
   /** What `prepareSession` has done so far, so `startSessionOnce` can undo
@@ -1431,6 +1482,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
         return { ok: false, code: 'RECREATE_REQUIRED', detail: null }
       }
       if (containerResult.code === 'DOCKER_UNAVAILABLE') return failPreparing(slug, 'DOCKER_UNAVAILABLE', false)
+      if (containerResult.code === 'CLAUDE_CONFIG_INVALID') return failPreparing(slug, 'CLAUDE_CONFIG_INVALID', false, containerResult.detail)
       return failPreparing(slug, 'CONTAINER_FAILED', false)
     }
 
