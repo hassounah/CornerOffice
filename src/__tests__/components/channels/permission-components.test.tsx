@@ -9,12 +9,13 @@ import type { ChannelSession } from '@main/types/channels'
 
 // Mock PermissionRequestItem — dev-2 implements Step 10
 vi.mock('../../../renderer/components/channels/PermissionRequestItem', () => ({
-  PermissionRequestItem: ({ request, isActive, onVerdict }: {
+  PermissionRequestItem: ({ request, isActive, onVerdict, sandboxWorkspace }: {
     request: PermissionRequest
     isActive: boolean
     onVerdict: (behavior: 'allow' | 'deny') => void
+    sandboxWorkspace?: string
   }) => (
-    <div data-testid="permission-item" data-request-id={request.requestId} data-active={String(isActive)}>
+    <div data-testid="permission-item" data-request-id={request.requestId} data-active={String(isActive)} data-sandbox={sandboxWorkspace}>
       <span>{request.toolName}</span>
       <button onClick={() => onVerdict('allow')}>Allow</button>
       <button onClick={() => onVerdict('deny')}>Deny</button>
@@ -297,5 +298,40 @@ describe('PermissionButton', () => {
 
     const { container } = render(<PermissionButton workspaceSlug="unknown-ws" />)
     expect(container.firstChild).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Sandbox provenance (#0029 step 5.10, TRD §3.17)
+// ---------------------------------------------------------------------------
+
+describe('permission prompts — sandbox provenance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetMocks()
+  })
+
+  it('PermissionScroll marks a request from a sandbox session, and not one from a host session in the same workspace', () => {
+    mockSessions.push(makeSession({ shortId: 'sess-sb', sandboxSlug: 'my-ws' }), makeSession({ shortId: 'sess-host' }))
+    mockQueues['sess-sb'] = [makeRequest({ shortId: 'sess-sb', requestId: 'aaaaa', receivedAt: 1 })]
+    mockQueues['sess-host'] = [makeRequest({ shortId: 'sess-host', requestId: 'bbbbb', receivedAt: 2 })]
+
+    render(<PermissionScroll workspaceSlug="my-ws" />)
+
+    const items = screen.getAllByTestId('permission-item')
+    expect(items.find((el) => el.dataset.requestId === 'aaaaa')?.dataset.sandbox).toBe('my-ws')
+    expect(items.find((el) => el.dataset.requestId === 'bbbbb')?.dataset.sandbox).toBeUndefined()
+  })
+
+  it('PermissionButton marks a sandbox request the same way', () => {
+    mockSessions.push(makeSession({ shortId: 'sess-sb', sandboxSlug: 'my-ws' }), makeSession({ shortId: 'sess-host' }))
+    mockQueues['sess-sb'] = [makeRequest({ shortId: 'sess-sb', requestId: 'aaaaa', receivedAt: 1 })]
+    mockQueues['sess-host'] = [makeRequest({ shortId: 'sess-host', requestId: 'bbbbb', receivedAt: 2 })]
+
+    render(<PermissionButton workspaceSlug="my-ws" />) // auto-expands when requests are pending
+
+    const items = screen.getAllByTestId('permission-item')
+    expect(items.find((el) => el.dataset.requestId === 'aaaaa')?.dataset.sandbox).toBe('my-ws')
+    expect(items.find((el) => el.dataset.requestId === 'bbbbb')?.dataset.sandbox).toBeUndefined()
   })
 })

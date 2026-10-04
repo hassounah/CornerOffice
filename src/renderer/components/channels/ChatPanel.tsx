@@ -5,6 +5,7 @@ import { useWorkspaceStore } from '../../stores/workspace-store'
 import { PulseDot } from '../shared/PulseDot'
 import { SessionSelector } from './SessionSelector'
 import { ChatMessage } from './ChatMessage'
+import { SandboxTag } from '../sandbox/SandboxTag'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -240,12 +241,17 @@ export function ChatPanel({ workspaceSlug, className = '' }: ChatPanelProps): Re
                   <span className="ml-1 text-stone-500"> in {reconnectSecsLeft}s</span>
                 )}
               </span>
+              {activeSession.sandboxSlug !== undefined && <SandboxTag workspace={workspaceSlug} />}
               {activeSession.pipelineStage && (
                 <span className="rounded bg-stone-700/70 px-1.5 py-0.5 text-[10px] font-mono text-stone-300 uppercase tracking-wide">
                   {activeSession.pipelineStage}
                 </span>
               )}
             </div>
+          )}
+
+          {activeSession?.channelBlocked === 'plugin-outdated' && (
+            <p className="text-xs text-amber-400">Channel link needs a newer corner-office plugin.</p>
           )}
         </div>
       )}
@@ -292,7 +298,7 @@ export function ChatPanel({ workspaceSlug, className = '' }: ChatPanelProps): Re
                 </div>
               ) : (
                 currentMessages.map((msg) => (
-                  <ChatMessage key={msg.id} message={msg} />
+                  <ChatMessage key={msg.id} message={msg} sandboxWorkspace={activeSession?.sandboxSlug !== undefined ? workspaceSlug : undefined} />
                 ))
               )}
             </div>

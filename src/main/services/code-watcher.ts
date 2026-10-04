@@ -2,13 +2,15 @@ import fs from 'fs'
 import path from 'path'
 import chokidar, { FSWatcher } from 'chokidar'
 import { toAbs, hasGitSegment } from './repo-path'
+import type { RepoTarget } from './git-service'
 import type { CodeChangedPayload, CodeWatchResponse } from '../types/code'
 
 // ---------------------------------------------------------------------------
 // code-watcher.ts — scoped live updates (TRD §3.3.6, H-B1, M8, H-B2, B-L2,
 // FR-27; Sec L-8; Be M4).
 //
-// There is one active watch app-wide, identified by { slug, gen }. `gen` is
+// There is one active watch app-wide, identified by { slug, root, gen } (root
+// being 'workspace' or 'sandbox', #0029). `gen` is
 // the renderer store's session generation (§3.6.1): it only ever increases,
 // across every open/close/slug change, so it is a safe total order for
 // deciding whether a `code:watch`/`code:unwatch` call is stale.
@@ -36,10 +38,10 @@ export interface CodeWatcherGitSnapshot {
 }
 
 export interface CodeWatcherDeps {
-  /** Resolve a workspace slug to its realpath'd repo root. May throw
-   *  denied()/notFound() (repo-path.ts) — callers propagate that to
+  /** Resolve a workspace slug and root kind to its realpath'd target. May
+   *  throw denied()/notFound() (repo-path.ts) — callers propagate that to
    *  wrapCodeHandler. */
-  resolveRepoRoot: (slug: string) => Promise<string>
+  resolveRoot: (slug: string, root: CodeRootKind) => Promise<RepoTarget>
   /** The git-service cache entry for `root`, if a probe has populated it.
    *  undefined (not yet probed) is treated the same as gitDirValid: false —
    *  git-state paths are simply not added this time. */
@@ -60,8 +62,11 @@ export interface CodeWatcherDeps {
   platform?: NodeJS.Platform
 }
 
+export type CodeRootKind = 'workspace' | 'sandbox'
+
 export interface CodeWatchParams {
   workspaceSlug: string
+  root: CodeRootKind
   gen: number
   openFile: string | null
   expandedDirs: string[]
@@ -69,13 +74,15 @@ export interface CodeWatchParams {
 
 export interface CodeWatcher {
   watch(params: CodeWatchParams): Promise<CodeWatchResponse>
-  unwatch(params: { workspaceSlug: string; gen: number }): Promise<void>
+  unwatch(params: { workspaceSlug: string; root: CodeRootKind; gen: number }): Promise<void>
   /** did-start-navigation / render-process-gone / will-quit (wired in 1.20). */
   closeAll(): Promise<void>
 }
 
 interface ActiveWatch {
   slug: string
+  /** Which tree is watched. Together with `slug` and `gen` it is the watch's identity. */
+  rootKind: CodeRootKind
   gen: number
   root: string
   watcher: FSWatcher
@@ -378,17 +385,17 @@ export function createCodeWatcher(deps: CodeWatcherDeps): CodeWatcher {
   }
 
   async function doWatch(params: CodeWatchParams): Promise<CodeWatchResponse> {
-    const { workspaceSlug, gen, openFile, expandedDirs } = params
+    const { workspaceSlug, root: rootKind, gen, openFile, expandedDirs } = params
 
     if (active && gen < active.gen) {
       return { watching: totalWatchedDirCount(active), limited: active.limited }
     }
 
-    if (active && active.slug === workspaceSlug && active.gen === gen) {
+    if (active && active.slug === workspaceSlug && active.rootKind === rootKind && active.gen === gen) {
       return applyWatchSet(active, openFile, expandedDirs)
     }
 
-    // A higher gen, or the same/higher gen but a different slug: replace.
+    // A higher gen, or the same/higher gen but a different slug or root: replace.
     const previousRoot = active?.root ?? null
     if (active) {
       const stale = active
@@ -399,7 +406,7 @@ export function createCodeWatcher(deps: CodeWatcherDeps): CodeWatcher {
       active = null
     }
 
-    const root = await deps.resolveRepoRoot(workspaceSlug) // may throw denied()/notFound()
+    const { root } = await deps.resolveRoot(workspaceSlug, rootKind) // may throw denied()/notFound()
     if (previousRoot) deps.abortRoot(previousRoot)
     // A new watch generation is exactly "a deliberate reopen" (§D-15) — the
     // one place a prior git-unsafe short-circuit for this root is lifted.
@@ -416,6 +423,7 @@ export function createCodeWatcher(deps: CodeWatcherDeps): CodeWatcher {
 
     active = {
       slug: workspaceSlug,
+      rootKind,
       gen,
       root,
       watcher,
@@ -441,9 +449,9 @@ export function createCodeWatcher(deps: CodeWatcherDeps): CodeWatcher {
     deps.fileWatcher.setExternalWatchCount(EXTERNAL_WATCH_SOURCE, 0)
   }
 
-  function doUnwatch(params: { workspaceSlug: string; gen: number }): void {
+  function doUnwatch(params: { workspaceSlug: string; root: CodeRootKind; gen: number }): void {
     if (!active) return
-    if (active.slug !== params.workspaceSlug || active.gen !== params.gen) return // stale — no-op (§3.3.6)
+    if (active.slug !== params.workspaceSlug || active.rootKind !== params.root || active.gen !== params.gen) return // stale — no-op (§3.3.6)
     teardown(active)
     active = null
   }
@@ -458,7 +466,7 @@ export function createCodeWatcher(deps: CodeWatcherDeps): CodeWatcher {
     return enqueue(() => doWatch(params))
   }
 
-  function unwatch(params: { workspaceSlug: string; gen: number }): Promise<void> {
+  function unwatch(params: { workspaceSlug: string; root: CodeRootKind; gen: number }): Promise<void> {
     return enqueue(() => Promise.resolve(doUnwatch(params)))
   }
 

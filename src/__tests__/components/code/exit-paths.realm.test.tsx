@@ -152,7 +152,7 @@ vi.mock('../../../renderer/stores/homunculus-store', () => ({
   useHomunculusStore: Object.assign(vi.fn(), { getState: vi.fn(() => ({ initListeners: vi.fn(() => vi.fn()) })) }),
 }))
 vi.mock('../../../renderer/stores/notification-store', () => ({
-  useNotificationStore: Object.assign(vi.fn(), { getState: vi.fn(() => ({ initListeners: vi.fn(() => vi.fn()) })) }),
+  useNotificationStore: Object.assign(vi.fn(), { getState: vi.fn(() => ({ initListeners: vi.fn(() => vi.fn()) })), subscribe: vi.fn(() => vi.fn()) }),
 }))
 vi.mock('../../../renderer/stores/channels-store', () => ({
   useChannelsStore: Object.assign(vi.fn(), { getState: vi.fn(() => ({ initListeners: vi.fn(() => vi.fn()) })) }),

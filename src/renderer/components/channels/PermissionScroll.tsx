@@ -48,6 +48,9 @@ export function PermissionScroll({ workspaceSlug }: PermissionScrollProps): Reac
       .map((s) => s.shortId)
   }, [sessions, workspace])
 
+  // Requests from a sandbox session say so; the session list (from main) is the source of truth.
+  const sandboxShortIds = useMemo(() => new Set(sessions.filter((s) => s.sandboxSlug !== undefined).map((s) => s.shortId)), [sessions])
+
   // Collect all requests across matching sessions, sorted by receivedAt ascending
   const allRequests = useMemo(() => {
     return matchingShortIds
@@ -116,6 +119,7 @@ export function PermissionScroll({ workspaceSlug }: PermissionScrollProps): Reac
               <div key={`${req.shortId}:${req.requestId}`} ref={index === 0 ? firstItemRef : undefined}>
                 <PermissionRequestItem
                   request={req}
+                  sandboxWorkspace={sandboxShortIds.has(req.shortId) ? workspaceSlug : undefined}
                   isActive={index === 0}
                   onVerdict={(behavior: 'allow' | 'deny') => void sendVerdict(req.shortId, req.requestId, behavior)}
                 />

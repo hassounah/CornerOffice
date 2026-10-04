@@ -5,6 +5,7 @@ import { ipcMain, Menu, clipboard, shell } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { wrapHandler, notReadyStub } from './wrap-handler'
 import { wrapCodeHandler } from './wrap-code-handler'
+import type { ZodSchema } from 'zod'
 import type { IsAppOrigin } from './app-origin'
 import {
   MAX_FILE_SIZE,
@@ -26,6 +27,7 @@ import {
   PLUGIN_IPC,
   SHELL_IPC,
   CODE_CHANNELS,
+  SANDBOX_CHANNELS,
 } from './channels'
 import {
   WorkspaceGetDetailSchema,
@@ -57,8 +59,22 @@ import {
   CodeGetFileIndexSchema,
   CodeWatchSchema,
   CodeUnwatchSchema,
+  SandboxGetEnvironmentSchema,
+  SandboxGetStatusSchema,
+  SandboxGetSummariesSchema,
+  SandboxStartSessionSchema,
+  SandboxHandOffSchema,
+  SandboxPreviewDeleteSchema,
+  SandboxDeleteSchema,
+  SandboxRecreateSchema,
+  SandboxBuildImageSchema,
+  SandboxCancelBuildSchema,
+  SandboxGetSettingsSchema,
+  SandboxUpdateSettingsSchema,
+  SandboxGetBlockedSchema,
 } from './schemas'
 import type { DocsListTreeInput, DocsReadFileInput, DocsWriteFileInput } from './schemas'
+import type { SandboxManagerService } from '../services/sandbox-manager'
 import type { TerminalManagerService } from '../services/terminal-manager'
 import type { IpcResponse } from '../types/ipc'
 import { IPC_ERROR_CODES } from '../types/ipc'
@@ -286,6 +302,26 @@ export function registerHandlers(codeHandlerDeps?: {
     CODE_CHANNELS.UNWATCH,
     wrapCodeHandler(notReadyStub(), CodeUnwatchSchema, codeWrapDeps) as HandlerFn,
   )
+  // Sandbox sessions (#0029): same rule as code:* — wrapCodeHandler even for the stub, so the
+  // sender/origin check survives the swap and only the main window can drive Docker.
+  const sandboxStubs: readonly (readonly [string, ZodSchema])[] = [
+    [SANDBOX_CHANNELS.GET_ENVIRONMENT, SandboxGetEnvironmentSchema],
+    [SANDBOX_CHANNELS.GET_STATUS, SandboxGetStatusSchema],
+    [SANDBOX_CHANNELS.GET_SUMMARIES, SandboxGetSummariesSchema],
+    [SANDBOX_CHANNELS.START_SESSION, SandboxStartSessionSchema],
+    [SANDBOX_CHANNELS.HAND_OFF, SandboxHandOffSchema],
+    [SANDBOX_CHANNELS.PREVIEW_DELETE, SandboxPreviewDeleteSchema],
+    [SANDBOX_CHANNELS.DELETE, SandboxDeleteSchema],
+    [SANDBOX_CHANNELS.RECREATE, SandboxRecreateSchema],
+    [SANDBOX_CHANNELS.BUILD_IMAGE, SandboxBuildImageSchema],
+    [SANDBOX_CHANNELS.CANCEL_BUILD, SandboxCancelBuildSchema],
+    [SANDBOX_CHANNELS.GET_SETTINGS, SandboxGetSettingsSchema],
+    [SANDBOX_CHANNELS.UPDATE_SETTINGS, SandboxUpdateSettingsSchema],
+    [SANDBOX_CHANNELS.GET_BLOCKED, SandboxGetBlockedSchema],
+  ]
+  for (const [channel, schema] of sandboxStubs) {
+    ipcMain.handle(channel, wrapCodeHandler(notReadyStub(), schema, codeWrapDeps) as HandlerFn)
+  }
 }
 
 /**
@@ -324,6 +360,8 @@ export interface AppState {
   channelConnection: ChannelConnectionService | null
   // Terminal integration
   terminalManager: TerminalManagerService | null
+  // Sandbox sessions (#0029)
+  sandboxManager: SandboxManagerService | null
 }
 
 

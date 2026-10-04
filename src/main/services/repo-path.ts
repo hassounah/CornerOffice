@@ -3,6 +3,10 @@ import os from 'os'
 import path from 'path'
 import type { AppState } from '../ipc/handlers'
 import { denied, notFound } from './safe-fs'
+import { SANDBOX_SLUG_RE, worktreePin } from './sandbox-spec'
+import { resolveRealHome, sandboxPaths } from './sandbox-paths'
+import type { SandboxPaths } from './sandbox-paths'
+import type { RepoTarget } from './git-service'
 
 // ---------------------------------------------------------------------------
 // repo-path.ts — root resolution and the relative-path contract for the code
@@ -82,6 +86,80 @@ export async function resolveRepoRoot(slug: string, appState: AppState): Promise
   if (!(await fs.promises.stat(real)).isDirectory()) throw notFound()
   if (isUnsafeRoot(real)) throw denied()
   return real
+}
+
+/**
+ * §3.10: resolves a workspace slug to the tree the Code Explorer should read.
+ * `workspace` is exactly `resolveRepoRoot`. `sandbox` is the workspace's
+ * sandbox worktree, which an agent can write to while a session runs, so
+ * nothing about its structure is trusted: the slug must be well-formed and a
+ * known workspace; the realpath must lie under the realpath of
+ * SANDBOXES_ROOT and be a directory (no symlinked worktree can point
+ * elsewhere); it must not be an unsafe root; and `.git` must be a regular
+ * file (the linked-worktree pointer), never a symlink or a directory. The
+ * result carries the pin (C2) every git call under the sandboxes root needs.
+ * Throws `denied()` / `notFound()`.
+ */
+export async function resolveCodeRoot(
+  slug: string,
+  root: 'workspace' | 'sandbox',
+  appState: AppState,
+  paths: SandboxPaths = sandboxPaths(resolveRealHome()),
+): Promise<RepoTarget> {
+  if (root === 'workspace') return { root: await resolveRepoRoot(slug, appState) }
+
+  const ws = appState.workspaces.get(slug)
+  if (!ws || !SANDBOX_SLUG_RE.test(slug)) throw denied()
+
+  let real: string
+  let sandboxesReal: string
+  let repoReal: string
+  try {
+    real = await fs.promises.realpath(path.join(paths.sandboxesRoot, slug))
+    sandboxesReal = await fs.promises.realpath(paths.sandboxesRoot)
+    repoReal = await fs.promises.realpath(ws.path)
+  } catch {
+    throw notFound()
+  }
+  // Exactly <sandboxes root>/<slug>: a symlink to another worktree (sandboxes/a -> sandboxes/b) stays under the
+  // root but is not this workspace's tree.
+  if (real !== path.join(sandboxesReal, slug)) throw denied()
+  if (!(await fs.promises.stat(real)).isDirectory()) throw denied()
+  if (isUnsafeRoot(real)) throw denied()
+
+  let gitEntry: fs.Stats
+  try {
+    gitEntry = await fs.promises.lstat(path.join(real, '.git'))
+  } catch {
+    throw denied()
+  }
+  if (!gitEntry.isFile()) throw denied() // a symlink or a directory is never the worktree pointer
+
+  return { root: real, pin: { ...worktreePin(repoReal, slug, paths), workTree: real } }
+}
+
+/**
+ * The realpath of every existing sandbox worktree, for git-runner's binary
+ * check (M4): a `git` that resolves inside any of them is refused. Fresh on
+ * every call, never cached.
+ */
+export function listSandboxWorktreeRoots(paths: SandboxPaths = sandboxPaths(resolveRealHome())): string[] {
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(paths.sandboxesRoot)
+  } catch {
+    return []
+  }
+  const roots: string[] = []
+  for (const entry of entries) {
+    if (!SANDBOX_SLUG_RE.test(entry)) continue
+    try {
+      roots.push(fs.realpathSync(path.join(paths.sandboxesRoot, entry)))
+    } catch {
+      // vanished between readdir and realpath
+    }
+  }
+  return roots
 }
 
 /**

@@ -43,6 +43,8 @@ vi.mock('chokidar', () => ({
   },
 }))
 
+import chokidar from 'chokidar'
+
 vi.mock('fs')
 vi.mock('os', () => ({
   default: { homedir: () => '/home/test' },
@@ -328,6 +330,21 @@ describe('FileWatcherService', () => {
       eventWatcher.emit('change', '/home/test/.corner-office/events/my-ws.jsonl')
       await new Promise((r) => setTimeout(r, 150))
       expect(callbacks.onEventStreamChange).toHaveBeenCalledWith('/home/test/.corner-office/events/my-ws.jsonl')
+    })
+  })
+
+  describe('followSymlinks (H2)', () => {
+    it('every chokidar.watch call disables followSymlinks, including the events watcher', () => {
+      const callbacks = makeCallbacks()
+      const svc = new FileWatcherService(callbacks)
+      svc.startGlobal() // homunculus + event stream watchers
+      svc.addWorkspace('/ws/my-project', null) // rix + docs + readme watchers
+
+      const calls = vi.mocked(chokidar.watch).mock.calls
+      expect(calls.length).toBeGreaterThanOrEqual(5)
+      for (const call of calls) {
+        expect(call[1]).toMatchObject({ followSymlinks: false })
+      }
     })
   })
 

@@ -3,6 +3,7 @@ import path from 'path'
 import os from 'os'
 import fg from 'fast-glob'
 import type { WorkspaceDiscoveryResult } from '../types/workspace'
+import { resolveRealHome, sandboxPaths } from './sandbox-paths'
 
 const DEFAULT_EXCLUSIONS = [
   'node_modules',
@@ -65,6 +66,19 @@ export class WorkspaceDiscoveryService {
     // Build ignore patterns for fast-glob (glob syntax)
     const ignorePatterns = allExclusions.map((exc) => `**/${exc}/**`)
 
+    // Explicit SANDBOXES_ROOT exclusion (TRD §3.11), path-anchored rather
+    // than a bare-name pattern like the ones above — a `**/sandboxes/**`
+    // pattern could also hide an unrelated, legitimately named workspace.
+    // Defense in depth on top of fast-glob's dot:false default (SANDBOXES_ROOT
+    // sits under the dot directory ~/.corner-office, so it's already skipped
+    // today) — this exclusion still applies if `dot` is ever forced true.
+    try {
+      const { sandboxesRoot } = sandboxPaths(resolveRealHome())
+      ignorePatterns.push(`${fg.escapePath(sandboxesRoot)}/**`)
+    } catch (err) {
+      log.warn('[WorkspaceDiscovery] Could not resolve the sandboxes root for exclusion:', err)
+    }
+
     let timedOut = false
     const workspaces: WorkspaceDiscoveryResult[] = []
 
@@ -98,7 +112,12 @@ export class WorkspaceDiscoveryService {
     return { workspaces, timedOut }
   }
 
-  private async _runGlob(home: string, ignorePatterns: string[]): Promise<string[]> {
+  /**
+   * `dot` defaults to fast-glob's own default (false) in production; a test
+   * can force it true to prove the SANDBOXES_ROOT ignore pattern above
+   * excludes it on its own, independent of the dot:false default (§3.11).
+   */
+  private async _runGlob(home: string, ignorePatterns: string[], dot = false): Promise<string[]> {
     // Search for .rix directories; followSymbolicLinks: false per spec
     const pattern = `${fg.escapePath(home)}/**/.rix`
     return fg(pattern, {
@@ -107,6 +126,7 @@ export class WorkspaceDiscoveryService {
       ignore: ignorePatterns,
       suppressErrors: true,
       absolute: true,
+      dot,
     })
   }
 }

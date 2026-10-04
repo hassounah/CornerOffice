@@ -5,6 +5,8 @@ import path from 'path'
 import { buildCodeHandlers } from '../main/ipc/code-handlers'
 import type { BuildCodeHandlersDeps } from '../main/ipc/code-handlers'
 import { CODE_CHANNELS } from '../main/ipc/channels'
+import { sandboxPaths } from '../main/services/sandbox-paths'
+import type { SandboxManagerService } from '../main/services/sandbox-manager'
 import { IPC_ERROR_CODES } from '../main/types/ipc'
 import {
   makeEvent,
@@ -30,6 +32,9 @@ import {
 
 let tmpDir: string
 let root: string
+
+/** makeWorkspace's default docs root; every call passes it to git-runner's binary check alongside the workspace path. */
+const DOCS_ROOT = '/tmp/does-not-matter/docs'
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'co-code-ipc-test-'))
@@ -85,7 +90,7 @@ describe('happy path', () => {
     const { handlers, repoService } = build()
     const res = await handlers[CODE_CHANNELS.GET_STATUS](makeEvent(mainFrame), { workspaceSlug: 'ws', baseline: 'head' })
     expect(res.error).toBeNull()
-    expect(repoService.getStatus).toHaveBeenCalledWith(root, [root], 'head')
+    expect(repoService.getStatus).toHaveBeenCalledWith({ root }, [root, DOCS_ROOT], 'head')
   })
 
   it('listDir with no prior git probe falls back to FALLBACK_IGNORES (gitCtx undefined)', async () => {
@@ -109,7 +114,7 @@ describe('happy path', () => {
     })
     const res = await handlers[CODE_CHANNELS.LIST_DIR](makeEvent(mainFrame), { workspaceSlug: 'ws', relDir: '', includeIgnored: false })
     expect(res.error).toBeNull()
-    expect(repoService.checkIgnore).toHaveBeenCalledWith(root, [root], expect.arrayContaining(['a.txt', 'sub']))
+    expect(repoService.checkIgnore).toHaveBeenCalledWith({ root }, [root, DOCS_ROOT], expect.arrayContaining(['a.txt', 'sub']))
   })
 
   it('readFile returns the real file content, repo-relative', async () => {
@@ -123,21 +128,21 @@ describe('happy path', () => {
     const { handlers, repoService } = build()
     const res = await handlers[CODE_CHANNELS.GET_FILE_INDEX](makeEvent(mainFrame), { workspaceSlug: 'ws', includeIgnored: false })
     expect(res.error).toBeNull()
-    expect(repoService.getFileIndex).toHaveBeenCalledWith(root, [root], false)
+    expect(repoService.getFileIndex).toHaveBeenCalledWith({ root }, [root, DOCS_ROOT], false)
   })
 
   it('watch delegates to codeWatcher.watch', async () => {
     const { handlers, codeWatcher } = build()
     const res = await handlers[CODE_CHANNELS.WATCH](makeEvent(mainFrame), { workspaceSlug: 'ws', gen: 1, openFile: null, expandedDirs: [] })
     expect(res.error).toBeNull()
-    expect(codeWatcher.watch).toHaveBeenCalledWith({ workspaceSlug: 'ws', gen: 1, openFile: null, expandedDirs: [] })
+    expect(codeWatcher.watch).toHaveBeenCalledWith({ workspaceSlug: 'ws', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
   })
 
   it('unwatch delegates to codeWatcher.unwatch and returns { ok: true }', async () => {
     const { handlers, codeWatcher } = build()
     const res = await handlers[CODE_CHANNELS.UNWATCH](makeEvent(mainFrame), { workspaceSlug: 'ws', gen: 1 })
     expect(res).toEqual({ data: { ok: true }, error: null })
-    expect(codeWatcher.unwatch).toHaveBeenCalledWith({ workspaceSlug: 'ws', gen: 1 })
+    expect(codeWatcher.unwatch).toHaveBeenCalledWith({ workspaceSlug: 'ws', root: 'workspace', gen: 1 })
   })
 })
 
@@ -473,6 +478,134 @@ describe('readBaseline — oldPath validation', () => {
       reveal: false,
     })
     expect(res.error).toBeNull()
-    expect(repoService.readBlob).toHaveBeenCalledWith(root, [root], 'head', 'a.txt', 'old/a.txt')
+    expect(repoService.readBlob).toHaveBeenCalledWith({ root }, [root, DOCS_ROOT], 'head', 'a.txt', 'old/a.txt')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// root: 'sandbox' (#0029, TRD §3.10, C2, M1, SEC-L6)
+// ---------------------------------------------------------------------------
+
+describe("root: 'sandbox'", () => {
+  let home: string
+  let wt: string
+
+  /** A sandbox worktree under a fake home, and handlers wired to it. */
+  function buildSandbox(manager: Pick<SandboxManagerService, 'isBusy'> | null) {
+    const repoService = makeMockRepoService()
+    const codeWatcher = makeMockCodeWatcher()
+    const appState = makeAppState([makeWorkspace({ slug: 'ws', path: root })])
+    appState.sandboxManager = manager as SandboxManagerService | null
+    const handlers = buildCodeHandlers(appState, { ...makeWrapDeps(), repoService, codeWatcher, sandboxPaths: sandboxPaths(home) })
+    return { handlers, repoService }
+  }
+
+  beforeEach(() => {
+    home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'co-code-ipc-home-')))
+    wt = path.join(sandboxPaths(home).sandboxesRoot, 'ws')
+    fs.mkdirSync(wt, { recursive: true })
+    fs.writeFileSync(path.join(wt, '.git'), 'gitdir: x\n')
+    fs.writeFileSync(path.join(wt, 'agent.txt'), 'from the sandbox\n')
+  })
+
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  it('reads from the sandbox worktree, not the workspace', async () => {
+    const { handlers } = buildSandbox({ isBusy: () => true })
+
+    const res = await handlers[CODE_CHANNELS.READ_FILE](makeEvent(mainFrame), { workspaceSlug: 'ws', root: 'sandbox', relPath: 'agent.txt', reveal: false })
+
+    expect(res.error).toBeNull()
+    expect(JSON.stringify(res.data)).toContain('from the sandbox')
+    const missing = await handlers[CODE_CHANNELS.READ_FILE](makeEvent(mainFrame), { workspaceSlug: 'ws', root: 'workspace', relPath: 'agent.txt', reveal: false })
+    expect(missing.error).not.toBeNull()
+  })
+
+  it('passes a pinned target to every git call, and includes the worktree and docs roots in the binary check', async () => {
+    const { handlers, repoService } = buildSandbox({ isBusy: () => true })
+
+    const res = await handlers[CODE_CHANNELS.GET_STATUS](makeEvent(mainFrame), { workspaceSlug: 'ws', root: 'sandbox', baseline: 'branch' })
+
+    expect(res.error).toBeNull()
+    expect(repoService.getStatus).toHaveBeenCalledWith(
+      { root: wt, pin: { gitDir: path.join(root, '.git', 'worktrees', 'ws'), commonDir: path.join(root, '.git'), workTree: wt } },
+      [root, DOCS_ROOT, wt],
+      'branch',
+    )
+  })
+
+  it('getFileIndex and readBaseline also use the pinned target', async () => {
+    const { handlers, repoService } = buildSandbox({ isBusy: () => true })
+
+    await handlers[CODE_CHANNELS.GET_FILE_INDEX](makeEvent(mainFrame), { workspaceSlug: 'ws', root: 'sandbox', includeIgnored: false })
+    await handlers[CODE_CHANNELS.READ_BASELINE](makeEvent(mainFrame), { workspaceSlug: 'ws', root: 'sandbox', relPath: 'agent.txt', baseline: 'head', reveal: false })
+
+    expect(repoService.getFileIndex).toHaveBeenCalledWith(expect.objectContaining({ root: wt, pin: expect.any(Object) }), expect.any(Array), false)
+    expect(repoService.readBlob).toHaveBeenCalledWith(expect.objectContaining({ root: wt, pin: expect.any(Object) }), expect.any(Array), 'head', 'agent.txt', undefined)
+  })
+
+  it('denies a sandbox root for an unknown workspace, and is not found when there is no worktree', async () => {
+    const { handlers } = buildSandbox({ isBusy: () => false })
+
+    const unknown = await handlers[CODE_CHANNELS.GET_STATUS](makeEvent(mainFrame), { workspaceSlug: 'nope', root: 'sandbox', baseline: 'head' })
+    expect(unknown).toEqual(PERMISSION_DENIED_RESPONSE)
+
+    fs.rmSync(wt, { recursive: true })
+    const none = await handlers[CODE_CHANNELS.GET_STATUS](makeEvent(mainFrame), { workspaceSlug: 'ws', root: 'sandbox', baseline: 'head' })
+    expect(none.error?.code).toBe(IPC_ERROR_CODES.NOT_FOUND)
+  })
+
+  it('rejects an unknown root value at validation', async () => {
+    const { handlers } = buildSandbox({ isBusy: () => false })
+    const res = await handlers[CODE_CHANNELS.GET_STATUS](makeEvent(mainFrame), { workspaceSlug: 'ws', root: 'elsewhere', baseline: 'head' })
+    expect(res).toEqual(VALIDATION_ERROR_RESPONSE)
+  })
+
+  describe('M1: writeFile', () => {
+    const write = (handlers: Record<string, (e: never, i: unknown) => Promise<unknown>>, root: 'sandbox' | 'workspace') =>
+      handlers[CODE_CHANNELS.WRITE_FILE](makeEvent(mainFrame) as never, {
+        workspaceSlug: 'ws',
+        root,
+        relPath: root === 'sandbox' ? 'agent.txt' : 'a.txt',
+        content: 'edited\n',
+        expectedMtime: root === 'sandbox' ? fs.statSync(path.join(wt, 'agent.txt')).mtime.toISOString() : mtimeOf('a.txt'),
+      })
+
+    it('is allowed while the session is idle', async () => {
+      const { handlers } = buildSandbox({ isBusy: () => false })
+
+      const res = (await write(handlers, 'sandbox')) as { error: unknown }
+
+      expect(res.error).toBeNull()
+      expect(fs.readFileSync(path.join(wt, 'agent.txt'), 'utf8')).toBe('edited\n')
+    })
+
+    it.each(['preparing', 'running', 'ending'])('is PERMISSION_DENIED while the session is %s (isBusy covers every non-idle state)', async () => {
+      const { handlers } = buildSandbox({ isBusy: () => true })
+
+      const res = await write(handlers, 'sandbox')
+
+      expect(res).toEqual(PERMISSION_DENIED_RESPONSE)
+      expect(fs.readFileSync(path.join(wt, 'agent.txt'), 'utf8')).toBe('from the sandbox\n')
+    })
+
+    it('fails closed when the sandbox manager is not up yet', async () => {
+      const { handlers } = buildSandbox(null)
+      expect(await write(handlers, 'sandbox')).toEqual(PERMISSION_DENIED_RESPONSE)
+    })
+
+    it('asks the manager about this workspace only, and never gates a workspace-root write', async () => {
+      const isBusy = vi.fn(() => true)
+      const { handlers } = buildSandbox({ isBusy })
+
+      const res = (await write(handlers, 'workspace')) as { error: unknown }
+
+      expect(res.error).toBeNull()
+      expect(isBusy).not.toHaveBeenCalled()
+      await write(handlers, 'sandbox')
+      expect(isBusy).toHaveBeenCalledWith('ws')
+    })
   })
 })

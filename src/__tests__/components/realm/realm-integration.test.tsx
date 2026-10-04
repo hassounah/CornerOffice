@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import React from 'react'
@@ -115,6 +115,7 @@ import { RealmShell } from '../../../renderer/components/realm/RealmShell'
 import { useDocViewerStore } from '../../../renderer/stores/docviewer-store'
 import { useGuardDialogStore } from '../../../renderer/hooks/useUnsavedGuard'
 import { ShipMomentOverlay } from '../../../renderer/components/gamification/ShipMoment'
+import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -298,6 +299,57 @@ describe('RealmShell', () => {
     expect(mockRealmStore.openOverlay).toHaveBeenCalledWith({
       overlayId: 'settings-chamber',
       initialSection: 'workspaces',
+    })
+  })
+
+  describe('sandbox requests (a notification click or "Show log" in the Realm)', () => {
+    beforeEach(() => {
+      useSandboxStore.setState({ settingsRequest: null, chooserRequest: null })
+    })
+
+    afterEach(() => {
+      useSandboxStore.setState({ settingsRequest: null, chooserRequest: null })
+    })
+
+    it('a settings request opens the settings chamber on the sandbox section', async () => {
+      useSandboxStore.setState({ settingsRequest: 'my-project' })
+      await act(async () => { render(<RealmShell />) })
+      expect(mockRealmStore.openOverlay).toHaveBeenCalledWith({ overlayId: 'settings-chamber', initialSection: 'sandbox' })
+    })
+
+    it('a settings request does not reopen a chamber that is already showing (it consumes the request itself)', async () => {
+      mockRealmStore.primaryOverlay = 'settings-chamber'
+      mockRealmStore.primaryOverlayContext = { overlayId: 'settings-chamber', initialSection: 'kingdom' }
+      useSandboxStore.setState({ settingsRequest: 'my-project' })
+      await act(async () => { render(<RealmShell />) })
+      expect(mockRealmStore.openOverlay).not.toHaveBeenCalled()
+    })
+
+    it("a chooser request opens that workspace's study", async () => {
+      useSandboxStore.setState({ chooserRequest: 'my-project' })
+      await act(async () => { render(<RealmShell />) })
+      expect(mockRealmStore.openOverlay).toHaveBeenCalledWith({ overlayId: 'wizards-study', workspaceSlug: 'my-project' })
+    })
+
+    it('a chooser request does not reopen the study that is already showing it', async () => {
+      mockRealmStore.primaryOverlay = 'wizards-study'
+      mockRealmStore.primaryOverlayContext = { overlayId: 'wizards-study', workspaceSlug: 'my-project' }
+      useSandboxStore.setState({ chooserRequest: 'my-project' })
+      await act(async () => { render(<RealmShell />) })
+      expect(mockRealmStore.openOverlay).not.toHaveBeenCalled()
+    })
+
+    it("a chooser request for another workspace's study switches to the requested one", async () => {
+      mockRealmStore.primaryOverlay = 'wizards-study'
+      mockRealmStore.primaryOverlayContext = { overlayId: 'wizards-study', workspaceSlug: 'other' }
+      useSandboxStore.setState({ chooserRequest: 'my-project' })
+      await act(async () => { render(<RealmShell />) })
+      expect(mockRealmStore.openOverlay).toHaveBeenCalledWith({ overlayId: 'wizards-study', workspaceSlug: 'my-project' })
+    })
+
+    it('opens nothing without a request', async () => {
+      await act(async () => { render(<RealmShell />) })
+      expect(mockRealmStore.openOverlay).not.toHaveBeenCalled()
     })
   })
 

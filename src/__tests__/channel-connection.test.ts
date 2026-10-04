@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { MockedFunction } from 'vitest'
-import type { ChannelSession, ChatMessage, ConnectionState } from '../main/types/channels'
+import type { ChannelSession, ChatMessage, ConnectionState, IsAlive } from '../main/types/channels'
 import { MAX_OUTBOUND_MESSAGE_TEXT, WS_AUTH_CLOSE_CODE } from '../main/types/channels'
 
 // ---------------------------------------------------------------------------
@@ -453,6 +453,104 @@ describe('ChannelConnectionService', () => {
   it('error event — does not throw (handled via close)', () => {
     service.connect(makeSession())
     expect(() => lastWs().error()).not.toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Step 3.3: channelBlocked, isAlive injection and the SEC-H4 identity-flip
+// reconnect (TRD §3.7.2, §3.7.3)
+// ---------------------------------------------------------------------------
+
+describe('ChannelConnectionService — sandbox sources (Step 3.3)', () => {
+  let service: ChannelConnectionService
+  let onMessage: MockedFunction<(shortId: string, message: ChatMessage) => void>
+  let onStateChange: MockedFunction<(shortId: string, state: ConnectionState) => void>
+  let killSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    MockWs.instances.length = 0
+    onMessage = vi.fn()
+    onStateChange = vi.fn()
+    killSpy = vi.spyOn(process, 'kill').mockReturnValue(true as unknown as never)
+    service = new ChannelConnectionService(onMessage, onStateChange)
+  })
+
+  afterEach(() => {
+    service.destroy()
+    vi.useRealTimers()
+    killSpy.mockRestore()
+  })
+
+  it('connect — no-op and no WebSocket when channelBlocked is set', () => {
+    service.connect(makeSession({ channelBlocked: 'plugin-outdated' }))
+    expect(MockWs.instances).toHaveLength(0)
+  })
+
+  it('connect — identity unchanged (same sandboxSlug) is still a no-op, same as before', () => {
+    service.connect(makeSession({ sandboxSlug: 'my-ws' }))
+    service.connect(makeSession({ sandboxSlug: 'my-ws' }))
+    expect(MockWs.instances).toHaveLength(1)
+  })
+
+  it('connect — a host card replacing a sandbox-held shortId closes the stale connection and opens a fresh one', () => {
+    service.connect(makeSession({ sandboxSlug: 'my-ws' }))
+    expect(MockWs.instances).toHaveLength(1)
+    const staleWs = lastWs()
+
+    // Same shortId, but now a host identity (no sandboxSlug) — SEC-H4 eviction.
+    service.connect(makeSession({ sandboxSlug: undefined }))
+
+    expect(staleWs.close).toHaveBeenCalled()
+    expect(MockWs.instances).toHaveLength(2)
+    expect(lastWs()).not.toBe(staleWs)
+  })
+
+  it('connect — identity flip also cancels a pending retry timer for the stale entry', () => {
+    service.connect(makeSession({ sandboxSlug: 'my-ws' }))
+    lastWs().closeWith(1006) // schedules a reconnect for the sandbox identity
+    expect(MockWs.instances).toHaveLength(1)
+
+    service.connect(makeSession({ sandboxSlug: undefined })) // host evicts before the retry fires
+    expect(MockWs.instances).toHaveLength(2) // the eviction's own fresh connection
+
+    vi.advanceTimersByTime(60_000) // past every backoff — the cancelled sandbox retry must not fire
+    expect(MockWs.instances).toHaveLength(2)
+  })
+
+  it('isAlive — defaults to a PID check when not injected', () => {
+    killSpy.mockImplementation(() => { throw new Error('ESRCH') })
+    service.connect(makeSession())
+    expect(MockWs.instances).toHaveLength(0)
+    expect(onStateChange).toHaveBeenCalledWith('sess-1', 'disconnected')
+  })
+
+  it('isAlive — a custom predicate is consulted instead of the raw PID', () => {
+    killSpy.mockImplementation(() => { throw new Error('ESRCH') }) // every raw PID looks dead
+    const isAlive: IsAlive = (s) => s.sandboxSlug === 'my-ws' // alive only for this sandbox
+    const svc = new ChannelConnectionService(onMessage, onStateChange, undefined, isAlive)
+
+    svc.connect(makeSession({ sandboxSlug: 'my-ws' }))
+    expect(MockWs.instances).toHaveLength(1) // alive per the injected predicate, despite the dead PID
+
+    svc.connect(makeSession({ shortId: 'sess-2', sandboxSlug: 'other-ws' }))
+    expect(MockWs.instances).toHaveLength(1) // not alive per the injected predicate — no new WS
+
+    svc.destroy()
+  })
+
+  it('isAlive — a custom predicate also gates reconnect retries', () => {
+    let alive = true
+    const isAlive: IsAlive = () => alive
+    const svc = new ChannelConnectionService(onMessage, onStateChange, undefined, isAlive)
+
+    svc.connect(makeSession())
+    alive = false
+    lastWs().closeWith(1006)
+    vi.advanceTimersByTime(60_000)
+    expect(MockWs.instances).toHaveLength(1) // no retry — isAlive says no
+
+    svc.destroy()
   })
 })
 

@@ -127,6 +127,7 @@ export function PermissionButton({ workspaceSlug }: PermissionButtonProps): Reac
               <PermissionRequestItem
                 key={`${req.shortId}:${req.requestId}`}
                 request={req}
+                sandboxWorkspace={sessions.find((s) => s.shortId === req.shortId)?.sandboxSlug !== undefined ? workspaceSlug : undefined}
                 isActive={index === 0}
                 onVerdict={(behavior: 'allow' | 'deny') => void sendVerdict(req.shortId, req.requestId, behavior)}
               />

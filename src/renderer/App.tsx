@@ -8,6 +8,7 @@ import { useHomunculusStore } from './stores/homunculus-store'
 import { useNotificationStore } from './stores/notification-store'
 import { useChannelsStore } from './stores/channels-store'
 import { useTerminalStore } from './stores/terminal-store'
+import { useSandboxStore } from './stores/sandbox-store'
 import { usePermissionStore } from './stores/permission-store'
 import { useSettingsStore } from './stores/settings-store'
 import { ConfirmDialog } from './components/shared/ConfirmDialog'
@@ -201,6 +202,9 @@ function GlobalListeners(): null {
   useEffect(() => {
     // Hydrate settings on startup so Dashboard has config (hooks status, etc.)
     void useSettingsStore.getState().fetchConfig()
+    // Sandbox surfaces (Explorer toggle, unmerged dots) read these; nothing else loads them on a cold start or a deep link.
+    void useSandboxStore.getState().fetchEnvironment(false)
+    void useSandboxStore.getState().fetchSummaries()
 
     const cleanups = [
       useActivityStore.getState().initListeners(),
@@ -210,6 +214,7 @@ function GlobalListeners(): null {
       useNotificationStore.getState().initListeners(),
       useChannelsStore.getState().initListeners(),
       useTerminalStore.getState().initListeners(),
+      useSandboxStore.getState().initListeners(),
       usePermissionStore.getState().initListeners(),
     ]
     return () => cleanups.forEach((fn) => fn())
@@ -255,15 +260,55 @@ function NavigationEffects(): null {
     // Guarded (exit-path row 10): checks every dirty source, since the
     // workspace switch this navigation performs is otherwise unreachable
     // from inside a route that could be holding unsaved edits.
+    const route = (workspace: string | undefined, target: string | undefined): void => {
+      // A notice that names a destination (sandbox ones). Main picks the target from fixed values; an image-ready
+      // notice whose requesting workspace is unknown has an empty workspace and lands on Settings → Sandbox.
+      // The request to the sandbox store is made INSIDE the guarded action: a navigation the user cancels leaves
+      // nothing behind to pop a chooser or a settings tab open later.
+      if (!workspace && target === 'sandbox-image') {
+        guardAction(() => {
+          useSandboxStore.getState().requestSettings('')
+          navigate('/settings')
+        })
+        return
+      }
+      if (workspace && target === 'sandbox-network') {
+        guardAction(() => {
+          useSandboxStore.getState().requestSettings(workspace)
+          navigate('/settings')
+        })
+        return
+      }
+      if (workspace && target === 'sandbox-chooser') {
+        guardAction(() => {
+          useSandboxStore.getState().requestChooser(workspace)
+          navigate(`/workspace/${workspace}`)
+        })
+        return
+      }
+      if (workspace) guardAction(() => navigate(`/workspace/${workspace}`))
+    }
+
+    // An in-app "Open" click goes through the same routing as the OS click.
+    const unsubOpen = useNotificationStore.subscribe((state) => {
+      const request = state.openRequest
+      if (request === null) return
+      useNotificationStore.getState().clearOpenRequest()
+      route(request.workspace, request.target)
+    })
+
     const unsubNotifClick = cornerOffice.on(
       'notification:clicked',
       (payload: unknown) => {
-        const { workspace } = payload as { workspace?: string }
-        if (workspace) guardAction(() => navigate(`/workspace/${workspace}`))
+        const { workspace, target } = payload as { workspace?: string; target?: string }
+        route(workspace, target)
       },
     )
 
-    return unsubNotifClick
+    return () => {
+      unsubNotifClick()
+      unsubOpen()
+    }
   }, [navigate])
 
   return null

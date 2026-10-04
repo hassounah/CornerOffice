@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, within } from '@testing-library/react'
 import type { Pipeline, Feature, IdeationItem, ShippedFeature, Workspace, TeamLevel } from '@main/types/workspace'
 
 // ---------------------------------------------------------------------------
@@ -101,6 +101,9 @@ import { HistoryTimeline } from '../../../renderer/components/workspace/HistoryT
 import WorkspaceDetail from '../../../renderer/pages/WorkspaceDetail'
 import { setPendingReturnFocus } from '../../../renderer/utils/code-explorer-return-focus'
 import { assertNoNestedInteractive } from '../../helpers/a11y'
+import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
+import { useTerminalStore } from '../../../renderer/stores/terminal-store'
+import type { SandboxStatus } from '@main/types/sandbox'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -907,5 +910,181 @@ describe('WorkspaceDetail', () => {
       const { container } = render(<WorkspaceDetail />)
       assertNoNestedInteractive(container)
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// WorkspaceDetail — sandbox placement (#0029 step 5.6, TRD §3.15.4)
+// ---------------------------------------------------------------------------
+
+describe('WorkspaceDetail — sandbox sessions', () => {
+  const sandboxApi = { getStatus: vi.fn(), getEnvironment: vi.fn() }
+
+  function sandboxStatus(o: { state?: 'idle' | 'preparing' | 'running' | 'ending'; worktree?: 'absent' | 'ready'; eligible?: boolean } = {}): SandboxStatus {
+    return {
+      workspaceSlug: 'test-ws',
+      eligibility: o.eligible === false ? { ok: false, reason: 'not-git' } : { ok: true, baseBranch: 'main', warnings: [] },
+      exists: (o.worktree ?? 'ready') !== 'absent',
+      container: 'stopped',
+      worktree: o.worktree ?? 'ready',
+      session: { state: o.state ?? 'idle', permissionMode: null, networkMode: null, lastExit: null },
+      git: { branch: 'feat/a', headShort: 'abc', ahead: 1, dirtyCount: 0, base: 'main' },
+      recreatePending: false,
+      recreatePlan: null,
+      channel: 'none',
+    }
+  }
+
+  function seedSandbox(s: SandboxStatus | null): void {
+    sandboxApi.getStatus.mockResolvedValue({ data: s, error: null })
+    useSandboxStore.setState({ status: s ? { 'test-ws': s } : {}, summaries: {}, chooserRequest: null, environment: null })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(window.cornerOffice as unknown as { sandbox: unknown }).sandbox = sandboxApi
+    sandboxApi.getEnvironment.mockResolvedValue({ data: null, error: null })
+    mockWorkspaceStore.workspaces = [makeWorkspace()]
+    useTerminalStore.setState({ sessions: {}, overlayVisible: {}, spawnError: {}, sessionKind: {}, spawnFailure: {}, buildPrompt: {}, recreatePrompt: {} })
+    seedSandbox(sandboxStatus({ worktree: 'absent' }))
+  })
+
+  it('fetches the sandbox status on mount', async () => {
+    await act(async () => {
+      render(<WorkspaceDetail />)
+    })
+    expect(sandboxApi.getStatus).toHaveBeenCalledWith('test-ws')
+  })
+
+  it('Start Session opens the chooser instead of spawning, and Host starts the unchanged host session', async () => {
+    const spawn = vi.fn().mockResolvedValue(undefined)
+    useTerminalStore.setState({ spawn })
+    await act(async () => {
+      render(<WorkspaceDetail />)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start Session' }))
+    expect(spawn).not.toHaveBeenCalled()
+    const chooser = screen.getByRole('dialog', { name: 'Start a session' })
+    expect(within(chooser).getByRole('radio', { name: 'Host' })).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(within(chooser).getByRole('button', { name: 'Start' }))
+    expect(spawn).toHaveBeenCalledExactlyOnceWith('test-ws')
+    expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull()
+  })
+
+  it('Cancel closes the chooser and returns focus to the Start Session button', async () => {
+    await act(async () => {
+      render(<WorkspaceDetail />)
+    })
+    const start = screen.getByRole('button', { name: 'Start Session' })
+    fireEvent.click(start)
+
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Start a session' })).getByRole('button', { name: 'Cancel' }))
+
+    expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Start Session' })).toHaveFocus()
+  })
+
+  it('Start Session is aria-disabled with the reason while the sandbox is still stopping, and the chooser does not open', async () => {
+    seedSandbox(sandboxStatus({ state: 'ending' }))
+    await act(async () => {
+      render(<WorkspaceDetail />)
+    })
+
+    const start = screen.getByRole('button', { name: 'Start Session' })
+    expect(start).toHaveAttribute('aria-disabled', 'true')
+    expect(start).not.toBeDisabled()
+    fireEvent.focus(start)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('The sandbox is still stopping')
+    fireEvent.click(start)
+    expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull()
+  })
+
+  it('a chooser request from a notification click opens the chooser once, and closing clears it', async () => {
+    seedSandbox(sandboxStatus({ worktree: 'absent' }))
+    useSandboxStore.setState({ chooserRequest: 'test-ws' })
+    await act(async () => {
+      render(<WorkspaceDetail />)
+    })
+
+    const chooser = screen.getByRole('dialog', { name: 'Start a session' })
+    fireEvent.click(within(chooser).getByRole('button', { name: 'Cancel' }))
+
+    expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull()
+    expect(useSandboxStore.getState().chooserRequest).toBeNull()
+  })
+
+  it('ignores a chooser request meant for another workspace', async () => {
+    useSandboxStore.setState({ chooserRequest: 'other-ws' })
+    await act(async () => {
+      render(<WorkspaceDetail />)
+    })
+    expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull()
+    expect(useSandboxStore.getState().chooserRequest).toBe('other-ws')
+  })
+
+  it('shows the sandbox actions for a workspace that has a sandbox, and none for a host-only one', async () => {
+    seedSandbox(sandboxStatus({ state: 'idle' }))
+    const { unmount } = render(<WorkspaceDetail />)
+    await act(async () => {})
+    expect(screen.getByRole('group', { name: 'Sandbox actions' })).toBeInTheDocument()
+    unmount()
+
+    seedSandbox(sandboxStatus({ worktree: 'absent' }))
+    render(<WorkspaceDetail />)
+    await act(async () => {})
+    expect(screen.queryByRole('group', { name: 'Sandbox actions' })).toBeNull()
+    expect(screen.queryByRole('group', { name: 'Sandbox status' })).toBeNull()
+  })
+
+  it('shows the sandbox badge while a sandbox session runs, beside the session controls', async () => {
+    seedSandbox(sandboxStatus({ state: 'running' }))
+    await act(async () => {
+      render(<WorkspaceDetail />)
+    })
+    expect(screen.getByRole('group', { name: 'Sandbox status' })).toHaveTextContent('Sandbox · feat/a · +1')
+  })
+
+  it('drops a chooser request it cannot honour (a session already exists), so it never pops open later', async () => {
+    useTerminalStore.setState({ sessions: { 'test-ws': 'running' } })
+    useSandboxStore.setState({ chooserRequest: 'test-ws' })
+    const { unmount } = render(<WorkspaceDetail />)
+    await act(async () => {})
+
+    expect(useSandboxStore.getState().chooserRequest).toBeNull()
+    expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull()
+    unmount()
+
+    // The session ends later: nothing is left over to open the chooser.
+    useTerminalStore.setState({ sessions: { 'test-ws': 'none' } })
+    render(<WorkspaceDetail />)
+    await act(async () => {})
+    expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull()
+  })
+
+  it('"Show log" in the chooser lands on the Sandbox settings tab for this workspace', async () => {
+    useSandboxStore.setState({
+      build: { running: true, lines: ['step 1'], phase: 'running', requestedFor: { slug: 'test-ws', permissionMode: 'skip', networkMode: 'allowlist' } },
+    })
+    await act(async () => {
+      render(<WorkspaceDetail />)
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Start Session' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show log' }))
+
+    expect(useSandboxStore.getState().settingsRequest).toBe('test-ws')
+    expect(mockNavigate).toHaveBeenCalledWith('/settings')
+    useSandboxStore.setState({ build: { running: false, lines: [], phase: 'idle', requestedFor: null }, settingsRequest: null })
+  })
+
+  it('keeps the page free of nested interactive elements with the sandbox controls shown', async () => {
+    seedSandbox(sandboxStatus({ state: 'running' }))
+    let container!: HTMLElement
+    await act(async () => {
+      container = render(<WorkspaceDetail />).container
+    })
+    assertNoNestedInteractive(container)
   })
 })

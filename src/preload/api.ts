@@ -19,6 +19,9 @@ export const ALLOWED_PUSH_CHANNELS = [
   'terminal:data',
   'terminal:exited',
   'code:changed',
+  'sandbox:changed',
+  'sandbox:buildProgress',
+  'sandbox:blocked',
 ] as const
 
 export type AllowedPushChannel = (typeof ALLOWED_PUSH_CHANNELS)[number]
@@ -116,27 +119,54 @@ export const api = {
   },
 
   code: {
-    getStatus: (workspaceSlug: string, baseline: 'head' | 'branch') =>
-      ipcRenderer.invoke('code:getStatus', { workspaceSlug, baseline }),
-    listDir: (workspaceSlug: string, relDir: string, includeIgnored: boolean) =>
-      ipcRenderer.invoke('code:listDir', { workspaceSlug, relDir, includeIgnored }),
-    readFile: (workspaceSlug: string, relPath: string, reveal: boolean) =>
-      ipcRenderer.invoke('code:readFile', { workspaceSlug, relPath, reveal }),
+    getStatus: (workspaceSlug: string, baseline: 'head' | 'branch', root?: 'workspace' | 'sandbox') =>
+      ipcRenderer.invoke('code:getStatus', { workspaceSlug, baseline, root }),
+    listDir: (workspaceSlug: string, relDir: string, includeIgnored: boolean, root?: 'workspace' | 'sandbox') =>
+      ipcRenderer.invoke('code:listDir', { workspaceSlug, relDir, includeIgnored, root }),
+    readFile: (workspaceSlug: string, relPath: string, reveal: boolean, root?: 'workspace' | 'sandbox') =>
+      ipcRenderer.invoke('code:readFile', { workspaceSlug, relPath, reveal, root }),
     readBaseline: (
       workspaceSlug: string,
       relPath: string,
       baseline: 'head' | 'branch',
       reveal: boolean,
       oldPath?: string,
-    ) => ipcRenderer.invoke('code:readBaseline', { workspaceSlug, relPath, oldPath, baseline, reveal }),
-    writeFile: (workspaceSlug: string, relPath: string, content: string, expectedMtime: string) =>
-      ipcRenderer.invoke('code:writeFile', { workspaceSlug, relPath, content, expectedMtime }),
-    getFileIndex: (workspaceSlug: string, includeIgnored: boolean) =>
-      ipcRenderer.invoke('code:getFileIndex', { workspaceSlug, includeIgnored }),
-    watch: (workspaceSlug: string, gen: number, openFile: string | null, expandedDirs: string[]) =>
-      ipcRenderer.invoke('code:watch', { workspaceSlug, gen, openFile, expandedDirs }),
-    unwatch: (workspaceSlug: string, gen: number) =>
-      ipcRenderer.invoke('code:unwatch', { workspaceSlug, gen }),
+      root?: 'workspace' | 'sandbox',
+    ) => ipcRenderer.invoke('code:readBaseline', { workspaceSlug, relPath, oldPath, baseline, reveal, root }),
+    writeFile: (workspaceSlug: string, relPath: string, content: string, expectedMtime: string, root?: 'workspace' | 'sandbox') =>
+      ipcRenderer.invoke('code:writeFile', { workspaceSlug, relPath, content, expectedMtime, root }),
+    getFileIndex: (workspaceSlug: string, includeIgnored: boolean, root?: 'workspace' | 'sandbox') =>
+      ipcRenderer.invoke('code:getFileIndex', { workspaceSlug, includeIgnored, root }),
+    watch: (workspaceSlug: string, gen: number, openFile: string | null, expandedDirs: string[], root?: 'workspace' | 'sandbox') =>
+      ipcRenderer.invoke('code:watch', { workspaceSlug, gen, openFile, expandedDirs, root }),
+    unwatch: (workspaceSlug: string, gen: number, root?: 'workspace' | 'sandbox') =>
+      ipcRenderer.invoke('code:unwatch', { workspaceSlug, gen, root }),
+  },
+
+  sandbox: {
+    getEnvironment: (refresh: boolean) => ipcRenderer.invoke('sandbox:getEnvironment', { refresh }),
+    getStatus: (workspaceSlug: string) => ipcRenderer.invoke('sandbox:getStatus', { workspaceSlug }),
+    getSummaries: () => ipcRenderer.invoke('sandbox:getSummaries', {}),
+    startSession: (
+      workspaceSlug: string,
+      cols: number,
+      rows: number,
+      permissionMode: 'skip' | 'auto',
+      networkMode: 'allowlist' | 'open',
+    ) => ipcRenderer.invoke('sandbox:startSession', { workspaceSlug, cols, rows, permissionMode, networkMode }),
+    handOff: (workspaceSlug: string, allowDirty: boolean) =>
+      ipcRenderer.invoke('sandbox:handOff', { workspaceSlug, allowDirty }),
+    previewDelete: (workspaceSlug: string) => ipcRenderer.invoke('sandbox:previewDelete', { workspaceSlug }),
+    delete: (workspaceSlug: string, acknowledgeDirty: boolean) =>
+      ipcRenderer.invoke('sandbox:delete', { workspaceSlug, acknowledgeDirty }),
+    recreate: (workspaceSlug: string, newPort: boolean, confirmedSpecHash: string) =>
+      ipcRenderer.invoke('sandbox:recreate', { workspaceSlug, newPort, confirmedSpecHash }),
+    buildImage: (rebuild: boolean, requestedFor?: string) =>
+      ipcRenderer.invoke('sandbox:buildImage', requestedFor === undefined ? { rebuild } : { rebuild, requestedFor }),
+    cancelBuild: () => ipcRenderer.invoke('sandbox:cancelBuild', {}),
+    getSettings: () => ipcRenderer.invoke('sandbox:getSettings', {}),
+    updateSettings: (patch: unknown) => ipcRenderer.invoke('sandbox:updateSettings', patch),
+    getBlocked: (workspaceSlug: string) => ipcRenderer.invoke('sandbox:getBlocked', { workspaceSlug }),
   },
 
   /**

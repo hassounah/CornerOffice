@@ -7,6 +7,7 @@ import { RelativeTime } from '../shared/RelativeTime'
 import { PipelineTypeBadge } from '../shared/PipelineTypeBadge'
 import { GateDots } from '../shared/GateDots'
 import { useSettingsStore } from '../../stores/settings-store'
+import { UnmergedDot } from '../sandbox/UnmergedDot'
 
 interface WorkspaceCardProps {
   workspace: Workspace
@@ -31,6 +32,7 @@ export function WorkspaceCard({ workspace: ws }: WorkspaceCardProps): React.Reac
       >
         {isActive ? <PulseDot /> : <StatusIcon status={ws.status} size="sm" />}
         <span className="text-[13px] font-medium text-co-text-primary truncate flex-1">{ws.displayName}</span>
+        <UnmergedDot slug={ws.slug} focusable={false} />
         <span className="text-[11px] text-co-text-muted shrink-0 tabular-nums">Lv {ws.level.number}</span>
         {ws.activePipelines.map((pipeline) => (
           <PipelineTypeBadge key={pipeline.slug} type={pipeline.pipelineType} />
@@ -55,6 +57,7 @@ export function WorkspaceCard({ workspace: ws }: WorkspaceCardProps): React.Reac
         <span className="font-semibold text-co-text-primary truncate flex-1 tracking-tight">
           {ws.displayName}
         </span>
+        <UnmergedDot slug={ws.slug} focusable={false} />
         <span className="text-[11px] text-co-text-muted tabular-nums font-medium">
           Lv {ws.level.number}
         </span>

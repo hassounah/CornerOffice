@@ -1,5 +1,9 @@
 import React from 'react'
 import type { NotificationItem } from '@main/types/gamification'
+import { SandboxTag } from '../sandbox/SandboxTag'
+import { isSandboxSource } from '../../utils/provenance'
+import { hasOpenTarget } from '../../utils/notification-target'
+import { useNotificationStore } from '../../stores/notification-store'
 
 // ---------------------------------------------------------------------------
 // Tier styling
@@ -29,6 +33,7 @@ interface NotificationBannerProps {
 }
 
 export function NotificationBanner({ item, onDismiss }: NotificationBannerProps): React.ReactElement {
+  const requestOpen = useNotificationStore((s) => s.requestOpen)
   return (
     <div
       role="alert"
@@ -47,9 +52,28 @@ export function NotificationBanner({ item, onDismiss }: NotificationBannerProps)
 
       {/* Content */}
       <div className="flex-1 min-w-0">
+        {/* Provenance is main's decision; an unknown source fails closed as sandbox (SEC-H3). */}
+        {isSandboxSource(item.source) && (
+          <div className="mb-0.5">
+            <SandboxTag workspace={item.workspace} />
+          </div>
+        )}
         <p className="text-sm font-semibold leading-snug truncate">{item.title}</p>
         {item.body && (
           <p className="text-xs opacity-80 mt-0.5 line-clamp-2">{item.body}</p>
+        )}
+        {hasOpenTarget(item) && (
+          <button
+            type="button"
+            aria-label={`Open: ${item.title}`}
+            className="mt-1.5 mr-3 text-xs font-medium underline underline-offset-2 hover:no-underline"
+            onClick={() => {
+              requestOpen(item)
+              onDismiss(item.id)
+            }}
+          >
+            Open
+          </button>
         )}
         {item.actionLabel && (
           <button

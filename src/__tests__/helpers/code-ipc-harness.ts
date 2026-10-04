@@ -77,6 +77,7 @@ export function makeAppState(workspaces: Workspace[] = []): AppState {
     pluginDetector: null,
     channelConnection: null,
     terminalManager: null,
+    sandboxManager: null,
   }
 }
 

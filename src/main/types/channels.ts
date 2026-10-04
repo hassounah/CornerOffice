@@ -36,6 +36,15 @@ export const WS_AUTH_CLOSE_CODE = 4001
 /** WebSocket connection lifecycle state for a channel session. */
 export type ConnectionState = 'connected' | 'connecting' | 'reconnecting' | 'disconnected'
 
+/**
+ * Liveness predicate for a discovered session, injected into
+ * `ChannelDiscoveryService` and `ChannelConnectionService` (TRD §3.7.2).
+ * The default in both services is today's PID-based check. The real
+ * sandbox-aware predicate (`s.sandboxSlug ? sandboxManager.isSessionRunning(s.sandboxSlug) : pidAlive(s.pid)`)
+ * is wired in by the caller once `sandbox-manager` exists.
+ */
+export type IsAlive = (session: ChannelSession) => boolean
+
 // ────────────────────────────────────────────────────────────
 // Core interfaces
 // ────────────────────────────────────────────────────────────
@@ -71,6 +80,37 @@ export interface ChannelSession {
   reconnectAt?: number
   /** Pipeline stage label forwarded from the session (e.g. "implement", "review"). */
   pipelineStage?: string
+  /**
+   * Full session id from the registration card (distinct from `shortId`).
+   * Always present on a real card; optional only so hand-built fixtures in
+   * tests don't need it. Host cards report it so a workspace's set of "host
+   * session ids" can be built for SEC-H3 (4.2) event attribution.
+   */
+  sessionId?: string
+  /** Set when this card came from a sandbox source directory, to the workspace's slug (TRD §3.7.3). Absent for a host card. */
+  sandboxSlug?: string
+  /**
+   * Set when a sandbox card's `channelPort` doesn't match the port stored
+   * for its workspace (TRD §3.7.3) — the container was recreated with a new
+   * port but the plugin inside hasn't picked it up yet. `connect()` treats
+   * this like a missing port: it never opens a WebSocket.
+   */
+  channelBlocked?: 'plugin-outdated'
+}
+
+/**
+ * Injected into `ChannelDiscoveryService` so it can resolve sandbox-specific
+ * facts without importing `sandbox-manager` directly (TRD §3.7.1, §3.7.3).
+ */
+export interface ChannelSandboxResolver {
+  /** The host workspace path for `slug` — used as a sandbox card's `workspaceDir`, so ChatPanel/PermissionScroll/WorkspaceDetail need no changes. */
+  workspacePath(slug: string): string
+  /** The channel port stored for `slug` (`config.sandbox.workspaces[slug].channelPort`), or `null` if none is stored yet. */
+  storedPort(slug: string): number | null
+  /** Called once a sandbox card is accepted, so the manager can track `sandboxShortIds` (SEC-H3, TRD §3.7.3). */
+  onSandboxCard(slug: string, shortId: string, sessionId: string): void
+  /** Called when a sandbox card is skipped because its `shortId` is already claimed by another source (SEC-H4) — surfaced as channel `unavailable`. */
+  onSandboxCardRejected(slug: string): void
 }
 
 /**

@@ -15,6 +15,19 @@ import type {
   CodeFileIndexResponse,
   CodeWatchResponse,
 } from '../main/types/code'
+import type {
+  SandboxEnvironment,
+  SandboxStatus,
+  SandboxSummary,
+  StartResult,
+  HandOffResult,
+  DeletePreview,
+  DeleteResult,
+  RecreateResult,
+  BuildImageResult,
+  SandboxSettingsView,
+  BlockedEntry,
+} from '../main/types/sandbox'
 
 interface CornerOfficeAPI {
   windowControls: {
@@ -77,20 +90,42 @@ interface CornerOfficeAPI {
     uninstallHooks: () => Promise<IpcResponse<{ uninstalled: true }>>
   }
   code: {
-    getStatus: (workspaceSlug: string, baseline: 'head' | 'branch') => Promise<IpcResponse<CodeStatusResponse>>
-    listDir: (workspaceSlug: string, relDir: string, includeIgnored: boolean) => Promise<IpcResponse<CodeListDirResponse>>
-    readFile: (workspaceSlug: string, relPath: string, reveal: boolean) => Promise<IpcResponse<CodeFileResponse>>
+    getStatus: (workspaceSlug: string, baseline: 'head' | 'branch', root?: 'workspace' | 'sandbox') => Promise<IpcResponse<CodeStatusResponse>>
+    listDir: (workspaceSlug: string, relDir: string, includeIgnored: boolean, root?: 'workspace' | 'sandbox') => Promise<IpcResponse<CodeListDirResponse>>
+    readFile: (workspaceSlug: string, relPath: string, reveal: boolean, root?: 'workspace' | 'sandbox') => Promise<IpcResponse<CodeFileResponse>>
     readBaseline: (
       workspaceSlug: string,
       relPath: string,
       baseline: 'head' | 'branch',
       reveal: boolean,
       oldPath?: string,
+      root?: 'workspace' | 'sandbox',
     ) => Promise<IpcResponse<CodeBaselineResponse>>
-    writeFile: (workspaceSlug: string, relPath: string, content: string, expectedMtime: string) => Promise<IpcResponse<CodeWriteResponse>>
-    getFileIndex: (workspaceSlug: string, includeIgnored: boolean) => Promise<IpcResponse<CodeFileIndexResponse>>
-    watch: (workspaceSlug: string, gen: number, openFile: string | null, expandedDirs: string[]) => Promise<IpcResponse<CodeWatchResponse>>
-    unwatch: (workspaceSlug: string, gen: number) => Promise<IpcResponse<{ ok: true }>>
+    writeFile: (workspaceSlug: string, relPath: string, content: string, expectedMtime: string, root?: 'workspace' | 'sandbox') => Promise<IpcResponse<CodeWriteResponse>>
+    getFileIndex: (workspaceSlug: string, includeIgnored: boolean, root?: 'workspace' | 'sandbox') => Promise<IpcResponse<CodeFileIndexResponse>>
+    watch: (workspaceSlug: string, gen: number, openFile: string | null, expandedDirs: string[], root?: 'workspace' | 'sandbox') => Promise<IpcResponse<CodeWatchResponse>>
+    unwatch: (workspaceSlug: string, gen: number, root?: 'workspace' | 'sandbox') => Promise<IpcResponse<{ ok: true }>>
+  }
+  sandbox: {
+    getEnvironment: (refresh: boolean) => Promise<IpcResponse<SandboxEnvironment>>
+    getStatus: (workspaceSlug: string) => Promise<IpcResponse<SandboxStatus>>
+    getSummaries: () => Promise<IpcResponse<Record<string, SandboxSummary>>>
+    startSession: (
+      workspaceSlug: string,
+      cols: number,
+      rows: number,
+      permissionMode: 'skip' | 'auto',
+      networkMode: 'allowlist' | 'open',
+    ) => Promise<IpcResponse<StartResult>>
+    handOff: (workspaceSlug: string, allowDirty: boolean) => Promise<IpcResponse<HandOffResult>>
+    previewDelete: (workspaceSlug: string) => Promise<IpcResponse<DeletePreview>>
+    delete: (workspaceSlug: string, acknowledgeDirty: boolean) => Promise<IpcResponse<DeleteResult>>
+    recreate: (workspaceSlug: string, newPort: boolean, confirmedSpecHash: string) => Promise<IpcResponse<RecreateResult>>
+    buildImage: (rebuild: boolean, requestedFor?: string) => Promise<IpcResponse<BuildImageResult>>
+    cancelBuild: () => Promise<IpcResponse<{ ok: true }>>
+    getSettings: () => Promise<IpcResponse<SandboxSettingsView>>
+    updateSettings: (patch: unknown) => Promise<IpcResponse<SandboxSettingsView>>
+    getBlocked: (workspaceSlug: string) => Promise<IpcResponse<BlockedEntry[]>>
   }
   on: (channel: string, listener: (...args: unknown[]) => void) => () => void
   off: (channel: string) => void

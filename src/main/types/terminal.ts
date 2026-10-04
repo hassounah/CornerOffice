@@ -9,8 +9,12 @@ export const MAX_CONCURRENT_SESSIONS = 7
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
+export type TerminalSessionKind = 'host' | 'sandbox'
+
 export interface TerminalSession {
   workspaceSlug: string
+  /** §3.12: the map stays keyed by workspaceSlug, enforcing one session per workspace across both kinds. */
+  kind: TerminalSessionKind
   pty: IPty
   scrollback: string
   pendingData: string
@@ -43,4 +47,5 @@ export interface TerminalExitedPayload {
   workspaceSlug: string
   exitCode: number
   signal?: string
+  kind: TerminalSessionKind
 }

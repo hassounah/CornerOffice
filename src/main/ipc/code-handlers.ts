@@ -25,11 +25,12 @@ import {
 import { CODE_CHANNELS } from './channels'
 import { wrapCodeHandler } from './wrap-code-handler'
 import type { IsAppOrigin } from './app-origin'
-import { resolveRepoRoot, hasGitSegment, toAbs } from '../services/repo-path'
+import { resolveCodeRoot, listSandboxWorktreeRoots, hasGitSegment, toAbs } from '../services/repo-path'
 import { denied, durableWrite, withTimeout, MAX_FILE_SIZE } from '../services/safe-fs'
 import { readFile as codeReadFile, listDir, openRegularFileSafe, classifyBuffer } from '../services/code-fs'
 import type { RepoService } from '../services/git-service'
 import type { CodeWatcher } from '../services/code-watcher'
+import type { SandboxPaths } from '../services/sandbox-paths'
 import type { AppState } from './handlers'
 import type {
   CodeStatusResponse,
@@ -57,6 +58,8 @@ export interface BuildCodeHandlersDeps {
   isAppOrigin: IsAppOrigin
   repoService: RepoService
   codeWatcher: CodeWatcher
+  /** Where sandbox worktrees live. Defaults to the real home's; tests inject a temp tree. */
+  sandboxPaths?: SandboxPaths
 }
 
 // TRD §3.4.2's per-channel timeout column. code:unwatch has none (n/a).
@@ -123,21 +126,27 @@ function makeCheckTarget(
  * running under the TRD's per-channel timeout.
  */
 export function buildCodeHandlers(appState: AppState, deps: BuildCodeHandlersDeps): Record<string, HandlerFn> {
-  const { repoService, codeWatcher, getMainWindow, isAppOrigin } = deps
+  const { repoService, codeWatcher, getMainWindow, isAppOrigin, sandboxPaths } = deps
   const wrapDeps = { getMainWindow, isAppOrigin }
   const platform = process.platform
 
   // Sec M-8: fresh on every call, never cached, so a workspace added after
   // the service started is still caught by git-runner's own re-check.
   function workspaceRoots(): string[] {
-    return Array.from(appState.workspaces.values()).map((w) => w.path)
+    const roots = new Set<string>()
+    for (const w of appState.workspaces.values()) {
+      roots.add(w.path)
+      roots.add(w.docsRoot) // mounted read-write into a sandbox, so a `git` binary inside it is just as untrusted
+    }
+    for (const sandboxRoot of listSandboxWorktreeRoots(sandboxPaths)) roots.add(sandboxRoot)
+    return [...roots]
   }
 
   return {
     [CODE_CHANNELS.GET_STATUS]: wrapCodeHandler(
       async (input: CodeGetStatusInput): Promise<CodeStatusResponse> => {
-        const root = await resolveRepoRoot(input.workspaceSlug, appState)
-        return withTimeout(repoService.getStatus(root, workspaceRoots(), input.baseline), TIMEOUT_MS.getStatus)
+        const target = await resolveCodeRoot(input.workspaceSlug, input.root, appState, sandboxPaths)
+        return withTimeout(repoService.getStatus(target, workspaceRoots(), input.baseline), TIMEOUT_MS.getStatus)
       },
       CodeGetStatusSchema,
       wrapDeps,
@@ -145,15 +154,16 @@ export function buildCodeHandlers(appState: AppState, deps: BuildCodeHandlersDep
 
     [CODE_CHANNELS.LIST_DIR]: wrapCodeHandler(
       async (input: CodeListDirInput): Promise<CodeListDirResponse> => {
-        const root = await resolveRepoRoot(input.workspaceSlug, appState)
+        const target = await resolveCodeRoot(input.workspaceSlug, input.root, appState, sandboxPaths)
+        const { root } = target
         // Reuses the cache populated by a prior getStatus/getRepoInfo call for
         // this root this session — never re-probes git just to list a
         // directory. No cache entry (never probed yet, or a non-git/unsafe
         // root) means no gitCtx: listDir falls back to FALLBACK_IGNORES.
-        const cached = repoService.getCachedEntry(root)
+        const cached = repoService.getCachedEntry(target)
         const gitCtx = cached
           ? {
-              checkIgnore: (relPaths: readonly string[]) => repoService.checkIgnore(root, workspaceRoots(), relPaths),
+              checkIgnore: (relPaths: readonly string[]) => repoService.checkIgnore(target, workspaceRoots(), relPaths),
               gitlinks: cached.gitlinks,
             }
           : undefined
@@ -168,7 +178,7 @@ export function buildCodeHandlers(appState: AppState, deps: BuildCodeHandlersDep
 
     [CODE_CHANNELS.READ_FILE]: wrapCodeHandler(
       async (input: CodeReadFileInput): Promise<CodeFileResponse> => {
-        const root = await resolveRepoRoot(input.workspaceSlug, appState)
+        const { root } = await resolveCodeRoot(input.workspaceSlug, input.root, appState, sandboxPaths)
         return withTimeout(codeReadFile(root, input.relPath, { reveal: input.reveal }, platform), TIMEOUT_MS.readFile)
       },
       CodeReadFileSchema,
@@ -177,11 +187,11 @@ export function buildCodeHandlers(appState: AppState, deps: BuildCodeHandlersDep
 
     [CODE_CHANNELS.READ_BASELINE]: wrapCodeHandler(
       async (input: CodeReadBaselineInput): Promise<CodeBaselineResponse> => {
-        const root = await resolveRepoRoot(input.workspaceSlug, appState)
+        const target = await resolveCodeRoot(input.workspaceSlug, input.root, appState, sandboxPaths)
         // relPath AND oldPath both go through RelPathSchema (schemas.ts) —
         // readBlob trusts both as already-safe repo-relative paths.
         return withTimeout(
-          repoService.readBlob(root, workspaceRoots(), input.baseline, input.relPath, input.oldPath),
+          repoService.readBlob(target, workspaceRoots(), input.baseline, input.relPath, input.oldPath),
           TIMEOUT_MS.readBaseline,
         )
       },
@@ -191,7 +201,14 @@ export function buildCodeHandlers(appState: AppState, deps: BuildCodeHandlersDep
 
     [CODE_CHANNELS.WRITE_FILE]: wrapCodeHandler(
       async (input: CodeWriteFileInput): Promise<CodeWriteResponse> => {
-        const root = await resolveRepoRoot(input.workspaceSlug, appState)
+        const { root } = await resolveCodeRoot(input.workspaceSlug, input.root, appState, sandboxPaths)
+        // M1: a sandbox tree is only writable from the host while no session can be writing to it.
+        // Reads, diffs and Review stay live during a session (reviewing unattended work is the point).
+        // Fail closed when the manager isn't up yet. Documented residual (SEC-L6): a startSession can
+        // begin between this check and the write below — a millisecond, user-triggered window, and
+        // durableWrite's own lstat/mtime checks still apply. Taking the manager's per-slug lock around
+        // check and write would close it, and is deliberately left optional.
+        if (input.root === 'sandbox' && (!appState.sandboxManager || appState.sandboxManager.isBusy(input.workspaceSlug))) throw denied()
         // A leading U+FEFF is stripped before writing: checkTarget is the ONLY
         // source of a written BOM (its `{prefix}` return, Sec M-2), so content
         // that already carries one here would otherwise double it up.
@@ -217,9 +234,9 @@ export function buildCodeHandlers(appState: AppState, deps: BuildCodeHandlersDep
 
     [CODE_CHANNELS.GET_FILE_INDEX]: wrapCodeHandler(
       async (input: CodeGetFileIndexInput): Promise<CodeFileIndexResponse> => {
-        const root = await resolveRepoRoot(input.workspaceSlug, appState)
+        const target = await resolveCodeRoot(input.workspaceSlug, input.root, appState, sandboxPaths)
         return withTimeout(
-          repoService.getFileIndex(root, workspaceRoots(), input.includeIgnored),
+          repoService.getFileIndex(target, workspaceRoots(), input.includeIgnored),
           TIMEOUT_MS.getFileIndex,
         )
       },

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ConfigManager } from '../main/services/config-manager'
+import type { AppConfig } from '../main/types/config'
 
 // Mock fs and os so no real filesystem is touched
 vi.mock('fs')
@@ -284,6 +285,169 @@ describe('ConfigManager', () => {
       }
       const result = await manager.updateConfig({ realm: oversizedRealm as typeof cfg.realm })
       expect(result.realm.mapping.length).toBeLessThanOrEqual(10)
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // Sandbox config (TRD §3.14, plan step 1.8)
+  // ---------------------------------------------------------------------------
+
+  const DEFAULT_SANDBOX = {
+    toolchains: { node: true, go: true, buildBase: true },
+    globalAllowlist: [],
+    workspaces: {},
+  }
+
+  describe('getSandboxConfig', () => {
+    it('returns defaults when config.sandbox is absent', () => {
+      const cfg = manager.getDefaultConfig()
+      expect(cfg.sandbox).toBeUndefined()
+      expect(manager.getSandboxConfig(cfg)).toEqual(DEFAULT_SANDBOX)
+    })
+
+    it('returns the stored section when present', () => {
+      const cfg = manager.getDefaultConfig()
+      const stored = {
+        toolchains: { node: false, go: true, buildBase: true },
+        globalAllowlist: ['example.com'],
+        workspaces: { 'my-ws': { channelPort: 20001, allowlist: ['foo.com'] } },
+      }
+      expect(manager.getSandboxConfig({ ...cfg, sandbox: stored })).toEqual(stored)
+    })
+  })
+
+  describe('sandbox validation', () => {
+    it('absent sandbox section loads fine — defaults apply via getSandboxConfig', () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(manager.getDefaultConfig()))
+      const result = manager.loadConfig()
+      expect(result).not.toBeNull()
+      expect(result!.sandbox).toBeUndefined()
+      expect(manager.getSandboxConfig(result!)).toEqual(DEFAULT_SANDBOX)
+    })
+
+    it('falls back to sandbox defaults when the sandbox field is malformed on load, and the rest of the config stays intact', () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      const cfg = {
+        ...manager.getDefaultConfig(),
+        companyName: 'Acme',
+        sandbox: { toolchains: { node: 'yes' }, globalAllowlist: [], workspaces: {} },
+      }
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
+      const result = manager.loadConfig()
+      expect(result).not.toBeNull()
+      expect(result!.sandbox).toEqual(DEFAULT_SANDBOX)
+      expect(result!.companyName).toBe('Acme') // rest of config intact
+    })
+
+    it('preserves a valid sandbox config on load', () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      const stored = {
+        toolchains: { node: false, go: true, buildBase: true },
+        globalAllowlist: ['example.com'],
+        workspaces: { 'my-ws': { channelPort: 20001, allowlist: ['foo.com'] } },
+      }
+      const cfg = { ...manager.getDefaultConfig(), sandbox: stored }
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
+      const result = manager.loadConfig()
+      expect(result).not.toBeNull()
+      expect(result!.sandbox).toEqual(stored)
+    })
+
+    it('rejects a workspace key that fails SANDBOX_SLUG_RE, falling back to defaults', () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      const cfg = {
+        ...manager.getDefaultConfig(),
+        sandbox: {
+          toolchains: { node: true, go: true, buildBase: true },
+          globalAllowlist: [],
+          workspaces: { 'bad slug!': { channelPort: null, allowlist: [] } },
+        },
+      }
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
+      const result = manager.loadConfig()
+      expect(result).not.toBeNull()
+      expect(result!.sandbox).toEqual(DEFAULT_SANDBOX)
+    })
+
+    it('rejects an invalid allowlist entry, falling back to defaults', () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      const cfg = {
+        ...manager.getDefaultConfig(),
+        sandbox: {
+          toolchains: { node: true, go: true, buildBase: true },
+          globalAllowlist: ['not a valid hostname!'],
+          workspaces: {},
+        },
+      }
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
+      const result = manager.loadConfig()
+      expect(result).not.toBeNull()
+      expect(result!.sandbox).toEqual(DEFAULT_SANDBOX)
+    })
+
+    it('rejects a channelPort outside CHANNEL_PORT_RANGE, falling back to defaults', () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      const cfg = {
+        ...manager.getDefaultConfig(),
+        sandbox: {
+          toolchains: { node: true, go: true, buildBase: true },
+          globalAllowlist: [],
+          workspaces: { 'my-ws': { channelPort: 99, allowlist: [] } },
+        },
+      }
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
+      const result = manager.loadConfig()
+      expect(result).not.toBeNull()
+      expect(result!.sandbox).toEqual(DEFAULT_SANDBOX)
+    })
+  })
+
+  describe('config:update with a sandbox key', () => {
+    it('ConfigUpdateSchema strips an unrecognized sandbox key', async () => {
+      const { ConfigUpdateSchema } = await import('../main/ipc/schemas')
+      const parsed = ConfigUpdateSchema.parse({
+        companyName: 'Acme',
+        sandbox: {
+          toolchains: { node: false, go: false, buildBase: false },
+          globalAllowlist: ['evil.com'],
+          workspaces: {},
+        },
+      })
+      expect(parsed).not.toHaveProperty('sandbox')
+      expect(parsed.companyName).toBe('Acme')
+    })
+
+    it('a partial built from the validated (sandbox-free) input leaves the stored sandbox section untouched', async () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      const storedSandbox = {
+        toolchains: { node: true, go: true, buildBase: true },
+        globalAllowlist: ['trusted.com'],
+        workspaces: {},
+      }
+      const cfg = { ...manager.getDefaultConfig(), sandbox: storedSandbox }
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
+
+      const { ConfigUpdateSchema } = await import('../main/ipc/schemas')
+      // Mirrors ipc/handlers.ts's CONFIG_CHANNELS.UPDATE handler: validate
+      // through the real schema (which strips `sandbox`), then build
+      // `partial` only from the fields it lets through — `sandbox` is never
+      // among them, so updateConfig's `{ ...current, ...partial }` merge
+      // can't touch the stored section.
+      const validated = ConfigUpdateSchema.parse({
+        companyName: 'New Name',
+        sandbox: {
+          toolchains: { node: false, go: false, buildBase: false },
+          globalAllowlist: ['evil.com'],
+          workspaces: {},
+        },
+      })
+      const partial: Partial<AppConfig> = {}
+      if (validated.companyName !== undefined) partial.companyName = validated.companyName
+
+      const result = await manager.updateConfig(partial)
+      expect(result.companyName).toBe('New Name')
+      expect(result.sandbox).toEqual(storedSandbox)
     })
   })
 

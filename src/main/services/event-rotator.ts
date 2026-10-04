@@ -77,12 +77,14 @@ export class EventRotatorService {
       this._maybeRotate(path.join(eventsDir, file))
     }
 
-    // Rotate one level of subdirectories (per-workspace/per-session files)
+    // Rotate one level of subdirectories (per-workspace/per-session files).
+    // lstat (not stat, H2): a symlinked entry is never followed here, so a
+    // symlink planted where a workspace directory should be is just skipped.
     for (const entry of entries) {
       const entryPath = path.join(eventsDir, entry)
       let stat: fs.Stats
       try {
-        stat = fs.statSync(entryPath)
+        stat = fs.lstatSync(entryPath)
       } catch {
         continue
       }
@@ -105,7 +107,10 @@ export class EventRotatorService {
 
   private _maybeRotate(filePath: string): void {
     try {
-      const stat = fs.statSync(filePath)
+      // lstat (not stat, H2): a symlinked events file reports its own (tiny)
+      // size here, so it never crosses the rotation threshold and its target
+      // is never touched by this check.
+      const stat = fs.lstatSync(filePath)
       if (stat.size > MAX_SIZE_BYTES) {
         this._rotateFile(filePath)
       }
@@ -146,11 +151,14 @@ export class EventRotatorService {
       return // can't rotate — don't create empty file
     }
 
-    // Create fresh empty file
+    // Create fresh empty file. 'wx' (O_CREAT | O_EXCL) refuses to create
+    // through anything already at this path — including a symlink planted
+    // here between the rename above and this call — instead of silently
+    // following it and truncating its target (H2).
     try {
-      fs.writeFileSync(filePath, '', { encoding: 'utf-8', mode: 0o600 })
+      fs.writeFileSync(filePath, '', { encoding: 'utf-8', mode: 0o600, flag: 'wx' })
     } catch (err) {
-      log.warn(`[EventRotator] Failed to create fresh ${filePath}:`, err)
+      log.warn(`[EventRotator] Failed to create fresh ${filePath} (symlink planted?):`, err)
       return
     }
 

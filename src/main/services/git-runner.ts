@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { sandboxPaths, resolveRealHome } from './sandbox-paths'
 
 // ---------------------------------------------------------------------------
 // git-runner.ts — the ONLY file allowed to import child_process (Sec M-9;
@@ -16,6 +17,18 @@ import path from 'path'
 // git-service.ts (step 1.11+) builds repository operations on top of it.
 // ---------------------------------------------------------------------------
 
+/**
+ * Pins git to a sandbox worktree's real gitdir/commondir/worktree instead of
+ * letting it discover them from `$WT/.git` (a pointer file the container can
+ * write) — C2, §3.6.4. Built only from host-computed paths (sandbox-spec.ts,
+ * step 1.4+), never by reading a pointer file.
+ */
+export interface WorktreePin {
+  gitDir: string
+  commonDir: string
+  workTree: string
+}
+
 // A repo-relative execution context. `workspaceRoots` is the CURRENT list of
 // known workspace roots (absolute, as discovered by the app) and is supplied
 // fresh on every call — not cached — so a workspace added after git was
@@ -27,7 +40,14 @@ export interface RepoCtx {
   /** Every known workspace root, absolute. Not necessarily realpath'd by the
    *  caller — this module realpaths both sides before comparing. */
   workspaceRoots: readonly string[]
+  /** Required for any `root` under SANDBOXES_ROOT — see the UnpinnedWorktree
+   *  fail-closed guard below (C2, SEC-L2). */
+  pin?: WorktreePin
 }
+
+/** A `RepoCtx` with its pin required by the type, not just the runtime guard
+ *  — every `sandbox-worktree` function that touches `$WT` takes this. */
+export type WorktreeRepoCtx = RepoCtx & { pin: WorktreePin }
 
 export interface GitRunOpts {
   timeoutMs?: number
@@ -74,6 +94,19 @@ export class GitDisabled extends Error {
   }
 }
 
+/**
+ * Fail-closed guard (C2, SEC-L2): thrown when a call's `root` lies under
+ * SANDBOXES_ROOT without a pin, or when a pin's `workTree` doesn't
+ * realpath-equal `root`. No call site can run git against a sandbox
+ * worktree unpinned, or with a pin for a different worktree, by mistake.
+ */
+export class UnpinnedWorktree extends Error {
+  constructor() {
+    super('Git operations against a sandbox worktree require a matching pin')
+    this.name = 'UnpinnedWorktree'
+  }
+}
+
 function isInsideAnyRoot(absPath: string, roots: readonly string[]): boolean {
   return roots.some((root) => absPath === root || absPath.startsWith(root + path.sep))
 }
@@ -86,25 +119,28 @@ function realpathOrNull(p: string): string | null {
   }
 }
 
-export type ResolvedGit =
+export type ResolvedExecutable =
   | { available: true; absPath: string }
   | { available: false; reason: 'not-found' | 'inside-workspace' }
 
 /**
- * Resolve the absolute git binary from PATH (M4): walk `pathEnv`, skipping
- * empty, `.` and relative entries (each of those historically means, or can
- * be tricked into meaning, "the current directory" — the repo itself).
- * Take the first `git` (`git.exe` on win32) that is a regular executable
- * file, realpath it, and refuse it if that realpath lies inside any of
- * `workspaceRoots` (also realpath'd before comparison).
+ * Resolve an absolute binary from PATH (M4): walk `pathEnv`, skipping empty,
+ * `.` and relative entries (each of those historically means, or can be
+ * tricked into meaning, "the current directory" — the repo itself). Take the
+ * first `name` (`<name>.exe` on win32) that is a regular executable file,
+ * realpath it, and refuse it if that realpath lies inside any of `roots`
+ * (also realpath'd before comparison). Shared by `resolveGitBinary` and
+ * `docker-runner.ts` (step 1.3, TRD §3.3) so both binaries get identical
+ * resolution and refusal semantics.
  */
-export function resolveGitBinary(
+export function resolveExecutable(
+  name: string,
   pathEnv: string | undefined,
-  workspaceRoots: readonly string[],
+  roots: readonly string[],
   platform: NodeJS.Platform = process.platform,
-): ResolvedGit {
-  const binaryName = platform === 'win32' ? 'git.exe' : 'git'
-  const realRoots = workspaceRoots.map(realpathOrNull).filter((r): r is string => r !== null)
+): ResolvedExecutable {
+  const binaryName = platform === 'win32' ? `${name}.exe` : name
+  const realRoots = roots.map(realpathOrNull).filter((r): r is string => r !== null)
   const entries = (pathEnv ?? '').split(path.delimiter)
 
   for (const rawEntry of entries) {
@@ -133,6 +169,15 @@ export function resolveGitBinary(
   return { available: false, reason: 'not-found' }
 }
 
+/** One-line wrapper over {@link resolveExecutable} for `git` (M4). */
+export function resolveGitBinary(
+  pathEnv: string | undefined,
+  workspaceRoots: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): ResolvedExecutable {
+  return resolveExecutable('git', pathEnv, workspaceRoots, platform)
+}
+
 /**
  * The env recipe (order matters, TRD §3.3.2):
  *  1. Strip every GIT_* key from `base`.
@@ -142,12 +187,17 @@ export function resolveGitBinary(
  *     GIT_CONFIG_COUNT is always set, to 0 when `driverNulls` is empty
  *     (Sec L-2), so a smuggled GIT_CONFIG_KEY_0 from `overrides` or `base`
  *     is ignored (it sits above an explicit count of 0).
+ *  4. With `pin`, GIT_DIR/GIT_COMMON_DIR/GIT_WORK_TREE last, in the same
+ *     "always wins" tier as GIT_CONFIG_COUNT (C2, §3.6.4) — pins git to the
+ *     sandbox worktree's real gitdir/commondir instead of letting it
+ *     discover them from `$WT/.git`, a pointer file the container can write.
  */
 export function buildEnv(
   base: NodeJS.ProcessEnv,
   overrides: Record<string, string | undefined> | undefined,
   driverNulls: Record<string, string> | undefined,
   root: string,
+  pin?: WorktreePin,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const [key, value] of Object.entries(base)) {
@@ -175,6 +225,12 @@ export function buildEnv(
     env[`GIT_CONFIG_KEY_${i}`] = key
     env[`GIT_CONFIG_VALUE_${i}`] = value
   })
+
+  if (pin) {
+    env.GIT_DIR = pin.gitDir
+    env.GIT_COMMON_DIR = pin.commonDir
+    env.GIT_WORK_TREE = pin.workTree
+  }
 
   return env
 }
@@ -271,9 +327,14 @@ export interface CreateGitServiceOptions {
   /** Test-only environment overrides, applied after the GIT_* strip and
    *  before the security variables so hardening always wins (§7.2 H1). */
   baseEnvOverrides?: Record<string, string | undefined>
-  /** True in a packaged production build. Throws if `baseEnvOverrides` is
-   *  also given (Sec L-4) — hermetic overrides must never reach a real build. */
+  /** True in a packaged production build. Throws if `baseEnvOverrides` or
+   *  `sandboxesRootOverride` is also given (Sec L-4) — hermetic overrides
+   *  must never reach a real build. */
   isPackaged?: boolean
+  /** Test-only: overrides the sandboxes root the UnpinnedWorktree guard
+   *  checks `ctx.root` against, instead of
+   *  `sandboxPaths(resolveRealHome()).sandboxesRoot`. */
+  sandboxesRootOverride?: string
 }
 
 export interface GitService {
@@ -313,12 +374,19 @@ function execRaw(
 }
 
 export function createGitService(options: CreateGitServiceOptions = {}): GitService {
-  const { baseEnvOverrides, isPackaged = false } = options
+  const { baseEnvOverrides, isPackaged = false, sandboxesRootOverride } = options
   if (baseEnvOverrides && isPackaged) {
     throw new Error('baseEnvOverrides must not be used in a packaged build')
   }
+  if (sandboxesRootOverride && isPackaged) {
+    throw new Error('sandboxesRootOverride must not be used in a packaged build')
+  }
 
-  let cachedGit: ResolvedGit | null = null
+  function sandboxesRoot(): string {
+    return sandboxesRootOverride ?? sandboxPaths(resolveRealHome()).sandboxesRoot
+  }
+
+  let cachedGit: ResolvedExecutable | null = null
   let cachedVersion: GitVersionState | null = null
   // One semaphore for the whole service (TRD §9.3: "Git concurrency: 4" is an
   // app-wide cap on concurrent git children, not a per-root allowance — the
@@ -342,18 +410,67 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
     }
   }
 
-  function resolveGit(ctx: RepoCtx): ResolvedGit {
+  // The effective refusal roots for git: the caller's known workspace roots
+  // plus every read-write mount source an agent inside a sandbox container
+  // can write to (L5) — `~/.claude`, SANDBOXES_ROOT, SANDBOX_STATE_ROOT and
+  // `~/.corner-office/events`, all derived from the single realHome
+  // (SEC-M2). Recomputed on every call, never cached, so a root added after
+  // the first resolution is still honored by the re-check below.
+  function refusalRoots(ctx: RepoCtx): readonly string[] {
+    return [...ctx.workspaceRoots, ...sandboxPaths(resolveRealHome()).rwMountRoots]
+  }
+
+  function resolveGit(ctx: RepoCtx): ResolvedExecutable {
+    const roots = refusalRoots(ctx)
     if (!cachedGit) {
-      cachedGit = resolveGitBinary(process.env.PATH, ctx.workspaceRoots)
+      cachedGit = resolveGitBinary(process.env.PATH, roots)
       return cachedGit
     }
-    // Re-check on every call: a workspace discovered after the first
-    // resolution must still catch a git binary that now lies inside it
-    // (Sec M-8).
-    if (cachedGit.available && isInsideAnyRoot(cachedGit.absPath, ctx.workspaceRoots.map(realpathOrNull).filter((r): r is string => r !== null))) {
+    // Re-check on every call: a workspace (or rw mount source) discovered
+    // after the first resolution must still catch a git binary that now
+    // lies inside it (Sec M-8).
+    if (cachedGit.available && isInsideAnyRoot(cachedGit.absPath, roots.map(realpathOrNull).filter((r): r is string => r !== null))) {
       cachedGit = { available: false, reason: 'inside-workspace' }
     }
     return cachedGit
+  }
+
+  /**
+   * Fail-closed guard (C2, SEC-L2): returns an `UnpinnedWorktree` error if
+   * `ctx` fails the check, else `null`. Never throws — `runGit` turns the
+   * result into a rejected Promise, matching every other failure path here,
+   * and does so BEFORE `resolveGit`/`runGitOnce` ever run, so a rejected
+   * call spawns nothing.
+   *
+   * Unpinned: `ctx.root` must not lie under the sandboxes root. If
+   * `realpath(ctx.root)` throws (e.g. the worktree no longer exists), falls
+   * back to a lexical check against the raw root — the guard is never
+   * skipped just because the path is gone.
+   *
+   * Pinned: `realpath(pin.workTree)` must equal `realpath(ctx.root)` — a
+   * pin for a different worktree (or one that fails to resolve) is refused.
+   */
+  function checkWorktreePin(ctx: RepoCtx): UnpinnedWorktree | null {
+    const sandboxesRootPath = sandboxesRoot()
+
+    if (!ctx.pin) {
+      let underSandboxesRoot: boolean
+      try {
+        const real = fs.realpathSync(ctx.root)
+        underSandboxesRoot = real === sandboxesRootPath || real.startsWith(sandboxesRootPath + path.sep)
+      } catch {
+        underSandboxesRoot = ctx.root === sandboxesRootPath || ctx.root.startsWith(sandboxesRootPath + path.sep)
+      }
+      return underSandboxesRoot ? new UnpinnedWorktree() : null
+    }
+
+    try {
+      const realRoot = fs.realpathSync(ctx.root)
+      const realWorkTree = fs.realpathSync(ctx.pin.workTree)
+      return realRoot === realWorkTree ? null : new UnpinnedWorktree()
+    } catch {
+      return new UnpinnedWorktree()
+    }
   }
 
   async function runGitOnce(
@@ -373,7 +490,7 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
     }, timeoutMs)
 
     try {
-      const env = buildEnv(process.env, baseEnvOverrides, opts.driverNulls, ctx.root)
+      const env = buildEnv(process.env, baseEnvOverrides, opts.driverNulls, ctx.root, ctx.pin)
       const finalArgs = [...INVARIANT_PREFIX, ...args]
       const maxBuffer = opts.maxBuffer ?? DEFAULT_MAX_BUFFER
 
@@ -458,6 +575,9 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
     runGit(ctx: RepoCtx, args: readonly string[], opts: GitRunOpts = {}): Promise<GitRunResult> {
       if (gitRunnerSettings.executionDisabled) return Promise.reject(new GitDisabled())
 
+      const pinError = checkWorktreePin(ctx)
+      if (pinError) return Promise.reject(pinError)
+
       const resolved = resolveGit(ctx)
       if (!resolved.available) {
         return Promise.reject(
@@ -471,7 +591,11 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([k, v]) => `${k}=${v}`),
       )
-      const key = hashKeyParts([ctx.root, ...args, driverHash, stdinHash])
+      // The pin is hashed into the key too (defense in depth, Appendix C
+      // item 16): a pinned and an unpinned call with identical argv must
+      // never collide into the same in-flight entry.
+      const pinHash = ctx.pin ? hashKeyParts([ctx.pin.gitDir, ctx.pin.commonDir, ctx.pin.workTree]) : ''
+      const key = hashKeyParts([ctx.root, ...args, driverHash, stdinHash, pinHash])
 
       const existing = inFlight.get(key)
       if (existing) return existing
@@ -492,8 +616,10 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
     async getVersion(): Promise<GitVersionState> {
       if (cachedVersion) return cachedVersion
       // Version-checking is repo-independent; cwd doesn't matter, so a
-      // neutral tmp directory is used rather than threading a RepoCtx through.
-      const resolved = resolveGitBinary(process.env.PATH, [])
+      // neutral tmp directory is used rather than threading a RepoCtx
+      // through. Still refuses a git resolved from an rw mount source (L5,
+      // Appendix C item 19).
+      const resolved = resolveGitBinary(process.env.PATH, sandboxPaths(resolveRealHome()).rwMountRoots)
       if (!resolved.available) {
         cachedVersion = { state: 'unavailable' }
         return cachedVersion

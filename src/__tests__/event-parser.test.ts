@@ -16,6 +16,37 @@ function makeEvent(overrides: Record<string, unknown> = {}): string {
   })
 }
 
+// ---------------------------------------------------------------------------
+// Virtual-file helpers for readRegularFileCappedSync (H2) — parseFromOffset
+// goes through the real safe-fs.ts lstat -> open -> fstat -> read pipeline,
+// with only the low-level `fs` calls mocked, so these helpers simulate a
+// whole file rather than stubbing statSync/readSync directly.
+// ---------------------------------------------------------------------------
+
+function mockRegularFile(content: Buffer): void {
+  mockFs.lstatSync = vi.fn().mockReturnValue({ isFile: () => true })
+  mockFs.openSync = vi.fn().mockReturnValue(3)
+  mockFs.fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size: content.length })
+  mockFs.readSync = vi.fn().mockImplementation((_fd: number, buf: Buffer, _off: number, len: number, pos: number) => {
+    const slice = content.subarray(pos, pos + len)
+    slice.copy(buf)
+    return slice.length
+  })
+  mockFs.closeSync = vi.fn()
+}
+
+function mockMissingFile(): void {
+  mockFs.lstatSync = vi.fn().mockImplementation(() => {
+    throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+  })
+}
+
+/** A symlink or FIFO: lstat succeeds but isFile() is false — refused before any open. */
+function mockNonRegularFile(): void {
+  mockFs.lstatSync = vi.fn().mockReturnValue({ isFile: () => false })
+  mockFs.openSync = vi.fn()
+}
+
 describe('EventParserService', () => {
   let parser: EventParserService
 
@@ -23,23 +54,23 @@ describe('EventParserService', () => {
     vi.clearAllMocks()
     parser = new EventParserService()
     mockFs.existsSync = vi.fn().mockReturnValue(false)
-    mockFs.statSync = vi.fn()
+    mockFs.lstatSync = vi.fn()
     mockFs.openSync = vi.fn().mockReturnValue(3)
+    mockFs.fstatSync = vi.fn()
     mockFs.readSync = vi.fn()
     mockFs.closeSync = vi.fn()
   })
 
   describe('parseFromOffset', () => {
     it('returns empty events when file does not exist', () => {
-      mockFs.existsSync = vi.fn().mockReturnValue(false)
+      mockMissingFile()
       const result = parser.parseFromOffset('/path/events.jsonl', 0)
       expect(result.events).toHaveLength(0)
       expect(result.newOffset).toBe(0)
     })
 
     it('returns empty events when file size equals offset (no new data)', () => {
-      mockFs.existsSync = vi.fn().mockReturnValue(true)
-      mockFs.statSync = vi.fn().mockReturnValue({ size: 100 })
+      mockRegularFile(Buffer.alloc(100))
       const result = parser.parseFromOffset('/path/events.jsonl', 100)
       expect(result.events).toHaveLength(0)
       expect(result.newOffset).toBe(100)
@@ -48,12 +79,7 @@ describe('EventParserService', () => {
     it('parses valid JSONL events from offset', () => {
       const line = makeEvent({ event: 'SessionStart' }) + '\n'
       const bytes = Buffer.from(line, 'utf-8')
-      mockFs.existsSync = vi.fn().mockReturnValue(true)
-      mockFs.statSync = vi.fn().mockReturnValue({ size: bytes.length })
-      mockFs.readSync = vi.fn().mockImplementation((_fd: number, buf: Buffer) => {
-        bytes.copy(buf)
-        return bytes.length
-      })
+      mockRegularFile(bytes)
 
       const result = parser.parseFromOffset('/path/events.jsonl', 0)
       expect(result.events).toHaveLength(1)
@@ -64,15 +90,20 @@ describe('EventParserService', () => {
     it('skips malformed JSONL lines without crashing', () => {
       const content = 'not-json\n' + makeEvent() + '\n'
       const bytes = Buffer.from(content, 'utf-8')
-      mockFs.existsSync = vi.fn().mockReturnValue(true)
-      mockFs.statSync = vi.fn().mockReturnValue({ size: bytes.length })
-      mockFs.readSync = vi.fn().mockImplementation((_fd: number, buf: Buffer) => {
-        bytes.copy(buf)
-        return bytes.length
-      })
+      mockRegularFile(bytes)
 
       const result = parser.parseFromOffset('/path/events.jsonl', 0)
       expect(result.events).toHaveLength(1) // malformed line skipped
+    })
+
+    it('skips a syntactically valid line that fails schema validation', () => {
+      // Valid JSON, but missing the required `event` field entirely.
+      const content = JSON.stringify({ timestamp: '2026-03-01T10:00:00Z', workspace: 'ws', sessionId: 's' }) + '\n' + makeEvent() + '\n'
+      const bytes = Buffer.from(content, 'utf-8')
+      mockRegularFile(bytes)
+
+      const result = parser.parseFromOffset('/path/events.jsonl', 0)
+      expect(result.events).toHaveLength(1) // schema-invalid line skipped
     })
 
     it('tracks byte offset correctly across two reads', () => {
@@ -80,29 +111,95 @@ describe('EventParserService', () => {
       const line2 = makeEvent({ event: 'SessionEnd' }) + '\n'
       const bytes1 = Buffer.from(line1, 'utf-8')
       const bytes2 = Buffer.from(line2, 'utf-8')
-      const totalSize = bytes1.length + bytes2.length
+      const combined = Buffer.concat([bytes1, bytes2])
 
       // First read: offset=0, file has only line1
-      mockFs.existsSync = vi.fn().mockReturnValue(true)
-      mockFs.statSync = vi.fn().mockReturnValue({ size: bytes1.length })
-      mockFs.readSync = vi.fn().mockImplementation((_fd: number, buf: Buffer) => {
-        bytes1.copy(buf)
-        return bytes1.length
-      })
+      mockRegularFile(bytes1)
       const r1 = parser.parseFromOffset('/path/events.jsonl', 0)
       expect(r1.events).toHaveLength(1)
       expect(r1.newOffset).toBe(bytes1.length)
 
       // Second read: offset=bytes1.length, file now has both lines
-      mockFs.statSync = vi.fn().mockReturnValue({ size: totalSize })
-      mockFs.readSync = vi.fn().mockImplementation((_fd: number, buf: Buffer) => {
-        bytes2.copy(buf)
-        return bytes2.length
-      })
+      mockRegularFile(combined)
       const r2 = parser.parseFromOffset('/path/events.jsonl', r1.newOffset)
       expect(r2.events).toHaveLength(1)
       expect(r2.events[0].event).toBe('SessionEnd')
-      expect(r2.newOffset).toBe(totalSize)
+      expect(r2.newOffset).toBe(combined.length)
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // H2 hardening (TRD §10.8, X1, SEC-L4): the events reader never follows a
+  // symlink, never hangs on a FIFO, and never allocates more than 1 MB at once.
+  // ---------------------------------------------------------------------------
+
+  describe('parseFromOffset — H2 hardened reads', () => {
+    it.each(['symlink', 'FIFO'])('ignores a %s in place of the events file (no follow, returns promptly)', () => {
+      // Both are caught at the same lstat().isFile() gate — neither is a
+      // regular file, so open() is never reached (no hang on a FIFO).
+      mockNonRegularFile()
+      const result = parser.parseFromOffset('/path/events.jsonl', 0)
+      expect(result.events).toHaveLength(0)
+      expect(result.newOffset).toBe(0)
+      expect(mockFs.openSync).not.toHaveBeenCalled()
+    })
+
+    it('a 50 MB file is read in <=1 MB chunks (spy on Buffer.alloc/readSync sizes) and every event is eventually parsed', () => {
+      const EVENTS_READ_CAP = 1024 * 1024
+      const TARGET_SIZE = 51 * 1024 * 1024 // safely over the 50 MB acceptance bar
+      const lines: string[] = []
+      let totalLen = 0
+      while (totalLen < TARGET_SIZE) {
+        // Pad each line so the whole file lands well past 50 MB in total.
+        const line = makeEvent({ event: 'SessionStart', pad: 'x'.repeat(25_000) })
+        lines.push(line)
+        totalLen += Buffer.byteLength(line, 'utf-8') + 1 // + '\n'
+      }
+      const lineCount = lines.length
+      const content = Buffer.from(lines.join('\n') + '\n', 'utf-8')
+      expect(content.length).toBeGreaterThan(50 * 1024 * 1024)
+      mockRegularFile(content)
+
+      const allocSpy = vi.spyOn(Buffer, 'alloc')
+      const readSizes: number[] = []
+      mockFs.readSync = vi.fn().mockImplementation((_fd: number, buf: Buffer, _off: number, len: number, pos: number) => {
+        readSizes.push(len)
+        const slice = content.subarray(pos, pos + len)
+        slice.copy(buf)
+        return slice.length
+      })
+
+      const allEvents: unknown[] = []
+      let offset = 0
+      let iterations = 0
+      while (offset < content.length && iterations < lineCount * 2) {
+        const result = parser.parseFromOffset('/path/events.jsonl', offset)
+        allEvents.push(...result.events)
+        expect(result.newOffset).toBeGreaterThanOrEqual(offset)
+        offset = result.newOffset
+        iterations++
+      }
+
+      expect(allEvents).toHaveLength(lineCount)
+      for (const size of readSizes) {
+        expect(size).toBeLessThanOrEqual(EVENTS_READ_CAP)
+      }
+      // Every capped read allocates a buffer no larger than the 1 MB cap.
+      for (const call of allocSpy.mock.calls) {
+        expect(call[0] as number).toBeLessThanOrEqual(EVENTS_READ_CAP)
+      }
+      allocSpy.mockRestore()
+    })
+
+    it('makes no progress when a 1 MB chunk has no complete line yet (drains on a later poll cycle, B-L1)', () => {
+      // A single line far longer than the 1 MB cap, not yet terminated.
+      const hugeLine = 'x'.repeat(2 * 1024 * 1024)
+      const content = Buffer.from(hugeLine, 'utf-8') // no trailing '\n' — still being written
+      mockRegularFile(content)
+
+      const result = parser.parseFromOffset('/path/events.jsonl', 0)
+      expect(result.events).toHaveLength(0)
+      expect(result.newOffset).toBe(0) // no progress until a newline lands within a chunk
     })
   })
 
@@ -244,12 +341,7 @@ describe('EventParserService', () => {
         data: {},
       }) + '\n'
       const bytes = Buffer.from(line, 'utf-8')
-      mockFs.existsSync = vi.fn().mockReturnValue(true)
-      mockFs.statSync = vi.fn().mockReturnValue({ size: bytes.length })
-      mockFs.readSync = vi.fn().mockImplementation((_fd: number, buf: Buffer) => {
-        bytes.copy(buf)
-        return bytes.length
-      })
+      mockRegularFile(bytes)
 
       const result = parser.parseFromOffset('/path/events.jsonl', 0)
       expect(result.events).toHaveLength(1)
@@ -267,12 +359,7 @@ describe('EventParserService', () => {
         data: {},
       }) + '\n'
       const bytes = Buffer.from(line, 'utf-8')
-      mockFs.existsSync = vi.fn().mockReturnValue(true)
-      mockFs.statSync = vi.fn().mockReturnValue({ size: bytes.length })
-      mockFs.readSync = vi.fn().mockImplementation((_fd: number, buf: Buffer) => {
-        bytes.copy(buf)
-        return bytes.length
-      })
+      mockRegularFile(bytes)
 
       const result = parser.parseFromOffset('/path/events.jsonl', 0)
       expect(result.events[0].event).toBe('SessionEnd')
@@ -376,6 +463,65 @@ describe('EventParserService', () => {
       const event = { timestamp: '2026-03-01T10:00:00Z', event: 'ConfigChange' as never, workspace: 'ws', sessionId: 's', data: {} }
       const item = parser.generateActivityItem(event, 'ws')
       expect(item.title).toBe('Config changed in ws')
+    })
+
+    it('gate_passed produces "Gate passed in <ws>" title', () => {
+      const event = { timestamp: '2026-03-01T10:00:00Z', event: 'Stop' as never, workspace: 'ws', sessionId: 's', data: { gatePassed: true } }
+      const item = parser.generateActivityItem(event, 'ws')
+      expect(item.title).toBe('Gate passed in ws')
+    })
+
+    it('review_complete produces "Review complete in <ws>" title', () => {
+      const event = { timestamp: '2026-03-01T10:00:00Z', event: 'Stop' as never, workspace: 'ws', sessionId: 's', data: { reviewComplete: true } }
+      const item = parser.generateActivityItem(event, 'ws')
+      expect(item.title).toBe('Review complete in ws')
+    })
+
+    it('input_required produces "Input required in <ws>" title', () => {
+      const event = { timestamp: '2026-03-01T10:00:00Z', event: 'PermissionRequest' as never, workspace: 'ws', sessionId: 's', data: {} }
+      const item = parser.generateActivityItem(event, 'ws')
+      expect(item.title).toBe('Input required in ws')
+    })
+
+    it('context_compacted produces "Context compacted in <ws>" title', () => {
+      const event = { timestamp: '2026-03-01T10:00:00Z', event: 'PreCompact' as never, workspace: 'ws', sessionId: 's', data: {} }
+      const item = parser.generateActivityItem(event, 'ws')
+      expect(item.title).toBe('Context compacted in ws')
+    })
+
+    it('shows the Bash command (truncated over 80 chars) in the detail', () => {
+      const longCmd = 'echo ' + 'x'.repeat(100)
+      const event = {
+        timestamp: '2026-03-01T10:00:00Z', event: 'PreToolUse' as never, workspace: 'ws', sessionId: 's', data: {},
+        tool_name: 'Bash', tool_input: { command: longCmd },
+      }
+      const item = parser.generateActivityItem(event, 'ws')
+      expect(item.detail).toBe(`Bash: ${longCmd.slice(0, 77)}...`)
+    })
+
+    it('shows the file path in the detail for a Read/Write/Edit tool', () => {
+      const event = {
+        timestamp: '2026-03-01T10:00:00Z', event: 'PreToolUse' as never, workspace: 'ws', sessionId: 's', data: {},
+        tool_name: 'Read', tool_input: { file_path: '/repo/src/index.ts' },
+      }
+      const item = parser.generateActivityItem(event, 'ws')
+      expect(item.detail).toBe('Read: /repo/src/index.ts')
+    })
+
+    it('shows the pattern in the detail for a Grep/Glob tool', () => {
+      const event = {
+        timestamp: '2026-03-01T10:00:00Z', event: 'PreToolUse' as never, workspace: 'ws', sessionId: 's', data: {},
+        tool_name: 'Grep', tool_input: { pattern: 'TODO' },
+      }
+      const item = parser.generateActivityItem(event, 'ws')
+      expect(item.detail).toBe('Grep: TODO')
+    })
+  })
+
+  describe('unreachable defaults (defensive fallbacks)', () => {
+    it('classifyActivity falls back to agent_spawned for an unrecognized event name', () => {
+      const event = { timestamp: '2026-03-01T10:00:00Z', event: 'SomeFutureEvent' as never, workspace: 'ws', sessionId: 's', data: {} }
+      expect(parser.classifyActivity(event)).toBe('agent_spawned')
     })
   })
 })

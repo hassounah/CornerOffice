@@ -63,6 +63,23 @@ describe('useOpenCodeExplorer — Office (navigate)', () => {
   })
 })
 
+describe('useOpenCodeExplorer — sandbox root (#0029)', () => {
+  it("encodes root=sandbox in the Office URL alongside the review options (Review on the sandbox badge)", () => {
+    const { result } = renderHook(() => useOpenCodeExplorer())
+    result.current('my-ws', { root: 'sandbox', entry: 'review', changedOnly: true, baseline: 'branch', expectedBranch: 'feat/a' })
+    const url = mockNavigate.mock.calls[0][0] as string
+    const params = new URLSearchParams(url.split('?')[1])
+    expect(url.startsWith('/workspace/my-ws/code?')).toBe(true)
+    expect(Object.fromEntries(params)).toEqual({ root: 'sandbox', entry: 'review', changed: '1', baseline: 'branch', branch: 'feat/a' })
+  })
+
+  it("leaves the workspace root out of the URL, so every existing link is unchanged", () => {
+    const { result } = renderHook(() => useOpenCodeExplorer())
+    result.current('my-ws', { root: 'workspace', entry: 'browse' })
+    expect(mockNavigate).toHaveBeenCalledWith('/workspace/my-ws/code?entry=browse')
+  })
+})
+
 describe('useOpenCodeExplorer — Realm (openExplorer via dynamic import)', () => {
   beforeEach(() => {
     mockRealmEnabled = true
@@ -73,6 +90,12 @@ describe('useOpenCodeExplorer — Realm (openExplorer via dynamic import)', () =
     result.current('my-ws', { entry: 'review' })
     await vi.waitFor(() => expect(mockOpenExplorer).toHaveBeenCalledWith('my-ws', { entry: 'review' }))
     expect(mockNavigate).not.toHaveBeenCalled()
+  })
+
+  it('passes the sandbox root through to the store', async () => {
+    const { result } = renderHook(() => useOpenCodeExplorer())
+    result.current('my-ws', { root: 'sandbox', entry: 'review' })
+    await vi.waitFor(() => expect(mockOpenExplorer).toHaveBeenCalledWith('my-ws', { root: 'sandbox', entry: 'review' }))
   })
 })
 

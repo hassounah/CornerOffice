@@ -5,6 +5,9 @@ import os from 'os'
 import lockfile from 'proper-lockfile'
 import { z } from 'zod'
 import type { AppConfig, RealmLocation } from '../types'
+import type { SandboxConfig } from '../types/config'
+import { AllowlistSchema } from './sandbox-allowlist'
+import { SANDBOX_SLUG_RE, CHANNEL_PORT_RANGE } from './sandbox-spec'
 
 // ---------------------------------------------------------------------------
 // Zod schema for AppConfig (used for parse + migration validation)
@@ -89,6 +92,21 @@ const WorkspaceConfigSchema = z.object({
   archived: z.boolean(),
 })
 
+// ---------------------------------------------------------------------------
+// Sandbox config schema (TRD §3.14, plan step 1.8)
+// ---------------------------------------------------------------------------
+
+const SandboxWorkspaceConfigSchema = z.object({
+  channelPort: z.number().int().min(CHANNEL_PORT_RANGE[0]).max(CHANNEL_PORT_RANGE[1]).nullable(),
+  allowlist: AllowlistSchema,
+})
+
+const SandboxConfigSchema = z.object({
+  toolchains: z.object({ node: z.boolean(), go: z.boolean(), buildBase: z.boolean() }),
+  globalAllowlist: AllowlistSchema,
+  workspaces: z.record(z.string().regex(SANDBOX_SLUG_RE), SandboxWorkspaceConfigSchema),
+})
+
 const AppConfigSchema = z.object({
   version: z.number().int().positive(),
   companyName: z.string(),
@@ -121,6 +139,7 @@ const AppConfigSchema = z.object({
   }),
   realm: RealmConfigSchema,
   terminal: TerminalConfigSchema,
+  sandbox: SandboxConfigSchema.optional(),
   discoveryExclusions: z.array(z.string()),
   firstLaunchComplete: z.boolean(),
   terminalEmulator: z.string().nullable(),
@@ -327,6 +346,21 @@ export class ConfigManager {
       }
     }
 
+    // Defensive: if sandbox field is present but malformed, replace with
+    // defaults (TRD §3.14). Absent stays absent — no version bump, no
+    // migration; an absent section means defaults via getSandboxConfig().
+    if ('sandbox' in migrated) {
+      try {
+        const sandboxResult = SandboxConfigSchema.safeParse(migrated.sandbox)
+        if (!sandboxResult.success) {
+          log.warn('[ConfigManager] Invalid sandbox config, falling back to defaults:', sandboxResult.error.message)
+          migrated = { ...migrated, sandbox: this._defaultSandbox() }
+        }
+      } catch {
+        migrated = { ...migrated, sandbox: this._defaultSandbox() }
+      }
+    }
+
     const result = AppConfigSchema.safeParse(migrated)
     if (!result.success) {
       log.warn('[ConfigManager] Config schema validation failed:', result.error.message)
@@ -492,6 +526,19 @@ export class ConfigManager {
       fontSize: 14,
       windowBounds: {},
     }
+  }
+
+  private _defaultSandbox(): SandboxConfig {
+    return {
+      toolchains: { node: true, go: true, buildBase: true },
+      globalAllowlist: [],
+      workspaces: {},
+    }
+  }
+
+  /** `config.sandbox` is optional (TRD §3.14) — this returns the effective value, defaulting when absent. */
+  getSandboxConfig(config: AppConfig): SandboxConfig {
+    return config.sandbox ?? this._defaultSandbox()
   }
 
   /**

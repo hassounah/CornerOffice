@@ -3,6 +3,8 @@ import type { SettingsSectionId } from '@main/types/realm'
 import type { RealmLocation } from '@main/types/config'
 import { useSettingsStore } from '../../../stores/settings-store'
 import { useWorkspaceStore } from '../../../stores/workspace-store'
+import { useSandboxStore } from '../../../stores/sandbox-store'
+import { SandboxSettingsPanel } from '../../sandbox/SandboxSettingsPanel'
 import { HookSettings } from '../../settings/HookSettings'
 import { NotificationSettings } from '../../settings/NotificationSettings'
 import { AppearanceSettings } from '../../settings/AppearanceSettings'
@@ -30,13 +32,14 @@ import btnAppearanceInactive from '../../../../../assets/realm/ui/buttons/Button
 // Constants
 // ---------------------------------------------------------------------------
 
-const SECTIONS: SettingsSectionId[] = ['kingdom', 'workspaces', 'hooks', 'notifications', 'appearance']
+const SECTIONS: SettingsSectionId[] = ['kingdom', 'workspaces', 'hooks', 'notifications', 'sandbox', 'appearance']
 
 const SECTION_LABELS: Record<SettingsSectionId, string> = {
   kingdom: 'Kingdom',
   workspaces: 'Workspaces',
   hooks: 'Hooks',
   notifications: 'Notifications',
+  sandbox: 'The Armory',
   appearance: 'Appearance',
 }
 
@@ -45,6 +48,8 @@ const SECTION_ACTIVE_ASSETS: Record<SettingsSectionId, string> = {
   workspaces: btnWorkspacesActive,
   hooks: btnHooksActive,
   notifications: btnNotificationsActive,
+  // The Armory has no banner of its own yet: it reuses the Hooks pair (its accessible name still comes from SECTION_LABELS).
+  sandbox: btnHooksActive,
   appearance: btnAppearanceActive,
 }
 
@@ -53,6 +58,7 @@ const SECTION_INACTIVE_ASSETS: Record<SettingsSectionId, string> = {
   workspaces: btnWorkspacesInactive,
   hooks: btnHooksInactive,
   notifications: btnNotificationsInactive,
+  sandbox: btnHooksInactive,
   appearance: btnAppearanceInactive,
 }
 
@@ -458,11 +464,27 @@ const selectStyle: React.CSSProperties = {
 // ---------------------------------------------------------------------------
 
 export function SettingsChamber({ initialSection = 'kingdom' }: { initialSection?: SettingsSectionId }): React.ReactElement {
-  const [activeSection, setActiveSection] = useState<SettingsSectionId>(initialSection)
+  // A "blocked a network request" notification click, or the chooser's "Show log" link, asks for the Armory with
+  // that workspace selected (`settingsRequest`). Read once at mount; the subscription below handles a chamber
+  // that is already open.
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>(() => (useSandboxStore.getState().settingsRequest !== null ? 'sandbox' : initialSection))
+  const [armoryWorkspace, setArmoryWorkspace] = useState<string | undefined>(() => useSandboxStore.getState().settingsRequest || undefined)
   const dialogRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     dialogRef.current?.focus()
+  }, [])
+
+  useEffect(() => {
+    // Consumed means cleared, so the request never fires a second time.
+    if (useSandboxStore.getState().settingsRequest !== null) useSandboxStore.getState().clearSettingsRequest()
+    return useSandboxStore.subscribe((state) => {
+      const requested = state.settingsRequest
+      if (requested === null) return
+      setActiveSection('sandbox')
+      setArmoryWorkspace(requested || undefined)
+      useSandboxStore.getState().clearSettingsRequest()
+    })
   }, [])
 
   function handleTabKeyDown(e: React.KeyboardEvent, section: SettingsSectionId): void {
@@ -549,6 +571,12 @@ export function SettingsChamber({ initialSection = 'kingdom' }: { initialSection
           {activeSection === 'workspaces' && <WorkspacesSection />}
           {activeSection === 'hooks' && <div style={{ ...classicSettingsChrome, ...realmTokenOverrides }}><HookSettings /></div>}
           {activeSection === 'notifications' && <div style={{ ...classicSettingsChrome, ...realmTokenOverrides }}><NotificationSettings /></div>}
+          {/* Keyed by the requested workspace, so a second request while open re-selects it. */}
+          {activeSection === 'sandbox' && (
+            <div style={{ ...classicSettingsChrome, ...realmTokenOverrides }}>
+              <SandboxSettingsPanel key={armoryWorkspace ?? ''} skin="realm" initialWorkspace={armoryWorkspace} />
+            </div>
+          )}
           {activeSection === 'appearance' && <AppearanceSection />}
         </div>
       </div>

@@ -83,6 +83,7 @@ beforeEach(() => {
     pluginDetector: null,
     channelConnection: null,
     terminalManager: null,
+    sandboxManager: null,
   }
 
   handlers = buildRealHandlers(appState, () => null)

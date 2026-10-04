@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import type { HookEvent } from '../types'
 import type { NotificationConfig } from '../types/config'
+import type { SandboxNotice } from '../types/sandbox'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -16,10 +17,14 @@ export interface AppNotification {
   detail: string | null
   timestamp: string
   autoDismissMs: number | null  // null = manual dismiss only
+  /** Provenance (#0029, §3.17). Absent means host. A sandbox item's OS title starts with "Sandbox · <workspace>". */
+  source?: 'host' | 'sandbox'
+  /** Where a click on the OS notification should land (renderer-handled). */
+  target?: string
 }
 
 export interface NotificationCallbacks {
-  showOsNotification: (title: string, body: string, workspaceSlug: string, eventTimestamp: string) => void
+  showOsNotification: (title: string, body: string, workspaceSlug: string, eventTimestamp: string, target?: string) => void
   getConfig: () => NotificationConfig
   getUnacknowledged: (workspaceSlug: string) => number
   setUnacknowledged: (workspaceSlug: string, count: number) => void
@@ -203,6 +208,60 @@ export class NotificationService {
     this._activePipelines = new Set(workspaceSlugs)
   }
 
+  /**
+   * Raises a notice from the sandbox subsystem with FIXED copy (§3.8.2, §3.12, UX-H1). The
+   * inputs are enums and numbers only, so nothing an agent chooses (a domain, stderr) can
+   * reach the text. Blocked needs action; the rest are progress-tier.
+   */
+  notifySandbox(notice: SandboxNotice): void {
+    const base = { id: crypto.randomUUID(), timestamp: new Date().toISOString(), autoDismissMs: null, source: 'sandbox' as const }
+    switch (notice.kind) {
+      case 'blocked':
+        this.dispatch({
+          ...base,
+          workspace: notice.slug,
+          tier: 'requiresAction',
+          summary: 'Network request blocked',
+          // The workspace is shown beside the text, and Realm truncates a body at 80 characters: keep this short and skin-neutral.
+          detail: 'A network request was blocked. Review it in Sandbox settings.',
+          target: 'sandbox-network',
+        })
+        return
+      case 'unexpected-exit': {
+        const why = notice.reason === 'docker-unavailable' ? 'Docker unavailable' : notice.exitCode === null ? 'the session exited' : `exit code ${notice.exitCode}`
+        this.dispatch({
+          ...base,
+          workspace: notice.slug,
+          tier: 'requiresAction',
+          summary: 'Sandbox session ended unexpectedly',
+          detail: `The session ended unexpectedly (${why}).`,
+          target: 'sandbox-chooser',
+        })
+        return
+      }
+      case 'container-recreated':
+        this.dispatch({
+          ...base,
+          workspace: notice.slug,
+          tier: 'progress',
+          summary: 'Sandbox container recreated',
+          detail: 'The container for this workspace was recreated.',
+        })
+        return
+      case 'image-ready':
+        this.dispatch({
+          ...base,
+          workspace: notice.slug ?? '',
+          tier: 'progress',
+          summary: 'Sandbox image is ready',
+          detail: null,
+          // Fixed data chosen here: the requesting workspace's chooser, else Settings → Sandbox.
+          target: notice.slug ? 'sandbox-chooser' : 'sandbox-image',
+        })
+        return
+    }
+  }
+
   recordActivity(workspaceSlug: string): void {
     this._lastActivity.set(workspaceSlug, Date.now())
     this._consecutiveIdle.delete(workspaceSlug)
@@ -218,9 +277,14 @@ export class NotificationService {
   }
 
   private _showOs(notification: AppNotification): void {
-    const title = `${notification.workspace} -- ${notification.summary}`
+    const prefix = notification.source === 'sandbox' ? `Sandbox · ${notification.workspace}` : notification.workspace
+    const title = notification.workspace ? `${prefix} -- ${notification.summary}` : notification.summary
     const body = notification.detail ?? ''
-    this._callbacks.showOsNotification(title, body, notification.workspace, notification.timestamp)
+    if (notification.target) {
+      this._callbacks.showOsNotification(title, body, notification.workspace, notification.timestamp, notification.target)
+    } else {
+      this._callbacks.showOsNotification(title, body, notification.workspace, notification.timestamp)
+    }
   }
 
   private _isQuietHours(config: NotificationConfig): boolean {

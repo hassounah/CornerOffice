@@ -62,8 +62,8 @@ describe('IPC channel constants', () => {
     expect(NOTIFICATION_CHANNELS.NEW).toBe('notification:new')
   })
 
-  it('push channels list has exactly 17 entries', () => {
-    expect(PUSH_CHANNELS).toHaveLength(17)
+  it('push channels list has exactly 20 entries', () => {
+    expect(PUSH_CHANNELS).toHaveLength(20)
   })
 
   it('push channels includes feature:shipped', () => {

@@ -6,6 +6,7 @@ import { useDocViewerStore } from '../../stores/docviewer-store'
 import { useCodeExplorerStore } from '../../stores/code-explorer-store'
 import { guardAction } from '../../hooks/useUnsavedGuard'
 import { useSettingsStore } from '../../stores/settings-store'
+import { useSandboxStore } from '../../stores/sandbox-store'
 import { KingdomMap } from './views/KingdomMap'
 import { OverlayBackdrop } from './OverlayBackdrop'
 
@@ -133,6 +134,20 @@ export function RealmShell(): React.ReactElement {
   const fetchWorkspaces = useWorkspaceStore((s) => s.fetchAll)
   const codeOpen = useCodeExplorerStore((s) => s.open)
   const closeCodeExplorer = useCodeExplorerStore((s) => s.closeExplorer)
+
+  // A sandbox notification click can ask for the Armory (build log, "blocked a network request") or for a
+  // workspace's chooser ("Sandbox image is ready"). The Realm has no routes, so open the overlay that consumes it;
+  // the overlay clears the request. An overlay that is already showing the right place consumes it itself.
+  const settingsRequested = useSandboxStore((s) => s.settingsRequest !== null)
+  const chooserRequestedFor = useSandboxStore((s) => s.chooserRequest)
+  useEffect(() => {
+    if (settingsRequested && primaryOverlay !== 'settings-chamber') openOverlay({ overlayId: 'settings-chamber', initialSection: 'sandbox' })
+  }, [settingsRequested, primaryOverlay, openOverlay])
+  useEffect(() => {
+    if (!chooserRequestedFor) return
+    const showing = primaryOverlay === 'wizards-study' && primaryOverlayContext?.overlayId === 'wizards-study' && primaryOverlayContext.workspaceSlug === chooserRequestedFor
+    if (!showing) openOverlay({ overlayId: 'wizards-study', workspaceSlug: chooserRequestedFor })
+  }, [chooserRequestedFor, primaryOverlay, primaryOverlayContext, openOverlay])
 
   const realmConfig = useSettingsStore((s) => s.config?.realm)
   const [firstRunDismissed, setFirstRunDismissed] = useState(false)

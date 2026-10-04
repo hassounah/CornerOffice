@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import type { AppConfig, WorkspaceConfig } from '@main/types/config'
 
 // ---------------------------------------------------------------------------
@@ -40,6 +40,13 @@ Object.defineProperty(window, 'cornerOffice', {
       installHooks: vi.fn().mockResolvedValue({ data: { installed: true }, error: null }),
       uninstallHooks: vi.fn().mockResolvedValue({ data: { uninstalled: true }, error: null }),
     },
+    sandbox: {
+      getEnvironment: vi.fn().mockResolvedValue({ data: { docker: 'ok', dockerVersion: '28.0.1', image: { state: 'ready', builtAt: null, sizeBytes: null } }, error: null }),
+      getSettings: vi.fn().mockResolvedValue({ data: null, error: null }),
+      getSummaries: vi.fn().mockResolvedValue({ data: {}, error: null }),
+      getStatus: vi.fn().mockResolvedValue({ data: null, error: null }),
+      getBlocked: vi.fn().mockResolvedValue({ data: [], error: null }),
+    },
     shell: {
       openTerminal: vi.fn().mockResolvedValue({ data: { success: true }, error: null }),
     },
@@ -56,6 +63,7 @@ import { NotificationSettings } from '../../../renderer/components/settings/Noti
 import { HookSettings } from '../../../renderer/components/settings/HookSettings'
 import { WorkspaceSettings } from '../../../renderer/components/settings/WorkspaceSettings'
 import Settings from '../../../renderer/pages/Settings'
+import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
 import { registerDirtySource, useGuardDialogStore } from '../../../renderer/stores/dirty-registry'
 
 // ---------------------------------------------------------------------------
@@ -564,7 +572,19 @@ describe('Settings page', () => {
     expect(screen.getByRole('tab', { name: 'Workspaces' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Notifications' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Hooks' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Sandbox' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Appearance' })).toBeInTheDocument()
+  })
+
+  it('switches to the Sandbox tab and renders its sections', async () => {
+    render(<Settings />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Sandbox' }))
+
+    expect(screen.getByRole('tab', { name: 'Sandbox' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'settings-tab-sandbox')
+    for (const name of ['Docker', 'Image', 'Toolchains', 'Network', 'Sandboxes']) {
+      expect(await screen.findByRole('region', { name })).toBeInTheDocument()
+    }
   })
 
   it('Workspaces tab is selected by default', () => {
@@ -595,5 +615,86 @@ describe('Settings page', () => {
     render(<Settings />)
     const panel = screen.getByRole('tabpanel')
     expect(panel).toHaveAttribute('aria-labelledby', 'settings-tab-workspaces')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Settings page — a sandbox notification click lands on Sandbox settings with
+// the workspace selected (#0029 step 5.6 follow-up)
+// ---------------------------------------------------------------------------
+
+describe('Settings page — settingsRequest', () => {
+  const SETTINGS_VIEW = { toolchains: { node: true, go: true, buildBase: true }, defaultAllowlist: [], globalAllowlist: [], workspaceAllowlists: {} }
+
+  function workspace(slug: string, displayName: string): import('@main/types/workspace').Workspace {
+    return { slug, displayName, path: `/home/u/${slug}` } as import('@main/types/workspace').Workspace
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockSettingsStore.config = makeConfig()
+    mockSettingsStore.loading = false
+    mockSettingsStore.error = null
+    mockWorkspaceStore.workspaces = [workspace('alpha', 'Alpha'), workspace('beta', 'Beta')]
+    useSandboxStore.setState({ settingsRequest: null, settings: SETTINGS_VIEW })
+  })
+
+  afterEach(() => {
+    mockWorkspaceStore.workspaces = []
+  })
+
+  const picker = () => screen.getByRole('combobox', { name: 'Workspace' }) as HTMLSelectElement
+
+  it('a request made before Settings opens lands on the Sandbox tab with that workspace selected, and is consumed', async () => {
+    useSandboxStore.getState().requestSettings('beta')
+
+    render(<Settings />)
+
+    expect(screen.getByRole('tab', { name: 'Sandbox' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Workspaces' })).toHaveAttribute('aria-selected', 'false')
+    expect(picker().value).toBe('beta')
+    expect(useSandboxStore.getState().settingsRequest).toBeNull()
+  })
+
+  it('without a request, the default tab and the first workspace are unchanged', () => {
+    render(<Settings />)
+    expect(screen.getByRole('tab', { name: 'Workspaces' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(screen.getByRole('tab', { name: 'Sandbox' }))
+    expect(picker().value).toBe('alpha')
+  })
+
+  it('a request that arrives while Settings is already open switches to the Sandbox tab and selects the workspace', async () => {
+    render(<Settings />)
+    expect(screen.getByRole('tab', { name: 'Workspaces' })).toHaveAttribute('aria-selected', 'true')
+
+    await act(async () => {
+      useSandboxStore.getState().requestSettings('beta')
+    })
+
+    expect(screen.getByRole('tab', { name: 'Sandbox' })).toHaveAttribute('aria-selected', 'true')
+    expect(picker().value).toBe('beta')
+    expect(useSandboxStore.getState().settingsRequest).toBeNull()
+  })
+
+  it('a second request while the Sandbox tab is open re-selects the workspace', async () => {
+    useSandboxStore.getState().requestSettings('alpha')
+    render(<Settings />)
+    expect(picker().value).toBe('alpha')
+
+    await act(async () => {
+      useSandboxStore.getState().requestSettings('beta')
+    })
+
+    expect(picker().value).toBe('beta')
+  })
+
+  it('stops listening when Settings closes', async () => {
+    const { unmount } = render(<Settings />)
+    unmount()
+
+    useSandboxStore.getState().requestSettings('beta')
+
+    // Nothing consumed it: it waits for the next Settings that opens.
+    expect(useSandboxStore.getState().settingsRequest).toBe('beta')
   })
 })

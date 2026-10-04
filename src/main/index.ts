@@ -22,17 +22,38 @@ import type { AppState } from './ipc/handlers'
 import { WORKSPACE_CHANNELS, HOMUNCULUS_CHANNELS, ACTIVITY_CHANNELS, GAMIFICATION_CHANNELS, MAIN_CHANNELS, CHANNEL_IPC, NOTIFICATION_CHANNELS, CODE_CHANNELS } from './ipc/channels'
 import { PluginDetectorService } from './services/plugin-detector'
 import { ChannelDiscoveryService } from './services/channel-discovery'
-import { ChannelConnectionService } from './services/channel-connection'
+import { ChannelConnectionService, defaultIsAlive } from './services/channel-connection'
 import { TerminalManagerService } from './services/terminal-manager'
-import { computeRepoRootStatus, resolveRepoRoot } from './services/repo-path'
+import { computeRepoRootStatus, resolveCodeRoot } from './services/repo-path'
 import { createGitService } from './services/git-runner'
 import { createRepoService } from './services/git-service'
 import type { RepoService } from './services/git-service'
 import { createCodeWatcher } from './services/code-watcher'
 import type { CodeWatcher, CodeWatcherGitSnapshot } from './services/code-watcher'
 import { buildCodeHandlers } from './ipc/code-handlers'
+import { buildSandboxHandlers, createSandboxPushSenders } from './ipc/sandbox-handlers'
 import { makeIsAppOrigin, installNavigationLockdown, onCrossDocumentMainFrameNavigation } from './ipc/app-origin'
 import { createQuitGuard } from './services/quit-guard'
+import { runQuitSequence } from './services/quit-sequence'
+import { attributeEventWorkspace, classifySource, hostSessionIdsForWorkspace } from './services/event-attribution'
+import type { EventSource } from './services/event-attribution'
+import { createDockerRunner } from './services/docker-runner'
+import { createSandboxImageService, resolveBuildContext } from './services/sandbox-image'
+import { createSandboxManager } from './services/sandbox-manager'
+import type { SandboxManagerService } from './services/sandbox-manager'
+import { resolveRealHome, sandboxPaths } from './services/sandbox-paths'
+import { ensure, resolveBase, status, unmerged, remove, identity, verify, autoDetach, handOff } from './services/sandbox-worktree'
+import {
+  dockerRefusalRoots,
+  createChannelSandboxResolver,
+  createSandboxIsAlive,
+  createSandboxConfigDeps,
+  currentSandboxConfig,
+  updateSandboxConfig,
+  createBuildRequesterTracker,
+  isLoopbackPortFree,
+  onImageBuildDone,
+} from './services/sandbox-bootstrap'
 import type {
   Workspace,
   WorkspaceConfig,
@@ -106,6 +127,8 @@ export function toNotificationItem(n: AppNotification): NotificationItem {
     timestamp: n.timestamp,
     dismissed: false,
     actionLabel: null,
+    ...(n.source ? { source: n.source } : {}),
+    ...(n.target ? { target: n.target } : {}),
   }
 }
 
@@ -435,6 +458,7 @@ async function initialize(): Promise<void> {
     pluginDetector: null,
     channelConnection: null,
     terminalManager: null,
+    sandboxManager: null,
   }
 
   const allShipped: ShippedFeature[] = []
@@ -579,7 +603,7 @@ async function initialize(): Promise<void> {
   const gitService = createGitService()
   const repoService: RepoService = createRepoService(gitService)
   codeWatcher = createCodeWatcher({
-    resolveRepoRoot: (slug) => resolveRepoRoot(slug, appState),
+    resolveRoot: (slug, root) => resolveCodeRoot(slug, root, appState),
     getGitSnapshot: (root): CodeWatcherGitSnapshot | undefined => {
       const cached = repoService.getCachedEntry(root)
       if (!cached) return undefined
@@ -611,7 +635,7 @@ async function initialize(): Promise<void> {
   let _suppressActivityPush = false
 
   const notificationService = new NotificationService({
-    showOsNotification: (title, body, _workspaceSlug, eventTimestamp) => {
+    showOsNotification: (title, body, workspaceSlug, eventTimestamp, target) => {
       if (!ElectronNotification.isSupported()) return
 
       const cache = stateCacheService.getCache()
@@ -620,7 +644,15 @@ async function initialize(): Promise<void> {
       // Skip events older than or equal to the last known OS notification timestamp
       if (lastTs && Date.parse(eventTimestamp) <= Date.parse(lastTs)) return
 
-      new ElectronNotification({ title, body }).show()
+      const osNotification = new ElectronNotification({ title, body })
+      // Only notices that name a destination (sandbox ones) get a click handler; host notifications behave as before.
+      if (target) {
+        osNotification.on('click', () => {
+          showAndFocusWindow()
+          mainWindow?.webContents.send(NOTIFICATION_CHANNELS.CLICKED, { workspace: workspaceSlug, target })
+        })
+      }
+      osNotification.show()
       // Use the later of event time vs wall-clock to maintain a monotonic watermark
       const watermark = new Date(Math.max(Date.parse(eventTimestamp), Date.now())).toISOString()
       stateCacheService.updateField('lastOsNotificationTimestamp', watermark)
@@ -671,15 +703,53 @@ async function initialize(): Promise<void> {
     .map((ws) => ws.slug)
   notificationService.startIdleCheck(activePipelineSlugs)
 
+  const eventsDir = path.join(os.homedir(), '.corner-office', 'events')
+  const sandboxesRoot = sandboxPaths(resolveRealHome()).sandboxesRoot
+
+  /** Host cards inside one workspace: their short ids and session ids (SEC-H1, SEC-H3). */
+  function hostSessionIds(slug: string): Set<string> {
+    return hostSessionIdsForWorkspace(appState.channelDiscovery?.getSessions() ?? [], appState.workspaces.get(slug)?.path)
+  }
+
   /** Ingest new events from a JSONL file and push to activity feed + notifications */
   function ingestEvents(filePath: string): void {
     const offset = eventOffsets.get(filePath) ?? 0
     const { events, newOffset } = eventParserService.parseFromOffset(filePath, offset)
     eventOffsets.set(filePath, newOffset)
 
+    // Provenance is computed once per file and slug: both lookups are cheap but the
+    // initial ingestion replays every historical line.
+    const hasSandboxCache = new Map<string, boolean>()
+    const hostIdsCache = new Map<string, Set<string>>()
+    const sourceFor = (slug: string, sessionId: string): EventSource => {
+      let hasSandbox = hasSandboxCache.get(slug)
+      if (hasSandbox === undefined) {
+        hasSandbox = fs.existsSync(path.join(sandboxesRoot, slug))
+        hasSandboxCache.set(slug, hasSandbox)
+      }
+      let hostIds = hostIdsCache.get(slug)
+      if (hostIds === undefined) {
+        hostIds = hostSessionIds(slug)
+        hostIdsCache.set(slug, hostIds)
+      }
+      return classifySource({
+        workspaceHasSandbox: hasSandbox,
+        sessionId,
+        hostSessionIds: hostIds,
+        sandboxSessionIds: appState.sandboxManager?.getSandboxSessionIds() ?? new Set<string>(),
+      })
+    }
+
     for (const event of events) {
-      const wsSlug = event.workspace
-      const activityItem = eventParserService.generateActivityItem(event, wsSlug)
+      // SEC-H2: the workspace comes from where the file lives, not from the line itself.
+      const attribution = attributeEventWorkspace(eventsDir, filePath, event.workspace)
+      if (!attribution.ok) {
+        log.warn(`[EventPipeline] Dropped an event line (${attribution.reason}) from ${path.basename(path.dirname(filePath))}`)
+        continue
+      }
+      const wsSlug = attribution.workspace
+      const source = sourceFor(wsSlug, event.sessionId)
+      const activityItem = { ...eventParserService.generateActivityItem(event, wsSlug), ...(source === 'sandbox' ? { source } : {}) }
       appState.activityFeed.push(activityItem)
       log.info(`[Activity] push type=${activityItem.type} workspace=${wsSlug} event=${event.event} title=${activityItem.title}`)
       if (!_suppressActivityPush) {
@@ -714,6 +784,7 @@ async function initialize(): Promise<void> {
         detail: activityItem.detail,
         timestamp: activityItem.timestamp,
         autoDismissMs: null,
+        ...(source === 'sandbox' ? { source } : {}),
       })
 
       // Push ship events for gamification overlay + recompute gamification
@@ -771,7 +842,6 @@ async function initialize(): Promise<void> {
 
   // Initial ingestion of existing JSONL files — the file watcher uses
   // ignoreInitial:true so existing files aren't picked up automatically.
-  const eventsDir = path.join(os.homedir(), '.corner-office', 'events')
   try {
     if (fs.existsSync(eventsDir)) {
       try {
@@ -787,9 +857,9 @@ async function initialize(): Promise<void> {
         for (const entry of entries) {
           if (!VALID_DIR_RE.test(entry)) continue
           const entryPath = path.join(eventsDir, entry)
-          let stat: ReturnType<typeof fs.statSync>
+          let stat: ReturnType<typeof fs.lstatSync>
           try {
-            stat = fs.statSync(entryPath)
+            stat = fs.lstatSync(entryPath)
           } catch {
             continue
           }
@@ -824,6 +894,12 @@ async function initialize(): Promise<void> {
   // ── Phase 10b: Plugin detector + channel discovery + connection ───────────
   appState.pluginDetector = new PluginDetectorService()
 
+  // The sandbox manager is built after the terminal manager (Phase 10c), but
+  // channel discovery needs its liveness predicate and resolver now — both
+  // read it lazily, and a sandbox source is only ever added by the manager.
+  const getSandboxManager = (): SandboxManagerService | null => appState.sandboxManager
+  const sandboxIsAlive = createSandboxIsAlive(getSandboxManager, defaultIsAlive)
+
   let _channelSessionIds = new Set<string>()
   const channelDiscovery = new ChannelDiscoveryService(() => {
     const sessions = channelDiscovery.getSessions()
@@ -845,6 +921,13 @@ async function initialize(): Promise<void> {
 
     log.info(`[Channels] Pushing ${sessions.length} sessions to renderer (mainWindow=${mainWindow != null})`)
     mainWindow?.webContents.send(CHANNEL_IPC.SESSION_UPDATED, sessions)
+  }, {
+    isAlive: sandboxIsAlive,
+    sandboxResolver: createChannelSandboxResolver({
+      getWorkspacePath: (slug) => appState.workspaces.get(slug)?.path,
+      getSandboxConfig: currentSandboxConfig,
+      getManager: getSandboxManager,
+    }),
   })
   appState.channelDiscovery = channelDiscovery
   await channelDiscovery.start().catch((err: unknown) => {
@@ -864,6 +947,7 @@ async function initialize(): Promise<void> {
       log.info(`[Permission] push shortId=${shortId} requestId=${rawPayload.requestId} tool=${rawPayload.toolName}`)
       mainWindow?.webContents.send(CHANNEL_IPC.PERMISSION_REQUEST, { shortId, ...rawPayload, receivedAt: Date.now() })
     },
+    sandboxIsAlive,
   )
 
   // Connect all sessions already discovered during channelDiscovery.start()
@@ -875,10 +959,72 @@ async function initialize(): Promise<void> {
   _channelSessionIds = new Set(initialSessions.map((s) => s.shortId))
 
   // ── Phase 10c: Terminal manager ───────────────────────────────────────────
-  appState.terminalManager = new TerminalManagerService(
+  const terminalManager = new TerminalManagerService(
     () => mainWindow,
     appState,
   )
+  appState.terminalManager = terminalManager
+
+  // ── Phase 10d: Sandbox sessions (#0029) ───────────────────────────────────
+  // No filesystem or Docker access here beyond resolving the real home: the
+  // first docker call happens on the background refresh after READY.
+  const realHome = resolveRealHome()
+  const sandboxDirs = sandboxPaths(realHome)
+  const dockerRunner = createDockerRunner({
+    refusalRoots: () => dockerRefusalRoots(appState.workspaces.values(), sandboxDirs),
+  })
+  const sandboxPush = createSandboxPushSenders(() => mainWindow)
+  const buildRequester = createBuildRequesterTracker()
+  const sandboxImage = createSandboxImageService(
+    {
+      docker: dockerRunner,
+      buildContext: () => resolveBuildContext({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appPath: app.getAppPath() }),
+      identity: () => ({ uid: os.userInfo().uid, gid: os.userInfo().gid, home: realHome }),
+      toolchains: () => currentSandboxConfig().toolchains,
+    },
+    {
+      onProgress: (line, phase) => sandboxPush.buildProgress({ line, phase }),
+      onBuildDone: (result) => {
+        const requestedFor = buildRequester.take()
+        if (appState.sandboxManager) {
+          onImageBuildDone(result, appState.sandboxManager, {
+            onChanged: () => sandboxPush.changed({ workspaceSlug: null }),
+            onImageReady: () => notificationService.notifySandbox({ kind: 'image-ready', slug: requestedFor }),
+          })
+        }
+      },
+    },
+  )
+  const sandboxManager = createSandboxManager({
+    docker: dockerRunner,
+    image: sandboxImage,
+    worktree: { resolveBase, status, unmerged, remove, ensure, identity, verify, autoDetach, handOff },
+    git: gitService,
+    config: createSandboxConfigDeps(),
+    appState: {
+      getWorkspace: (slug) => {
+        const ws = appState.workspaces.get(slug)
+        return ws ? { path: ws.path, repoRootStatus: ws.repoRootStatus } : undefined
+      },
+      getWorkspaceRoots: () => Array.from(appState.workspaces.values(), (ws) => ws.path),
+    },
+    discovery: {
+      addSandboxSource: (slug) => channelDiscovery.addSandboxSource(slug),
+      removeSandboxSource: (slug) => channelDiscovery.removeSandboxSource(slug),
+    },
+    terminal: terminalManager,
+    notify: (notice) => notificationService.notifySandbox(notice),
+    now: () => Date.now(),
+    realHome,
+    identity: () => ({ uid: os.userInfo().uid, gid: os.userInfo().gid }),
+    isPortFree: isLoopbackPortFree,
+  }, {
+    getChannelSessions: () => channelDiscovery.getSessions(),
+    onChanged: (slug) => sandboxPush.changed({ workspaceSlug: slug }),
+    onBlocked: (slug, entries) => sandboxPush.blocked({ workspaceSlug: slug, entries }),
+  })
+  appState.sandboxManager = sandboxManager
+  terminalManager.setSandboxDelegate(sandboxManager)
 
   // ── Phase 11: Swap stubs for real handlers ────────────────────────────────
   const realHandlers = buildRealHandlers(appState, () => mainWindow)
@@ -892,8 +1038,26 @@ async function initialize(): Promise<void> {
   })
   swapHandlers(codeHandlers)
 
+  const sandboxHandlers = buildSandboxHandlers(sandboxManager, {
+    getMainWindow: () => mainWindow,
+    isAppOrigin,
+    image: sandboxImage,
+    config: {
+      get: currentSandboxConfig,
+      update: updateSandboxConfig,
+    },
+    workspaceSlugs: () => Array.from(appState.workspaces.keys()),
+    noteBuildRequester: buildRequester.note,
+  })
+  swapHandlers(sandboxHandlers)
+
   // ── Phase 12: Signal renderer that app is ready ───────────────────────────
   mainWindow?.webContents.send(MAIN_CHANNELS.READY, { phase: 'ready' })
+
+  // Probe Docker in the background; the first transition into `ok` triggers the reconcile.
+  sandboxManager.getEnvironment({ refresh: true }).catch((err: unknown) => {
+    log.warn('[sandbox-manager] Initial Docker probe failed:', err)
+  })
 
   if (_isDev) {
     const elapsed = Date.now() - _t0
@@ -912,24 +1076,20 @@ async function initialize(): Promise<void> {
 
   app.on('will-quit', (event) => {
     event.preventDefault()
-    void (async () => {
-      try {
-        if (appState.terminalManager) {
-          await appState.terminalManager.destroyAll()
-        }
-        await codeWatcher?.closeAll()
-        fileWatcher.destroy()
-        eventRotator.stop()
-        notificationService.stopIdleCheck()
-        stateCacheService.flush()
-        appState.channelDiscovery?.stop()
-        appState.channelConnection?.destroy()
-      } finally {
-        // Hard exit after 10 s if async cleanup stalls (amendment P2)
-        setTimeout(() => app.exit(1), 10_000).unref()
-        app.exit(0)
-      }
-    })()
+    // The hard-exit timer is armed before any cleanup starts (B-H1, amendment P2).
+    void runQuitSequence({
+      exit: (code) => app.exit(code),
+      steps: [
+        () => appState.terminalManager?.destroyAll(),
+        () => codeWatcher?.closeAll(),
+        () => fileWatcher.destroy(),
+        () => eventRotator.stop(),
+        () => notificationService.stopIdleCheck(),
+        () => stateCacheService.flush(),
+        () => appState.channelDiscovery?.stop(),
+        () => appState.channelConnection?.destroy(),
+      ],
+    })
   })
 }
 

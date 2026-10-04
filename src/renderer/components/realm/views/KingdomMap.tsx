@@ -5,6 +5,9 @@ import { useRealmStore } from '../../../stores/realm-store'
 import { useSettingsStore } from '../../../stores/settings-store'
 import { useWorkspaceStore } from '../../../stores/workspace-store'
 import { useTerminalStore } from '../../../stores/terminal-store'
+import { useSandboxStore } from '../../../stores/sandbox-store'
+import { UnmergedDot } from '../../sandbox/UnmergedDot'
+import { unmergedLine } from '../../../utils/sandbox-copy'
 import { RealmAsset } from '../shared/RealmAsset'
 import { RealmTooltip } from '../shared/RealmTooltip'
 import { BuildingSprite } from '../buildings/BuildingSprite'
@@ -78,6 +81,7 @@ export function KingdomMap(): React.ReactElement {
   const openOverlay = useRealmStore((s) => s.openOverlay)
   const realmConfig = useSettingsStore((s) => s.config?.realm)
   const workspaces = useWorkspaceStore((s) => s.workspaces)
+  const sandboxSummaries = useSandboxStore((s) => s.summaries)
 
   const attentionSlugs = React.useMemo(() => {
     const set = new Set<string>()
@@ -312,6 +316,9 @@ export function KingdomMap(): React.ReactElement {
         const state = slug && attentionSlugs.has(slug) ? 'attention' : effectiveBase
         const isAssigned = slug !== null
         const charsHere = charactersByLocation.get(loc) ?? []
+        // Unmerged sandbox work shows as a marker on the building and a line in its tooltip, even with no session running.
+        const unmerged = slug ? (sandboxSummaries[slug]?.unmergedBranches ?? []) : []
+        const tooltipLabel = unmerged.length > 0 ? `${slug} — ${unmergedLine(unmerged)}` : (slug ?? '')
 
         const sprite = (
           <BuildingSprite
@@ -329,13 +336,19 @@ export function KingdomMap(): React.ReactElement {
             style={{ position: 'absolute', left: `${pos.left}%`, top: `${pos.top}%`, width: `${pos.width}%`, height: `${pos.height}%` }}
           >
             {isAssigned ? (
-              <RealmTooltip label={slug ?? ''}>
+              <RealmTooltip label={tooltipLabel}>
                 {sprite}
               </RealmTooltip>
             ) : (
               <RealmTooltip label="No workspace assigned">
                 {sprite}
               </RealmTooltip>
+            )}
+
+            {slug && unmerged.length > 0 && (
+              <div style={{ position: 'absolute', right: 4, top: 4, zIndex: 5 }}>
+                <UnmergedDot slug={slug} skin="realm" />
+              </div>
             )}
 
             {/* Characters at this location (px offset, within building bounds) */}
