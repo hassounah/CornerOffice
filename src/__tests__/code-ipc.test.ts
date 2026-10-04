@@ -57,7 +57,8 @@ function build(overrides: Partial<BuildCodeHandlersDeps> = {}) {
   const codeWatcher = makeMockCodeWatcher()
   const ws = makeWorkspace({ slug: 'ws', path: root })
   const appState = makeAppState([ws])
-  const deps: BuildCodeHandlersDeps = { ...makeWrapDeps(), repoService, codeWatcher, ...overrides }
+  // A never-created fake home: the default (the real home) leaks any sandbox worktrees on the dev machine into the git-binary refusal roots.
+  const deps: BuildCodeHandlersDeps = { ...makeWrapDeps(), repoService, codeWatcher, sandboxPaths: sandboxPaths(path.join(tmpDir, 'no-home')), ...overrides }
   const handlers = buildCodeHandlers(appState, deps)
   return { handlers, repoService, codeWatcher }
 }

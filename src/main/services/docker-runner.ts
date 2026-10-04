@@ -88,7 +88,8 @@ function classifyError(stderr: string): { kind: DockerErrorKind; subkind?: Docke
   if (/permission denied.*docker\.sock/i.test(stderr)) return { kind: 'no-permission' }
   if (/Cannot connect to the Docker daemon|Is the docker daemon running/i.test(stderr)) return { kind: 'daemon-down' }
   if (/port is already allocated|address already in use/i.test(stderr)) return { kind: 'failed', subkind: 'port-conflict' }
-  if (/No such container/i.test(stderr)) return { kind: 'failed', subkind: 'no-such-container' }
+  // Docker 29+ answers a bare `docker inspect` on a missing name with "no such object".
+  if (/No such (container|object)/i.test(stderr)) return { kind: 'failed', subkind: 'no-such-container' }
   return { kind: 'failed' }
 }
 
