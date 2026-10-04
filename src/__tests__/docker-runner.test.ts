@@ -197,6 +197,7 @@ describe('run()', () => {
     ['Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?', 'daemon-down', undefined],
     ['Bind for 0.0.0.0:20001 failed: port is already allocated.', 'failed', 'port-conflict'],
     ['Error: No such container: co-sandbox-my-ws', 'failed', 'no-such-container'],
+    ['error: no such object: co-sandbox-my-ws', 'failed', 'no-such-container'],
     ['some other docker error', 'failed', undefined],
   ])('classifies stderr %j as kind=%s subkind=%s', async (stderr, kind, subkind) => {
     const binDir = path.join(tmpDir, 'bin')

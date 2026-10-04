@@ -212,7 +212,8 @@ export default function WorkspaceDetail(): React.ReactElement {
   return (
     <div className="flex flex-col h-full">
       {/* Header — clean, spacious */}
-      <header className="px-6 py-5 border-b border-white/[0.04] flex items-center gap-4 co-animate-in shrink-0">
+      {/* relative z-30: co-animate-in leaves a transform (a stacking context), so without a z-index the body below paints over the Start Session chooser. */}
+      <header className="relative z-30 px-6 py-5 border-b border-white/[0.04] flex items-center gap-4 co-animate-in shrink-0">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2.5">
             <span
