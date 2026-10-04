@@ -33,6 +33,7 @@ export default function CodeExplorerPage(): React.ReactElement | null {
       baseline,
       entry,
       expectedBranch: searchParams.get('branch'),
+      root: searchParams.get('root') === 'sandbox' ? 'sandbox' : 'workspace',
     })
     // Fix #141 item 3: closeExplorer() itself now captures returnFocus into
     // code-explorer-return-focus.ts before its own CLOSED_STATE reset clears

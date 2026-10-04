@@ -37,6 +37,21 @@ export interface RealmConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Sandbox config (TRD §3.14, plan step 1.8)
+// ---------------------------------------------------------------------------
+
+export interface SandboxWorkspaceConfig {
+  channelPort: number | null;
+  allowlist: string[];
+}
+
+export interface SandboxConfig {
+  toolchains: { node: boolean; go: boolean; buildBase: boolean }; // defaults: all true
+  globalAllowlist: string[];                                      // user additions only
+  workspaces: Record<string, SandboxWorkspaceConfig>;              // key: sandbox slug
+}
+
+// ---------------------------------------------------------------------------
 // AppConfig — persisted to ~/.corner-office/config.json
 // ---------------------------------------------------------------------------
 
@@ -64,6 +79,7 @@ export interface AppConfig {
   hooks: HookConfig;
   realm: RealmConfig;
   terminal: TerminalConfig;
+  sandbox?: SandboxConfig;         // Absent means defaults (getSandboxConfig()) — no version bump, no migration
   discoveryExclusions: string[];   // Additional directory-name exclusion patterns
   firstLaunchComplete: boolean;
   terminalEmulator: string | null; // User-override terminal binary; null = auto-detect

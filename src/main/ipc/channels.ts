@@ -153,6 +153,29 @@ export const CODE_CHANNELS = {
 } as const
 
 // ---------------------------------------------------------------------------
+// Sandbox sessions (#0029, TRD §3.13.1)
+// ---------------------------------------------------------------------------
+export const SANDBOX_CHANNELS = {
+  GET_ENVIRONMENT: 'sandbox:getEnvironment',
+  GET_STATUS: 'sandbox:getStatus',
+  GET_SUMMARIES: 'sandbox:getSummaries',
+  START_SESSION: 'sandbox:startSession',
+  HAND_OFF: 'sandbox:handOff',
+  PREVIEW_DELETE: 'sandbox:previewDelete',
+  DELETE: 'sandbox:delete',
+  RECREATE: 'sandbox:recreate',
+  BUILD_IMAGE: 'sandbox:buildImage',
+  CANCEL_BUILD: 'sandbox:cancelBuild',
+  GET_SETTINGS: 'sandbox:getSettings',
+  UPDATE_SETTINGS: 'sandbox:updateSettings',
+  GET_BLOCKED: 'sandbox:getBlocked',
+  // Push channels
+  CHANGED: 'sandbox:changed',
+  BUILD_PROGRESS: 'sandbox:buildProgress',
+  BLOCKED: 'sandbox:blocked',
+} as const
+
+// ---------------------------------------------------------------------------
 // Aggregated push channels (subset consumed by preload whitelist)
 // ---------------------------------------------------------------------------
 export const PUSH_CHANNELS = [
@@ -174,6 +197,9 @@ export const PUSH_CHANNELS = [
   TERMINAL_IPC.DATA,
   TERMINAL_IPC.EXITED,
   CODE_CHANNELS.CHANGED,
+  SANDBOX_CHANNELS.CHANGED,
+  SANDBOX_CHANNELS.BUILD_PROGRESS,
+  SANDBOX_CHANNELS.BLOCKED,
 ] as const
 
 export type PushChannel = (typeof PUSH_CHANNELS)[number]

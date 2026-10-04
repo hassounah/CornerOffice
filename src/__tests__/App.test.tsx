@@ -35,10 +35,19 @@ vi.mock('../renderer/stores/homunculus-store', () => ({
   ),
 }))
 
+const notificationStore = vi.hoisted(() => ({ listener: null as ((state: { openRequest: { workspace: string; target: string } | null }) => void) | null, clearOpenRequest: vi.fn() }))
 vi.mock('../renderer/stores/notification-store', () => ({
   useNotificationStore: Object.assign(
     vi.fn(),
-    { getState: vi.fn(() => ({ initListeners: vi.fn(() => vi.fn()) })) }
+    {
+      getState: vi.fn(() => ({ initListeners: vi.fn(() => vi.fn()), clearOpenRequest: notificationStore.clearOpenRequest })),
+      subscribe: vi.fn((listener: typeof notificationStore.listener) => {
+        notificationStore.listener = listener
+        return () => {
+          notificationStore.listener = null
+        }
+      }),
+    }
   ),
 }))
 
@@ -53,6 +62,14 @@ vi.mock('../renderer/stores/terminal-store', () => ({
   useTerminalStore: Object.assign(
     vi.fn(),
     { getState: vi.fn(() => ({ initListeners: vi.fn(() => vi.fn()) })) }
+  ),
+}))
+
+const sandboxFetch = vi.hoisted(() => ({ fetchSummaries: vi.fn(), fetchEnvironment: vi.fn(), requestSettings: vi.fn(), requestChooser: vi.fn() }))
+vi.mock('../renderer/stores/sandbox-store', () => ({
+  useSandboxStore: Object.assign(
+    vi.fn(),
+    { getState: vi.fn(() => ({ initListeners: vi.fn(() => vi.fn()), ...sandboxFetch })) }
   ),
 }))
 
@@ -173,6 +190,23 @@ describe('App', () => {
     expect(screen.getByLabelText('Loading Corner Office')).toBeInTheDocument()
   })
 
+  it('loads the sandbox environment and summaries once at startup, so a deep link or reload still shows the sandbox surfaces', async () => {
+    sandboxFetch.fetchSummaries.mockClear()
+    sandboxFetch.fetchEnvironment.mockClear()
+    const mock = makeMockCornerOffice()
+    Object.defineProperty(window, 'cornerOffice', { value: mock, writable: true, configurable: true })
+
+    await act(async () => {
+      render(<App />)
+    })
+    await act(async () => {
+      mock._trigger('main:ready', { phase: 'ready' })
+    })
+
+    expect(sandboxFetch.fetchSummaries).toHaveBeenCalledTimes(1)
+    expect(sandboxFetch.fetchEnvironment).toHaveBeenCalledExactlyOnceWith(false)
+  })
+
   it('skips to ready state immediately when no cornerOffice (dev/browser mode)', async () => {
     Object.defineProperty(window, 'cornerOffice', {
       value: undefined,
@@ -290,6 +324,110 @@ describe('App', () => {
 
       expect(screen.getByTestId('page-workspace-detail')).toBeInTheDocument()
       expect(useGuardDialogStore.getState().open).toBe(false)
+    })
+
+    describe('sandbox notification targets', () => {
+      async function clickWith(payload: unknown): Promise<void> {
+        sandboxFetch.requestSettings.mockClear()
+        sandboxFetch.requestChooser.mockClear()
+        const mock = makeMockCornerOffice()
+        Object.defineProperty(window, 'cornerOffice', { value: mock, writable: true, configurable: true })
+        await act(async () => { render(<App />) })
+        await act(async () => { mock._trigger('main:ready', { phase: 'ready' }) })
+        await act(async () => { mock._trigger('notification:clicked', payload) })
+      }
+
+      it("'sandbox-network' selects the workspace in Sandbox settings and opens Settings", async () => {
+        await clickWith({ workspace: 'foo', target: 'sandbox-network' })
+        expect(sandboxFetch.requestSettings).toHaveBeenCalledExactlyOnceWith('foo')
+        expect(screen.getByTestId('page-settings')).toBeInTheDocument()
+      })
+
+      it("'sandbox-chooser' asks the workspace view to open the chooser and goes there", async () => {
+        await clickWith({ workspace: 'foo', target: 'sandbox-chooser' })
+        expect(sandboxFetch.requestChooser).toHaveBeenCalledExactlyOnceWith('foo')
+        expect(screen.getByTestId('page-workspace-detail')).toBeInTheDocument()
+      })
+
+      it("an image-ready notice for the requesting workspace opens that workspace's chooser", async () => {
+        await clickWith({ workspace: 'requester', target: 'sandbox-chooser' })
+        expect(sandboxFetch.requestChooser).toHaveBeenCalledExactlyOnceWith('requester')
+        expect(screen.getByTestId('page-workspace-detail')).toBeInTheDocument()
+      })
+
+      it("an image-ready notice with no known workspace falls back to Settings → Sandbox, without selecting a workspace", async () => {
+        await clickWith({ workspace: '', target: 'sandbox-image' })
+        expect(sandboxFetch.requestSettings).toHaveBeenCalledExactlyOnceWith('')
+        expect(sandboxFetch.requestChooser).not.toHaveBeenCalled()
+        expect(screen.getByTestId('page-settings')).toBeInTheDocument()
+      })
+
+      it('an in-app Open request routes exactly like the OS click, and is consumed', async () => {
+        sandboxFetch.requestChooser.mockClear()
+        notificationStore.clearOpenRequest.mockClear()
+        const mock = makeMockCornerOffice()
+        Object.defineProperty(window, 'cornerOffice', { value: mock, writable: true, configurable: true })
+        await act(async () => { render(<App />) })
+        await act(async () => { mock._trigger('main:ready', { phase: 'ready' }) })
+        await act(async () => { notificationStore.listener?.({ openRequest: { workspace: 'foo', target: 'sandbox-chooser' } }) })
+
+        expect(notificationStore.clearOpenRequest).toHaveBeenCalledOnce()
+        expect(sandboxFetch.requestChooser).toHaveBeenCalledExactlyOnceWith('foo')
+        expect(screen.getByTestId('page-workspace-detail')).toBeInTheDocument()
+      })
+
+      it('a store update with no Open request does nothing', async () => {
+        notificationStore.clearOpenRequest.mockClear()
+        const mock = makeMockCornerOffice()
+        Object.defineProperty(window, 'cornerOffice', { value: mock, writable: true, configurable: true })
+        await act(async () => { render(<App />) })
+        await act(async () => { mock._trigger('main:ready', { phase: 'ready' }) })
+        await act(async () => { notificationStore.listener?.({ openRequest: null }) })
+        expect(notificationStore.clearOpenRequest).not.toHaveBeenCalled()
+      })
+
+      it('an empty workspace with any other target still routes nowhere', async () => {
+        await clickWith({ workspace: '', target: 'sandbox-chooser' })
+        expect(sandboxFetch.requestChooser).not.toHaveBeenCalled()
+        expect(sandboxFetch.requestSettings).not.toHaveBeenCalled()
+        expect(screen.queryByTestId('page-workspace-detail')).not.toBeInTheDocument()
+        expect(screen.queryByTestId('page-settings')).not.toBeInTheDocument()
+      })
+
+      it('an unknown target falls back to the plain workspace navigation', async () => {
+        await clickWith({ workspace: 'foo', target: 'something-else' })
+        expect(sandboxFetch.requestChooser).not.toHaveBeenCalled()
+        expect(screen.getByTestId('page-workspace-detail')).toBeInTheDocument()
+      })
+
+      it('a navigation the user cancels leaves no chooser or settings request behind; confirming makes it', async () => {
+        const unregister = registerDirtySource({ id: 'some-source', isDirty: () => true, discard: vi.fn() })
+        try {
+          await clickWith({ workspace: 'foo', target: 'sandbox-chooser' })
+          expect(useGuardDialogStore.getState().open).toBe(true)
+          expect(sandboxFetch.requestChooser).not.toHaveBeenCalled()
+          await act(async () => { useGuardDialogStore.getState().cancel() })
+          expect(sandboxFetch.requestChooser).not.toHaveBeenCalled()
+
+          await clickWith({ workspace: 'foo', target: 'sandbox-network' })
+          expect(sandboxFetch.requestSettings).not.toHaveBeenCalled()
+          await act(async () => { useGuardDialogStore.getState().confirm() })
+          expect(sandboxFetch.requestSettings).toHaveBeenCalledExactlyOnceWith('foo')
+        } finally {
+          unregister()
+        }
+      })
+
+      it('the settings route is guarded like every other notification navigation', async () => {
+        const unregister = registerDirtySource({ id: 'some-source', isDirty: () => true, discard: vi.fn() })
+        try {
+          await clickWith({ workspace: 'foo', target: 'sandbox-network' })
+          expect(screen.queryByTestId('page-settings')).not.toBeInTheDocument()
+          expect(useGuardDialogStore.getState().open).toBe(true)
+        } finally {
+          unregister()
+        }
+      })
     })
 
     it('is blocked by ANY dirty source (no scope) and does not navigate until confirmed', async () => {

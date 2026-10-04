@@ -1,6 +1,10 @@
 import React from 'react'
 import type { NotificationItem as NotificationItemType } from '@main/types/gamification'
 import { RelativeTime } from '../shared/RelativeTime'
+import { SandboxTag } from '../sandbox/SandboxTag'
+import { isSandboxSource } from '../../utils/provenance'
+import { hasOpenTarget } from '../../utils/notification-target'
+import { useNotificationStore } from '../../stores/notification-store'
 
 // ---------------------------------------------------------------------------
 // Tier badge styling
@@ -24,6 +28,18 @@ interface NotificationItemProps {
 
 export function NotificationItem({ item, onDismiss }: NotificationItemProps): React.ReactElement {
   const badge = TIER_BADGE[item.tier]
+  const requestOpen = useNotificationStore((s) => s.requestOpen)
+  const dismiss = useNotificationStore((s) => s.dismiss)
+
+  // Opening acts on the notice, so it is read: mark it, then route (which leaves the feed), like the banner's Open.
+  function handleOpen(): void {
+    if (!item.dismissed) {
+      dismiss(item.id).catch(() => {
+        // Non-fatal: the item stays unread and the navigation still happens.
+      })
+    }
+    requestOpen(item)
+  }
 
   return (
     <li
@@ -42,9 +58,9 @@ export function NotificationItem({ item, onDismiss }: NotificationItemProps): Re
           >
             {badge.label}
           </span>
-          <span className="text-xs text-co-text-muted">
-            {item.workspace}
-          </span>
+          {item.workspace !== '' && <span className="text-xs text-co-text-muted">{item.workspace}</span>}
+          {/* Provenance is main's decision; an unknown source fails closed as sandbox (SEC-H3). */}
+          {isSandboxSource(item.source) && <SandboxTag workspace={item.workspace} />}
         </div>
 
         <p className="text-sm font-medium text-co-text-primary leading-snug">
@@ -60,6 +76,17 @@ export function NotificationItem({ item, onDismiss }: NotificationItemProps): Re
         <p className="text-xs text-co-text-muted mt-1">
           <RelativeTime timestamp={item.timestamp} />
         </p>
+
+        {hasOpenTarget(item) && (
+          <button
+            type="button"
+            aria-label={`Open: ${item.title}`}
+            onClick={handleOpen}
+            className="mt-1.5 text-xs font-medium text-co-accent underline underline-offset-2 hover:no-underline"
+          >
+            Open
+          </button>
+        )}
       </div>
 
       {/* Dismiss button */}

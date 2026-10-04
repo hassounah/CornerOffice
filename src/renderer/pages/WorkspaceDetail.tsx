@@ -1,10 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router'
+import { useParams, useNavigate } from 'react-router'
 import type { Pipeline, Feature } from '@main/types/workspace'
 import { useWorkspaceStore } from '../stores/workspace-store'
 import { useChannelsStore } from '../stores/channels-store'
 import { useSettingsStore } from '../stores/settings-store'
 import { useTerminalStore } from '../stores/terminal-store'
+import { useSandboxStore } from '../stores/sandbox-store'
+import { useSandboxStatusPolling } from '../hooks/useSandboxStatusPolling'
+import { DisabledReason } from '../components/shared/DisabledReason'
+import { StartSessionChooser } from '../components/sandbox/StartSessionChooser'
+import { SandboxBadge } from '../components/sandbox/SandboxBadge'
+import { SandboxActions } from '../components/sandbox/SandboxActions'
 import { TeamLevelBadge } from '../components/gamification/TeamLevelBadge'
 import { PipelineTrack } from '../components/workspace/PipelineTrack'
 import { ParkedPipelines } from '../components/workspace/ParkedPipelines'
@@ -18,6 +24,7 @@ import { TerminalOverlay } from '../components/terminal/TerminalOverlay'
 import { useDocViewerStore } from '../stores/docviewer-store'
 import { useOpenCodeExplorer, browseCodeTooltip } from '../utils/code-explorer-nav'
 import { consumeReturnFocus } from '../utils/code-explorer-return-focus'
+import { STILL_STOPPING, isSessionStopping } from '../utils/sandbox-copy'
 
 const STATUS_COLORS: Record<string, string> = {
   active:    'bg-co-status-active',
@@ -29,6 +36,7 @@ const STATUS_COLORS: Record<string, string> = {
 
 export default function WorkspaceDetail(): React.ReactElement {
   const { slug } = useParams<{ slug: string }>()
+  const navigate = useNavigate()
   const workspace = useWorkspaceStore((s) => s.workspaces.find((w) => w.slug === slug) ?? null)
   const fetchOne = useWorkspaceStore((s) => s.fetchOne)
   const storeLoading = useWorkspaceStore((s) => s.loading)
@@ -112,6 +120,31 @@ export default function WorkspaceDetail(): React.ReactElement {
 
   const openFolder = useDocViewerStore((s) => s.openFolder)
 
+  // Sandbox sessions (#0029, §3.15.4). The status is fetched on mount (polling only starts once it exists) and polled while a sandbox session runs.
+  const fetchSandboxStatus = useSandboxStore((s) => s.fetchStatus)
+  const sandboxEnding = useSandboxStore((s) => isSessionStopping(s.status[terminalSlug]?.session.state))
+  const chooserRequested = useSandboxStore((s) => s.chooserRequest === terminalSlug && terminalSlug !== '')
+  const clearChooserRequest = useSandboxStore((s) => s.clearChooserRequest)
+  const [chooserOpen, setChooserOpen] = useState(false)
+  const startButtonRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (terminalSlug) void fetchSandboxStatus(terminalSlug)
+  }, [terminalSlug, fetchSandboxStatus])
+  useSandboxStatusPolling(terminalSlug)
+
+  // A notification click ("Sandbox image is ready") can ask for the chooser: it is open while either the user or the request wants it, and closing clears both.
+  // A request the chooser cannot honour (a session already exists) is dropped now, not left to pop open later.
+  const chooserBlocked = sessionState !== 'none'
+  useEffect(() => {
+    if (chooserRequested && chooserBlocked) clearChooserRequest()
+  }, [chooserRequested, chooserBlocked, clearChooserRequest])
+  const chooserVisible = chooserOpen || chooserRequested
+  function closeChooser(): void {
+    setChooserOpen(false)
+    clearChooserRequest()
+  }
+
   // Two-tap End Session confirmation (amendment A6, P15)
   const [isConfirming, setIsConfirming] = useState(false)
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -122,7 +155,12 @@ export default function WorkspaceDetail(): React.ReactElement {
     }
   }, [])
 
+  // Start Session opens the chooser (Host or Sandbox); Host runs the unchanged host spawn.
   function handleStartSession(): void {
+    setChooserOpen(true)
+  }
+
+  function handleStartHost(): void {
     void spawn(terminalSlug)
   }
 
@@ -193,14 +231,41 @@ export default function WorkspaceDetail(): React.ReactElement {
         {/* Session controls (A15, A6, A9) */}
         <div className="flex items-center gap-2 shrink-0">
           <PermissionButton workspaceSlug={workspace.slug} />
+          {/* Renders only for a workspace that has a sandbox; both hide themselves otherwise. */}
+          <SandboxBadge slug={workspace.slug} skin="office" />
+          <SandboxActions slug={workspace.slug} skin="office" />
           {/* Start / End Session */}
           {sessionState === 'none' && (
-            <button
-              onClick={handleStartSession}
-              className="px-3 py-1.5 text-xs font-medium rounded-md bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"
-            >
-              Start Session
-            </button>
+            <div className="relative">
+              <DisabledReason reason={sandboxEnding ? STILL_STOPPING : null} skin="office">
+                {(props) => (
+                  <button
+                    ref={startButtonRef}
+                    onClick={handleStartSession}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"
+                    {...props}
+                  >
+                    Start Session
+                  </button>
+                )}
+              </DisabledReason>
+              {chooserVisible && (
+                <div className="absolute right-0 top-full z-40 mt-2">
+                  <StartSessionChooser
+                    slug={terminalSlug}
+                    skin="office"
+                    onStartHost={handleStartHost}
+                    onClose={closeChooser}
+                    onShowLog={() => {
+                      // The build log lives in Sandbox settings: land on that tab, not the default one.
+                      useSandboxStore.getState().requestSettings(terminalSlug)
+                      navigate('/settings')
+                    }}
+                    returnFocusRef={startButtonRef}
+                  />
+                </div>
+              )}
+            </div>
           )}
           {sessionState === 'starting' && (
             <button disabled className="px-3 py-1.5 text-xs font-medium rounded-md bg-zinc-800 text-zinc-500 flex items-center gap-1.5 cursor-not-allowed">

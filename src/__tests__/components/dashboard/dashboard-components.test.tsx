@@ -57,6 +57,7 @@ import { WorkspaceCard } from '../../../renderer/components/dashboard/WorkspaceC
 import { ActivityFeed } from '../../../renderer/components/dashboard/ActivityFeed'
 import { ActivityItem } from '../../../renderer/components/dashboard/ActivityItem'
 import { useSettingsStore } from '../../../renderer/stores/settings-store'
+import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -417,5 +418,102 @@ describe('ActivityFeed', () => {
     const items = [makeActivityItem({ timestamp: recentTimestamp })]
     render(<ActivityFeed items={items} />)
     expect(screen.queryByText(/older item/)).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// WorkspaceCard — unmerged sandbox work (#0029 step 5.6, TRD §3.15.4)
+// ---------------------------------------------------------------------------
+
+describe('WorkspaceCard — UnmergedDot', () => {
+  function setSummary(branches: string[] | null): void {
+    useSandboxStore.setState({
+      summaries: branches === null ? {} : { 'test-ws': { exists: true, running: false, unmergedBranches: branches } },
+    })
+  }
+
+  beforeEach(() => setSummary(null))
+
+  it('shows the dot beside the title when the sandbox has unmerged branches, with no session running', () => {
+    setSummary(['feat/a', 'feat/b'])
+    render(<WorkspaceCard workspace={makeWorkspace()} />)
+    expect(screen.getByRole('img', { name: 'Unmerged sandbox work: feat/a, feat/b' })).toBeInTheDocument()
+  })
+
+  it('shows no dot without a summary, or without unmerged branches', () => {
+    render(<WorkspaceCard workspace={makeWorkspace()} />)
+    expect(screen.queryByRole('img', { name: /Unmerged sandbox work/ })).toBeNull()
+
+    setSummary([])
+    render(<WorkspaceCard workspace={makeWorkspace()} />)
+    expect(screen.queryByRole('img', { name: /Unmerged sandbox work/ })).toBeNull()
+  })
+
+  it('is not an extra tab stop inside the card button (one button, nothing nested to focus)', () => {
+    setSummary(['feat/a'])
+    const { container } = render(<WorkspaceCard workspace={makeWorkspace()} />)
+    expect(screen.getByRole('img', { name: /Unmerged/ })).not.toHaveAttribute('tabindex')
+    expect(container.querySelectorAll('button button, button [tabindex]')).toHaveLength(0)
+  })
+
+  it('is also shown in the compact card', () => {
+    setSummary(['feat/a'])
+    vi.mocked(useSettingsStore).mockImplementationOnce(
+      ((selector: (s: Record<string, unknown>) => unknown) =>
+        selector({ config: { appearance: { theme: 'dark', compactView: true }, hooks: { installed: false } } })) as never,
+    )
+    render(<WorkspaceCard workspace={makeWorkspace()} />)
+    expect(screen.getByRole('img', { name: /Unmerged sandbox work: feat\/a/ })).toBeInTheDocument()
+  })
+
+  it('shows the tooltip on hover, and the card still navigates on click', async () => {
+    setSummary(['a', 'b', 'c', 'd'])
+    const user = userEvent.setup()
+    render(<WorkspaceCard workspace={makeWorkspace()} />)
+
+    await user.hover(screen.getByRole('img', { name: /Unmerged/ }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Unmerged sandbox work: a, b, c, +1 more')
+
+    await user.click(screen.getByRole('button'))
+    expect(mockNavigate).toHaveBeenCalledWith('/workspace/test-ws')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ActivityItem — sandbox provenance (#0029 step 5.10, TRD §3.17, SEC-H3)
+// ---------------------------------------------------------------------------
+
+describe('ActivityItem — sandbox provenance', () => {
+  it('tags an item main marked as sandbox, in the full and the compact layout', () => {
+    const { unmount } = render(<ActivityItem item={makeActivityItem({ source: 'sandbox' })} />)
+    expect(screen.getByText(/\(from the sandbox for /)).toBeInTheDocument()
+    unmount()
+
+    vi.mocked(useSettingsStore).mockImplementationOnce(
+      ((selector: (s: Record<string, unknown>) => unknown) =>
+        selector({ config: { appearance: { theme: 'dark', compactView: true }, hooks: { installed: false } } })) as never,
+    )
+    render(<ActivityItem item={makeActivityItem({ source: 'sandbox' })} />)
+    expect(screen.getByText(/\(from the sandbox for /)).toBeInTheDocument()
+  })
+
+  it('does not tag a host item or one without a source', () => {
+    const { unmount } = render(<ActivityItem item={makeActivityItem({ source: 'host' })} />)
+    expect(screen.queryByText(/\(from the sandbox/)).toBeNull()
+    unmount()
+
+    render(<ActivityItem item={makeActivityItem()} />)
+    expect(screen.queryByText(/\(from the sandbox/)).toBeNull()
+  })
+
+  it('fails closed: an unexpected source value is shown as sandbox', () => {
+    render(<ActivityItem item={makeActivityItem({ source: 'weird' as never })} />)
+    expect(screen.getByText(/\(from the sandbox/)).toBeInTheDocument()
+  })
+
+  it('keeps the whole item one button, with the title still readable', () => {
+    const { container } = render(<ActivityItem item={makeActivityItem({ source: 'sandbox', title: 'Gate passed' })} />)
+    expect(container.querySelectorAll('button button')).toHaveLength(0)
+    expect(screen.getByText(/Gate passed/)).toBeInTheDocument()
   })
 })

@@ -373,3 +373,29 @@ describe('WINDOW_CHANNELS.RESUME_CLOSE', () => {
     expect(WINDOW_CHANNELS.RESUME_CLOSE).toBe('window:resumeClose')
   })
 })
+
+// ---------------------------------------------------------------------------
+// `root` (#0029, TRD §3.10): every code:* input accepts workspace|sandbox and defaults to workspace
+// ---------------------------------------------------------------------------
+
+describe('root on every code:* input', () => {
+  const inputs: [string, { safeParse: (v: unknown) => { success: boolean; data?: { root?: string } } }, Record<string, unknown>][] = [
+    ['getStatus', CodeGetStatusSchema, { workspaceSlug: 'ws', baseline: 'head' }],
+    ['listDir', CodeListDirSchema, { workspaceSlug: 'ws', relDir: '', includeIgnored: false }],
+    ['readFile', CodeReadFileSchema, { workspaceSlug: 'ws', relPath: 'a.txt', reveal: false }],
+    ['readBaseline', CodeReadBaselineSchema, { workspaceSlug: 'ws', relPath: 'a.txt', baseline: 'head', reveal: false }],
+    ['writeFile', CodeWriteFileSchema, { workspaceSlug: 'ws', relPath: 'a.txt', content: 'x', expectedMtime: 't' }],
+    ['getFileIndex', CodeGetFileIndexSchema, { workspaceSlug: 'ws', includeIgnored: false }],
+    ['watch', CodeWatchSchema, { workspaceSlug: 'ws', gen: 1, openFile: null, expandedDirs: [] }],
+    ['unwatch', CodeUnwatchSchema, { workspaceSlug: 'ws', gen: 1 }],
+  ]
+
+  it.each(inputs)('%s defaults root to workspace, accepts sandbox, and rejects anything else', (_name, schema, base) => {
+    expect(schema.safeParse(base).data?.root).toBe('workspace')
+    expect(schema.safeParse({ ...base, root: 'workspace' }).data?.root).toBe('workspace')
+    expect(schema.safeParse({ ...base, root: 'sandbox' }).data?.root).toBe('sandbox')
+    expect(schema.safeParse({ ...base, root: 'elsewhere' }).success).toBe(false)
+    expect(schema.safeParse({ ...base, root: '' }).success).toBe(false)
+    expect(schema.safeParse({ ...base, root: null }).success).toBe(false)
+  })
+})

@@ -1,16 +1,19 @@
 import React, { useEffect, useState } from 'react'
 import { useSettingsStore } from '../stores/settings-store'
+import { useSandboxStore } from '../stores/sandbox-store'
 import { AppearanceSettings } from '../components/settings/AppearanceSettings'
 import { NotificationSettings } from '../components/settings/NotificationSettings'
 import { HookSettings } from '../components/settings/HookSettings'
 import { WorkspaceSettings } from '../components/settings/WorkspaceSettings'
+import { SandboxSettingsPanel } from '../components/sandbox/SandboxSettingsPanel'
 
-type Tab = 'workspaces' | 'notifications' | 'hooks' | 'appearance'
+type Tab = 'workspaces' | 'notifications' | 'hooks' | 'sandbox' | 'appearance'
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'workspaces',    label: 'Workspaces' },
   { id: 'notifications', label: 'Notifications' },
   { id: 'hooks',         label: 'Hooks' },
+  { id: 'sandbox',       label: 'Sandbox' },
   { id: 'appearance',   label: 'Appearance' },
 ]
 
@@ -18,11 +21,26 @@ export default function Settings(): React.ReactElement {
   const fetchConfig = useSettingsStore((s) => s.fetchConfig)
   const loading = useSettingsStore((s) => s.loading)
   const error = useSettingsStore((s) => s.error)
-  const [activeTab, setActiveTab] = useState<Tab>('workspaces')
+  // A "blocked a network request" notification click asks for Sandbox settings with that workspace selected
+  // (`settingsRequest`). Read once at mount; the subscription below handles a Settings that is already open.
+  const [activeTab, setActiveTab] = useState<Tab>(() => (useSandboxStore.getState().settingsRequest !== null ? 'sandbox' : 'workspaces'))
+  const [initialWorkspace, setInitialWorkspace] = useState<string | undefined>(() => useSandboxStore.getState().settingsRequest || undefined)
 
   useEffect(() => {
     void fetchConfig()
   }, [fetchConfig])
+
+  useEffect(() => {
+    // Consumed means cleared, so the request never fires a second time.
+    if (useSandboxStore.getState().settingsRequest !== null) useSandboxStore.getState().clearSettingsRequest()
+    return useSandboxStore.subscribe((state) => {
+      const requested = state.settingsRequest
+      if (requested === null) return
+      setActiveTab('sandbox')
+      setInitialWorkspace(requested || undefined)
+      useSandboxStore.getState().clearSettingsRequest()
+    })
+  }, [])
 
   if (loading) {
     return (
@@ -83,6 +101,8 @@ export default function Settings(): React.ReactElement {
           {activeTab === 'workspaces' && <WorkspaceSettings />}
           {activeTab === 'notifications' && <NotificationSettings />}
           {activeTab === 'hooks' && <HookSettings />}
+          {/* Keyed by the requested workspace, so a second request while open re-selects it. */}
+          {activeTab === 'sandbox' && <SandboxSettingsPanel key={initialWorkspace ?? ''} skin="office" initialWorkspace={initialWorkspace} />}
           {activeTab === 'appearance' && <AppearanceSettings />}
         </div>
       </main>

@@ -3,6 +3,10 @@ import type { NotificationItem } from '@main/types/gamification'
 import { useNotificationStore } from '../../../stores/notification-store'
 import { useRealmStore } from '../../../stores/realm-store'
 import { RealmAsset } from '../shared/RealmAsset'
+import { SandboxTag } from '../../sandbox/SandboxTag'
+import { isSandboxSource } from '../../../utils/provenance'
+import { forSkin } from '../../../utils/sandbox-copy'
+import { hasOpenTarget } from '../../../utils/notification-target'
 
 // ---------------------------------------------------------------------------
 // Tier-based visual treatment
@@ -26,8 +30,13 @@ const TIER_LABEL: Record<NotificationItem['tier'], string> = {
 // NotificationRow
 // ---------------------------------------------------------------------------
 
-function NotificationRow({ item }: {
+function truncateBody(body: string): string {
+  return body.length > 80 ? body.slice(0, 77) + '…' : body
+}
+
+function NotificationRow({ item, onOpen }: {
   item: NotificationItem
+  onOpen: (item: NotificationItem) => void
 }): React.ReactElement {
   const color = TIER_COLOR[item.tier]
   return (
@@ -46,12 +55,29 @@ function NotificationRow({ item }: {
         </p>
         {item.body && (
           <p className="text-xs leading-snug mt-0.5" style={{ color: '#9c8a6a' }}>
-            {item.body.length > 80 ? item.body.slice(0, 77) + '…' : item.body}
+            {truncateBody(forSkin(item.body, 'realm'))}
           </p>
         )}
-        <p className="text-xs mt-0.5" style={{ color }}>
-          {TIER_LABEL[item.tier]} · {item.workspace}
+        <p className="text-xs mt-0.5 flex items-center gap-1.5" style={{ color }}>
+          <span>
+            {TIER_LABEL[item.tier]}
+            {item.workspace !== '' && ` · ${item.workspace}`}
+          </span>
+          {/* Provenance is main's decision, read here and never re-derived; an unknown source fails closed as sandbox (SEC-H3).
+              Agent-written text above is rendered as plain text, never as markup. */}
+          {isSandboxSource(item.source) && <SandboxTag workspace={item.workspace} skin="realm" />}
         </p>
+        {hasOpenTarget(item) && (
+          <button
+            type="button"
+            aria-label={`Open: ${item.title}`}
+            onClick={() => onOpen(item)}
+            className="text-xs mt-1 underline underline-offset-2 hover:no-underline"
+            style={{ color: '#c9a84c' }}
+          >
+            Open
+          </button>
+        )}
       </div>
     </div>
   )
@@ -62,7 +88,7 @@ function NotificationRow({ item }: {
 // ---------------------------------------------------------------------------
 
 export function NotificationScroll(): React.ReactElement {
-  const { items, loading, error, fetchHistory } = useNotificationStore()
+  const { items, loading, error, fetchHistory, requestOpen } = useNotificationStore()
   const closeOverlay = useRealmStore((s) => s.closeOverlay)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -76,6 +102,12 @@ export function NotificationScroll(): React.ReactElement {
   }, [fetchHistory])
 
   const visible = items.slice(0, 50)
+
+  function handleOpen(item: NotificationItem): void {
+    // Close first: the request opens another overlay, which this scroll must not outlive.
+    closeOverlay()
+    requestOpen(item)
+  }
 
   return (
     <div
@@ -145,7 +177,7 @@ export function NotificationScroll(): React.ReactElement {
             </p>
           )}
           {visible.map((item) => (
-            <NotificationRow key={item.id} item={item} />
+            <NotificationRow key={item.id} item={item} onOpen={handleOpen} />
           ))}
         </div>
       </div>

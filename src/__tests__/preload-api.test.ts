@@ -35,8 +35,8 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('ALLOWED_PUSH_CHANNELS', () => {
-  it('has exactly 17 entries', () => {
-    expect(ALLOWED_PUSH_CHANNELS).toHaveLength(17)
+  it('has exactly 20 entries', () => {
+    expect(ALLOWED_PUSH_CHANNELS).toHaveLength(20)
   })
 
   it('contains all expected channel names', () => {
@@ -58,6 +58,9 @@ describe('ALLOWED_PUSH_CHANNELS', () => {
       'terminal:data',
       'terminal:exited',
       'code:changed',
+      'sandbox:changed',
+      'sandbox:buildProgress',
+      'sandbox:blocked',
     ]
     expect([...ALLOWED_PUSH_CHANNELS]).toEqual(expected)
   })
@@ -446,5 +449,85 @@ describe('api invoke methods', () => {
     mockInvoke.mockResolvedValueOnce({ data: { ok: true }, error: null })
     await api.code.unwatch('my-ws', 1)
     expect(mockInvoke).toHaveBeenCalledWith('code:unwatch', { workspaceSlug: 'my-ws', gen: 1 })
+  })
+})
+
+describe('sandbox preload API', () => {
+  const calls: [string, () => Promise<unknown>, string, unknown][] = [
+    ['getEnvironment', () => api.sandbox.getEnvironment(true), 'sandbox:getEnvironment', { refresh: true }],
+    ['getStatus', () => api.sandbox.getStatus('my-ws'), 'sandbox:getStatus', { workspaceSlug: 'my-ws' }],
+    ['getSummaries', () => api.sandbox.getSummaries(), 'sandbox:getSummaries', {}],
+    [
+      'startSession',
+      () => api.sandbox.startSession('my-ws', 80, 24, 'skip', 'allowlist'),
+      'sandbox:startSession',
+      { workspaceSlug: 'my-ws', cols: 80, rows: 24, permissionMode: 'skip', networkMode: 'allowlist' },
+    ],
+    ['handOff', () => api.sandbox.handOff('my-ws', false), 'sandbox:handOff', { workspaceSlug: 'my-ws', allowDirty: false }],
+    ['previewDelete', () => api.sandbox.previewDelete('my-ws'), 'sandbox:previewDelete', { workspaceSlug: 'my-ws' }],
+    ['delete', () => api.sandbox.delete('my-ws', true), 'sandbox:delete', { workspaceSlug: 'my-ws', acknowledgeDirty: true }],
+    [
+      'recreate',
+      () => api.sandbox.recreate('my-ws', false, 'a'.repeat(64)),
+      'sandbox:recreate',
+      { workspaceSlug: 'my-ws', newPort: false, confirmedSpecHash: 'a'.repeat(64) },
+    ],
+    ['buildImage', () => api.sandbox.buildImage(true), 'sandbox:buildImage', { rebuild: true }],
+    ['cancelBuild', () => api.sandbox.cancelBuild(), 'sandbox:cancelBuild', {}],
+    ['getSettings', () => api.sandbox.getSettings(), 'sandbox:getSettings', {}],
+    ['updateSettings', () => api.sandbox.updateSettings({ globalAllowlist: ['a.dev'] }), 'sandbox:updateSettings', { globalAllowlist: ['a.dev'] }],
+    ['getBlocked', () => api.sandbox.getBlocked('my-ws'), 'sandbox:getBlocked', { workspaceSlug: 'my-ws' }],
+  ]
+
+  it.each(calls)('sandbox.%s invokes its channel with the documented payload', async (_name, call, channel, payload) => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: null })
+    await call()
+    expect(mockInvoke).toHaveBeenCalledWith(channel, payload)
+  })
+
+  it('sandbox.buildImage names the requesting workspace when given one', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: null })
+    await api.sandbox.buildImage(false, 'my-ws')
+    expect(mockInvoke).toHaveBeenCalledWith('sandbox:buildImage', { rebuild: false, requestedFor: 'my-ws' })
+  })
+
+  it('exposes exactly the thirteen request methods', () => {
+    expect(Object.keys(api.sandbox).sort()).toEqual(calls.map(([name]) => name).sort())
+  })
+
+  it('whitelists the three sandbox push channels', () => {
+    for (const ch of ['sandbox:changed', 'sandbox:buildProgress', 'sandbox:blocked']) {
+      expect(isAllowedChannel(ch)).toBe(true)
+    }
+  })
+})
+
+describe('code.* trailing optional root (#0029)', () => {
+  const calls: [string, () => Promise<unknown>, string, Record<string, unknown>][] = [
+    ['getStatus', () => api.code.getStatus('ws', 'head', 'sandbox'), 'code:getStatus', { workspaceSlug: 'ws', baseline: 'head', root: 'sandbox' }],
+    ['listDir', () => api.code.listDir('ws', 'src', false, 'sandbox'), 'code:listDir', { workspaceSlug: 'ws', relDir: 'src', includeIgnored: false, root: 'sandbox' }],
+    ['readFile', () => api.code.readFile('ws', 'a.ts', false, 'sandbox'), 'code:readFile', { workspaceSlug: 'ws', relPath: 'a.ts', reveal: false, root: 'sandbox' }],
+    [
+      'readBaseline',
+      () => api.code.readBaseline('ws', 'a.ts', 'head', false, 'old.ts', 'sandbox'),
+      'code:readBaseline',
+      { workspaceSlug: 'ws', relPath: 'a.ts', oldPath: 'old.ts', baseline: 'head', reveal: false, root: 'sandbox' },
+    ],
+    ['writeFile', () => api.code.writeFile('ws', 'a.ts', 'x', 't', 'sandbox'), 'code:writeFile', { workspaceSlug: 'ws', relPath: 'a.ts', content: 'x', expectedMtime: 't', root: 'sandbox' }],
+    ['getFileIndex', () => api.code.getFileIndex('ws', true, 'sandbox'), 'code:getFileIndex', { workspaceSlug: 'ws', includeIgnored: true, root: 'sandbox' }],
+    ['watch', () => api.code.watch('ws', 2, null, ['a'], 'sandbox'), 'code:watch', { workspaceSlug: 'ws', gen: 2, openFile: null, expandedDirs: ['a'], root: 'sandbox' }],
+    ['unwatch', () => api.code.unwatch('ws', 2, 'sandbox'), 'code:unwatch', { workspaceSlug: 'ws', gen: 2, root: 'sandbox' }],
+  ]
+
+  it.each(calls)('code.%s sends the root when given', async (_name, call, channel, payload) => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: null })
+    await call()
+    expect(mockInvoke).toHaveBeenCalledWith(channel, payload)
+  })
+
+  it('omits no argument when root is left out: the payload carries no defined root (main defaults it to workspace)', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: null })
+    await api.code.getStatus('ws', 'head')
+    expect((mockInvoke.mock.calls[0][1] as { root?: string }).root).toBeUndefined()
   })
 })

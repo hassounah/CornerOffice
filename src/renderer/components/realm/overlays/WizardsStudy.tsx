@@ -10,8 +10,16 @@ import { PermissionScroll } from '../../channels/PermissionScroll'
 import { RealmDocViewer } from './RealmDocViewer'
 import { useSettingsStore } from '../../../stores/settings-store'
 import { useTerminalStore } from '../../../stores/terminal-store'
+import { useSandboxStore } from '../../../stores/sandbox-store'
+import { useRealmStore } from '../../../stores/realm-store'
+import { useSandboxStatusPolling } from '../../../hooks/useSandboxStatusPolling'
+import { DisabledReason } from '../../shared/DisabledReason'
+import { StartSessionChooser } from '../../sandbox/StartSessionChooser'
+import { SandboxBadge } from '../../sandbox/SandboxBadge'
+import { SandboxActions } from '../../sandbox/SandboxActions'
 import { TerminalOverlay } from '../../terminal/TerminalOverlay'
 import { useOpenCodeExplorer, browseCodeTooltip } from '../../../utils/code-explorer-nav'
+import { STILL_STOPPING, isSessionStopping } from '../../../utils/sandbox-copy'
 
 // ---------------------------------------------------------------------------
 // Asset imports
@@ -638,6 +646,34 @@ export function WizardsStudy({ workspaceSlug }: { workspaceSlug: string | null }
   const terminalWorkspaceBounds = useSettingsStore((s) => s.config?.terminal?.windowBounds?.workspace)
   const updateConfig = useSettingsStore((s) => s.updateConfig)
 
+  // Sandbox sessions (#0029, §3.15.4): the same chooser, badge, actions and gating as Office, in Realm chrome.
+  // The status is fetched on mount (polling only starts once it exists) and polled while a sandbox session runs.
+  const sandboxSlug = workspaceSlug ?? ''
+  const fetchSandboxStatus = useSandboxStore((s) => s.fetchStatus)
+  const sandboxEnding = useSandboxStore((s) => isSessionStopping(s.status[sandboxSlug]?.session.state))
+  const chooserRequested = useSandboxStore((s) => s.chooserRequest === sandboxSlug && sandboxSlug !== '')
+  const clearChooserRequest = useSandboxStore((s) => s.clearChooserRequest)
+  const openRealmOverlay = useRealmStore((s) => s.openOverlay)
+  const [chooserOpen, setChooserOpen] = useState(false)
+  const startButtonRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (sandboxSlug) void fetchSandboxStatus(sandboxSlug)
+  }, [sandboxSlug, fetchSandboxStatus])
+  useSandboxStatusPolling(sandboxSlug)
+
+  // A notification click ("Sandbox image is ready") can ask for the chooser. A request it cannot honour
+  // (a session already exists) is dropped now, not left to pop open later.
+  const chooserBlocked = sessionState !== 'none'
+  useEffect(() => {
+    if (chooserRequested && chooserBlocked) clearChooserRequest()
+  }, [chooserRequested, chooserBlocked, clearChooserRequest])
+  const chooserVisible = chooserOpen || chooserRequested
+  function closeChooser(): void {
+    setChooserOpen(false)
+    clearChooserRequest()
+  }
+
   // README overlay state
   const [readmeOverlayVisible, setReadmeOverlayVisible] = useState(false)
 
@@ -753,20 +789,48 @@ export function WizardsStudy({ workspaceSlug }: { workspaceSlug: string | null }
           {/* Session controls — inline with header (A6, A9, A15) */}
           {workspaceSlug && (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              {/* Renders only for a workspace that has a sandbox; both hide themselves otherwise. */}
+              <SandboxBadge slug={workspaceSlug} skin="realm" />
+              <SandboxActions slug={workspaceSlug} skin="realm" />
               {sessionState === 'none' && (
-                <button
-                  onClick={() => void spawn(workspaceSlug)}
-                  style={{
-                    background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                    backgroundImage: `url(${settingsScrollInactive})`,
-                    backgroundSize: '100% 100%', backgroundRepeat: 'no-repeat',
-                    width: 200, height: 48,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}
-                  aria-label="Start Session"
-                >
-                  <span style={{ fontSize: 14, color: '#ff6a00', fontFamily: '"Palatino Linotype", "Book Antiqua", Palatino, serif', fontWeight: 700, letterSpacing: '1.5px', textTransform: 'uppercase' as const, textShadow: '0 0 4px rgba(255,80,0,0.9), 0 0 10px rgba(255,120,0,0.6), 0 0 20px rgba(255,60,0,0.3), 0 1px 2px rgba(0,0,0,0.9)', WebkitTextStroke: '0.3px rgba(180,60,0,0.5)' }}>Start Session</span>
-                </button>
+                <div style={{ position: 'relative' }}>
+                  <DisabledReason reason={sandboxEnding ? STILL_STOPPING : null} skin="realm">
+                    {(props) => (
+                      <button
+                        ref={startButtonRef}
+                        onClick={() => setChooserOpen(true)}
+                        style={{
+                          background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                          backgroundImage: `url(${settingsScrollInactive})`,
+                          backgroundSize: '100% 100%', backgroundRepeat: 'no-repeat',
+                          width: 200, height: 48,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          opacity: sandboxEnding ? 0.5 : 1,
+                        }}
+                        aria-label="Start Session"
+                        {...props}
+                      >
+                        <span style={{ fontSize: 14, color: '#ff6a00', fontFamily: '"Palatino Linotype", "Book Antiqua", Palatino, serif', fontWeight: 700, letterSpacing: '1.5px', textTransform: 'uppercase' as const, textShadow: '0 0 4px rgba(255,80,0,0.9), 0 0 10px rgba(255,120,0,0.6), 0 0 20px rgba(255,60,0,0.3), 0 1px 2px rgba(0,0,0,0.9)', WebkitTextStroke: '0.3px rgba(180,60,0,0.5)' }}>Start Session</span>
+                      </button>
+                    )}
+                  </DisabledReason>
+                  {chooserVisible && (
+                    <div style={{ position: 'absolute', right: 0, top: '100%', zIndex: 30, marginTop: 8 }}>
+                      <StartSessionChooser
+                        slug={workspaceSlug}
+                        skin="realm"
+                        onStartHost={() => void spawn(workspaceSlug)}
+                        onClose={closeChooser}
+                        onShowLog={() => {
+                          // The build log lives in the Armory: ask for it with this workspace selected, then open the chamber.
+                          useSandboxStore.getState().requestSettings(sandboxSlug)
+                          openRealmOverlay({ overlayId: 'settings-chamber', initialSection: 'sandbox' })
+                        }}
+                        returnFocusRef={startButtonRef}
+                      />
+                    </div>
+                  )}
+                </div>
               )}
               {sessionState === 'starting' && (
                 <button

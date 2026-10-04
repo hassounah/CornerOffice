@@ -148,7 +148,7 @@ function makeDeps(overrides: Partial<CodeWatcherDeps> = {}): CodeWatcherDeps & {
   const abortRoot = vi.fn()
   const resetRoot = vi.fn()
   return {
-    resolveRepoRoot: vi.fn(async () => root),
+    resolveRoot: vi.fn(async () => ({ root })),
     getGitSnapshot: vi.fn(() => undefined),
     abortRoot,
     resetRoot,
@@ -202,23 +202,23 @@ describe('gen-token lifecycle', () => {
   it('a call below the active gen is ignored (returns current stats unchanged)', async () => {
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 5, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 5, openFile: null, expandedDirs: [] })
     deps.setExternalWatchCount.mockClear()
 
-    const res = await cw.watch({ workspaceSlug: 'A', gen: 3, openFile: null, expandedDirs: ['sub'] })
+    const res = await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 3, openFile: null, expandedDirs: ['sub'] })
     expect(res).toEqual({ watching: 0, limited: false })
     expect(deps.setExternalWatchCount).not.toHaveBeenCalled()
-    expect(deps.resolveRepoRoot).toHaveBeenCalledTimes(1) // never re-resolved for the stale call
+    expect(deps.resolveRoot).toHaveBeenCalledTimes(1) // never re-resolved for the stale call
   })
 
   it('the same {slug, gen} is an idempotent update of the watch set', async () => {
     mkDir('sub')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     expect(mockWatcherInstances.length).toBe(1)
 
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: ['sub'] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: ['sub'] })
     expect(mockWatcherInstances.length).toBe(1) // no new watcher created
     expect(primaryWatcher()._watched.has(path.join(root, 'sub'))).toBe(true)
   })
@@ -226,10 +226,10 @@ describe('gen-token lifecycle', () => {
   it('a higher gen replaces the active watch: closes the old one and calls abortRoot + resetRoot', async () => {
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     const first = primaryWatcher()
 
-    await cw.watch({ workspaceSlug: 'A', gen: 2, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 2, openFile: null, expandedDirs: [] })
     expect(first.close).toHaveBeenCalled()
     expect(mockWatcherInstances.length).toBe(2)
     expect(deps.abortRoot).toHaveBeenCalledWith(root)
@@ -241,34 +241,34 @@ describe('gen-token lifecycle', () => {
     mkDir('sub')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     primaryWatcher().emit('addDir', path.join(root, 'sub')) // starts the old watch's fs debounce timer
 
-    await cw.watch({ workspaceSlug: 'A', gen: 2, openFile: null, expandedDirs: [] }) // replaces before it fires
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 2, openFile: null, expandedDirs: [] }) // replaces before it fires
     await vi.advanceTimersByTimeAsync(1000)
     expect(deps.onChanged).not.toHaveBeenCalled()
   })
 
   it('a different slug (even at the same gen) replaces the active watch', async () => {
-    const deps = makeDeps({ resolveRepoRoot: vi.fn(async (slug: string) => (slug === 'B' ? outside : root)) } as never)
+    const deps = makeDeps({ resolveRoot: vi.fn(async (slug: string) => ({ root: slug === 'B' ? outside : root })) } as never)
     fs.mkdirSync(outside, { recursive: true })
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
-    await cw.watch({ workspaceSlug: 'B', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'B', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     expect(mockWatcherInstances.length).toBe(2)
   })
 
   it('resetRoot is called on every new generation, never from unwatch or closeAll', async () => {
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     expect(deps.resetRoot).toHaveBeenCalledTimes(1)
     deps.resetRoot.mockClear()
 
-    await cw.unwatch({ workspaceSlug: 'A', gen: 1 })
+    await cw.unwatch({ workspaceSlug: 'A', root: 'workspace', gen: 1 })
     expect(deps.resetRoot).not.toHaveBeenCalled()
 
-    await cw.watch({ workspaceSlug: 'A', gen: 2, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 2, openFile: null, expandedDirs: [] })
     expect(deps.resetRoot).toHaveBeenCalledTimes(1) // exactly the reopen, not the close
     deps.resetRoot.mockClear()
     await cw.closeAll()
@@ -277,26 +277,26 @@ describe('gen-token lifecycle', () => {
 
   it('serializes concurrent watch() calls — a slow first call can never overwrite a faster later one (Fix #121)', async () => {
     const slowRoot = deferred<string>()
-    let resolveRepoRootCalls = 0
-    const resolveRepoRoot = vi.fn(async () => {
-      resolveRepoRootCalls += 1
-      if (resolveRepoRootCalls === 1) return slowRoot.promise // call A: slow to resolve
-      return root // call B: resolves immediately
+    let resolveRootCalls = 0
+    const resolveRoot = vi.fn(async () => {
+      resolveRootCalls += 1
+      if (resolveRootCalls === 1) return { root: await slowRoot.promise } // call A: slow to resolve
+      return { root } // call B: resolves immediately
     })
-    const deps = makeDeps({ resolveRepoRoot } as never)
+    const deps = makeDeps({ resolveRoot } as never)
     const cw = createCodeWatcher(deps)
 
-    const callA = cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
-    await Promise.resolve() // let A run up to (and suspend on) its resolveRepoRoot await
+    const callA = cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
+    await Promise.resolve() // let A run up to (and suspend on) its resolveRoot await
     await Promise.resolve()
 
-    const callB = cw.watch({ workspaceSlug: 'A', gen: 2, openFile: null, expandedDirs: [] })
+    const callB = cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 2, openFile: null, expandedDirs: [] })
     await Promise.resolve()
     await Promise.resolve()
 
     // B is queued behind A — it cannot even start running yet, so only A's
-    // resolveRepoRoot has been called, and no watcher exists for either call.
-    expect(resolveRepoRoot).toHaveBeenCalledTimes(1)
+    // resolveRoot has been called, and no watcher exists for either call.
+    expect(resolveRoot).toHaveBeenCalledTimes(1)
     expect(mockWatcherInstances.length).toBe(0)
 
     slowRoot.resolve(root) // let A finish; B then runs to completion after it
@@ -318,7 +318,7 @@ describe('gen-token lifecycle', () => {
 
     // The final generation is the higher one (2), not a regression to 1 —
     // proven observably: a later call at the OLD gen is now stale and ignored.
-    const staleRes = await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    const staleRes = await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     expect(mockWatcherInstances.length).toBe(2) // no third watcher created for the stale call
     expect(staleRes.watching).toBe(Object.keys(watcherB.getWatched()).length)
   })
@@ -332,35 +332,94 @@ describe('unwatch', () => {
   it('a stale unwatch (wrong gen) is a no-op — the new watch survives', async () => {
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 2, openFile: null, expandedDirs: [] })
-    await cw.unwatch({ workspaceSlug: 'A', gen: 1 }) // an earlier session's stale unwatch
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 2, openFile: null, expandedDirs: [] })
+    await cw.unwatch({ workspaceSlug: 'A', root: 'workspace', gen: 1 }) // an earlier session's stale unwatch
     expect(primaryWatcher().close).not.toHaveBeenCalled()
   })
 
   it('a stale unwatch (wrong slug) is a no-op', async () => {
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
-    await cw.unwatch({ workspaceSlug: 'B', gen: 1 })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.unwatch({ workspaceSlug: 'B', root: 'workspace', gen: 1 })
     expect(primaryWatcher().close).not.toHaveBeenCalled()
   })
 
   it('a matching unwatch closes the watcher, aborts the root and zeroes the external count', async () => {
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     deps.setExternalWatchCount.mockClear()
 
-    await cw.unwatch({ workspaceSlug: 'A', gen: 1 })
+    await cw.unwatch({ workspaceSlug: 'A', root: 'workspace', gen: 1 })
     expect(primaryWatcher().close).toHaveBeenCalled()
     expect(deps.abortRoot).toHaveBeenCalledWith(root)
     expect(deps.setExternalWatchCount).toHaveBeenCalledWith('code-explorer', 0)
   })
 
+  describe("watch identity is (slug, root, gen) — #0029 'workspace' | 'sandbox'", () => {
+    const watchArgs = (rootKind: 'workspace' | 'sandbox', gen: number) => ({ workspaceSlug: 'A', root: rootKind, gen, openFile: null, expandedDirs: [] })
+
+    it('resolves the root through resolveRoot with the root kind', async () => {
+      const deps = makeDeps()
+      const cw = createCodeWatcher(deps)
+
+      await cw.watch(watchArgs('sandbox', 1))
+
+      expect(deps.resolveRoot).toHaveBeenCalledWith('A', 'sandbox')
+    })
+
+    it('a root switch at the same slug AND the same gen replaces the watch (new watcher, old one closed, old root aborted)', async () => {
+      const deps = makeDeps({ resolveRoot: vi.fn(async (_slug: string, kind: string) => ({ root: kind === 'sandbox' ? outside : root })) } as never)
+      const cw = createCodeWatcher(deps)
+      await cw.watch(watchArgs('workspace', 1))
+      const first = primaryWatcher()
+
+      await cw.watch(watchArgs('sandbox', 1))
+
+      expect(first.close).toHaveBeenCalled()
+      expect(mockWatcherInstances.length).toBe(2)
+      expect(deps.abortRoot).toHaveBeenCalledWith(root)
+      expect(deps.resolveRoot).toHaveBeenCalledTimes(2)
+    })
+
+    it('the same (slug, root, gen) is an idempotent update that does not re-resolve', async () => {
+      const deps = makeDeps()
+      const cw = createCodeWatcher(deps)
+      await cw.watch(watchArgs('sandbox', 1))
+      await cw.watch(watchArgs('sandbox', 1))
+
+      expect(deps.resolveRoot).toHaveBeenCalledTimes(1)
+      expect(mockWatcherInstances.length).toBe(1)
+    })
+
+    it('an unwatch for the other root is a stale no-op, and the matching root closes the watch', async () => {
+      const deps = makeDeps()
+      const cw = createCodeWatcher(deps)
+      await cw.watch(watchArgs('sandbox', 1))
+
+      await cw.unwatch({ workspaceSlug: 'A', root: 'workspace', gen: 1 })
+      expect(primaryWatcher().close).not.toHaveBeenCalled()
+
+      await cw.unwatch({ workspaceSlug: 'A', root: 'sandbox', gen: 1 })
+      expect(primaryWatcher().close).toHaveBeenCalled()
+    })
+
+    it('propagates a denied sandbox root without leaving a half-built watch', async () => {
+      const denied = Object.assign(new Error('Access denied'), { code: 'PERMISSION_DENIED' })
+      const deps = makeDeps({ resolveRoot: vi.fn(async () => { throw denied }) } as never)
+      const cw = createCodeWatcher(deps)
+
+      await expect(cw.watch(watchArgs('sandbox', 1))).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+
+      expect(mockWatcherInstances.length).toBe(0)
+    })
+  })
+
   it('unwatch when nothing is active is a no-op (does not throw)', async () => {
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await expect(cw.unwatch({ workspaceSlug: 'A', gen: 1 })).resolves.toBeUndefined()
+    await expect(cw.unwatch({ workspaceSlug: 'A', root: 'workspace', gen: 1 })).resolves.toBeUndefined()
   })
 })
 
@@ -372,7 +431,7 @@ describe('path containment', () => {
   it('an expandedDirs entry outside the root is silently dropped', async () => {
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: ['../outside'] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: ['../outside'] })
     expect(primaryWatcher()._watched.size).toBe(0)
   })
 
@@ -381,7 +440,7 @@ describe('path containment', () => {
     symlink(path.join(root, 'real-dir'), 'linked-dir')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: ['linked-dir'] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: ['linked-dir'] })
     expect(primaryWatcher()._watched.has(path.join(root, 'real-dir'))).toBe(false)
   })
 
@@ -389,7 +448,7 @@ describe('path containment', () => {
     fs.mkdirSync(path.join(root, '.git', 'objects'), { recursive: true })
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: ['.git/objects'] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: ['.git/objects'] })
     expect(primaryWatcher()._watched.has(path.join(root, '.git', 'objects'))).toBe(false)
   })
 
@@ -398,7 +457,7 @@ describe('path containment', () => {
     symlink(path.join(outside, 'secret.txt'), 'link.txt')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: 'link.txt', expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: 'link.txt', expandedDirs: [] })
     expect(primaryWatcher()._watched.has(path.join(outside, 'secret.txt'))).toBe(false)
   })
 
@@ -406,7 +465,7 @@ describe('path containment', () => {
     writeFile('sub/a.txt')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: 'sub/a.txt', expandedDirs: ['sub'] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: 'sub/a.txt', expandedDirs: ['sub'] })
     expect(primaryWatcher()._watched.has(path.join(root, 'sub'))).toBe(true)
     expect(primaryWatcher()._watched.has(path.join(root, 'sub', 'a.txt'))).toBe(true)
   })
@@ -414,7 +473,7 @@ describe('path containment', () => {
   it("chokidar's ignored callback matches a .GIT directory case-insensitively (Sec L-8)", async () => {
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     const ignored = primaryWatcher().opts.ignored as (p: string) => boolean
     expect(ignored(path.join(root, '.GIT'))).toBe(true)
     expect(ignored(path.join(root, '.git'))).toBe(true)
@@ -424,14 +483,14 @@ describe('path containment', () => {
   it('a nonexistent expandedDirs entry is dropped (lstat throws in the symlink check)', async () => {
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: ['does-not-exist'] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: ['does-not-exist'] })
     expect(primaryWatcher()._watched.size).toBe(0)
   })
 
   it('a nonexistent openFile is dropped (realpath throws)', async () => {
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: 'nonexistent.txt', expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: 'nonexistent.txt', expandedDirs: [] })
     expect(primaryWatcher()._watched.size).toBe(0)
   })
 })
@@ -448,7 +507,7 @@ describe('WATCH_DIR_CAP', () => {
     })
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    const res = await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: dirs })
+    const res = await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: dirs })
     expect(res.limited).toBe(true)
     expect(primaryWatcher()._watched.size).toBe(WATCH_DIR_CAP)
     // "most recently expanded first" — the caller's own ordering is trusted,
@@ -461,7 +520,7 @@ describe('WATCH_DIR_CAP', () => {
     mkDir('only-one')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    const res = await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: ['only-one'] })
+    const res = await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: ['only-one'] })
     expect(res.limited).toBe(false)
   })
 })
@@ -474,7 +533,7 @@ describe('git-state paths', () => {
   it('adds no git-state paths when there is no snapshot (not yet probed)', async () => {
     const deps = makeDeps({ getGitSnapshot: vi.fn(() => undefined) })
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     expect(primaryWatcher()._watched.size).toBe(0)
   })
 
@@ -482,7 +541,7 @@ describe('git-state paths', () => {
     const { gitDir, commonDir } = makeGitLayout()
     const deps = makeDeps({ getGitSnapshot: vi.fn(() => ({ gitDir, commonDir, gitDirValid: false, branch: null, baseBranchName: null })) })
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     expect(primaryWatcher()._watched.size).toBe(0)
   })
 
@@ -490,7 +549,7 @@ describe('git-state paths', () => {
     const snapshot = validSnapshot()
     const deps = makeDeps({ getGitSnapshot: vi.fn(() => snapshot) })
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     const watched = primaryWatcher()._watched
     expect(watched.has(path.join(snapshot.gitDir!, 'HEAD'))).toBe(true)
     expect(watched.has(path.join(snapshot.gitDir!, 'index'))).toBe(true)
@@ -502,7 +561,7 @@ describe('git-state paths', () => {
     const snapshot = validSnapshot()
     const deps = makeDeps({ getGitSnapshot: vi.fn(() => snapshot) })
     const cw = createCodeWatcher(deps)
-    const res = await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    const res = await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     expect(res.limited).toBe(false)
     expect(mockWatcherInstances.length).toBe(2) // primary + the refs/heads watcher
     const refsWatcher = refsHeadsWatcher()!
@@ -515,7 +574,7 @@ describe('git-state paths', () => {
     const snapshot: CodeWatcherGitSnapshot = { gitDir, commonDir, gitDirValid: true, branch: 'main', baseBranchName: 'main' }
     const deps = makeDeps({ getGitSnapshot: vi.fn(() => snapshot) })
     const cw = createCodeWatcher(deps)
-    const res = await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    const res = await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     expect(res.limited).toBe(true)
     expect(mockWatcherInstances.length).toBe(1) // no depth-5 refs watcher this time
     expect(primaryWatcher()._watched.has(path.join(commonDir, 'refs', 'heads', 'main'))).toBe(true)
@@ -527,12 +586,12 @@ describe('git-state paths', () => {
     let current: CodeWatcherGitSnapshot | undefined = snapshot
     const deps = makeDeps({ getGitSnapshot: vi.fn(() => current) })
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     expect(mockWatcherInstances.length).toBe(2)
     const refsWatcher = refsHeadsWatcher()!
 
     current = { ...snapshot, gitDirValid: false }
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] }) // idempotent update, same gen
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] }) // idempotent update, same gen
     expect(refsWatcher.close).toHaveBeenCalled()
   })
 
@@ -549,7 +608,7 @@ describe('git-state paths', () => {
     }
     const deps = makeDeps({ getGitSnapshot: vi.fn(() => snapshot) })
     const cw = createCodeWatcher(deps)
-    const res = await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    const res = await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     expect(res.limited).toBe(false)
     expect(refsHeadsWatcher()).toBeDefined() // the whole (nonexistent) dir is still watched — chokidar picks it up if created later
   })
@@ -566,7 +625,7 @@ describe('event classification', () => {
     writeFile('a.txt')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
 
     primaryWatcher().emit('change', path.join(root, 'a.txt'))
     await realSleep(250)
@@ -580,7 +639,7 @@ describe('event classification', () => {
     mkDir('sub')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
 
     primaryWatcher().emit('addDir', path.join(root, 'sub'))
     await vi.advanceTimersByTimeAsync(150)
@@ -591,7 +650,7 @@ describe('event classification', () => {
     vi.useFakeTimers()
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
 
     primaryWatcher().emit('unlinkDir', path.join(root, 'removed-dir'))
     await vi.advanceTimersByTimeAsync(150)
@@ -602,7 +661,7 @@ describe('event classification', () => {
     const abs = writeFile('new-file.txt')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
 
     primaryWatcher().emit('add', abs)
     await realSleep(250)
@@ -614,7 +673,7 @@ describe('event classification', () => {
     const snapshot = validSnapshot()
     const deps = makeDeps({ getGitSnapshot: vi.fn(() => snapshot) })
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
 
     refsHeadsWatcher()!.emit('addDir', path.join(snapshot.commonDir!, 'refs', 'heads', 'feature'))
     await vi.advanceTimersByTimeAsync(300)
@@ -627,7 +686,7 @@ describe('event classification', () => {
     fs.writeFileSync(path.join(root, '.git', 'random-internal-file'), 'x')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
 
     primaryWatcher().emit('change', path.join(root, '.git', 'random-internal-file'))
     await vi.advanceTimersByTimeAsync(500)
@@ -639,7 +698,7 @@ describe('event classification', () => {
     const snapshot = validSnapshot()
     const deps = makeDeps({ getGitSnapshot: vi.fn(() => snapshot) })
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
 
     primaryWatcher().emit('change', path.join(snapshot.gitDir!, 'HEAD'))
     await vi.advanceTimersByTimeAsync(150)
@@ -652,7 +711,7 @@ describe('event classification', () => {
     vi.useFakeTimers()
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
 
     primaryWatcher().emit('change', path.join(outside, 'nope.txt'))
     await vi.advanceTimersByTimeAsync(500)
@@ -676,7 +735,7 @@ describe('debounce and coalescing', () => {
     writeFile('b.txt')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
 
     primaryWatcher().emit('change', path.join(root, 'a.txt'))
     await realSleep(50)
@@ -693,7 +752,7 @@ describe('debounce and coalescing', () => {
     mkDir('sub')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
 
     primaryWatcher().emit('change', path.join(root, 'a.txt'))
     primaryWatcher().emit('addDir', path.join(root, 'sub'))
@@ -710,7 +769,7 @@ describe('debounce and coalescing', () => {
     const snapshot = validSnapshot()
     const deps = makeDeps({ getGitSnapshot: vi.fn(() => snapshot) })
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
 
     primaryWatcher().emit('change', path.join(snapshot.gitDir!, 'HEAD'))
     await vi.advanceTimersByTimeAsync(100)
@@ -726,7 +785,7 @@ describe('debounce and coalescing', () => {
     const abs = writeFile('a.txt')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
 
     primaryWatcher().emit('change', abs)
     await realSleep(250)
@@ -741,7 +800,7 @@ describe('debounce and coalescing', () => {
     const abs = path.join(root, 'gone.txt') // never created
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
 
     primaryWatcher().emit('unlink', abs)
     await realSleep(250)
@@ -762,7 +821,7 @@ describe('real inotify accounting', () => {
     mkDir('sub')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    const res = await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: ['sub'] })
+    const res = await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: ['sub'] })
     expect(deps.setExternalWatchCount).toHaveBeenLastCalledWith('code-explorer', res.watching)
     expect(res.watching).toBe(1)
   })
@@ -771,7 +830,7 @@ describe('real inotify accounting', () => {
     const snapshot = validSnapshot()
     const deps = makeDeps({ getGitSnapshot: vi.fn(() => snapshot) })
     const cw = createCodeWatcher(deps)
-    const res = await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    const res = await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     // 4 fixed git-state files + 1 refs/heads dir = 5
     expect(res.watching).toBe(5)
   })
@@ -780,8 +839,8 @@ describe('real inotify accounting', () => {
     mkDir('sub')
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: ['sub'] })
-    await cw.unwatch({ workspaceSlug: 'A', gen: 1 })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: ['sub'] })
+    await cw.unwatch({ workspaceSlug: 'A', root: 'workspace', gen: 1 })
     expect(deps.setExternalWatchCount).toHaveBeenLastCalledWith('code-explorer', 0)
   })
 })
@@ -794,7 +853,7 @@ describe('closeAll', () => {
   it('tears down the active watch', async () => {
     const deps = makeDeps()
     const cw = createCodeWatcher(deps)
-    await cw.watch({ workspaceSlug: 'A', gen: 1, openFile: null, expandedDirs: [] })
+    await cw.watch({ workspaceSlug: 'A', root: 'workspace', gen: 1, openFile: null, expandedDirs: [] })
     await cw.closeAll()
     expect(primaryWatcher().close).toHaveBeenCalled()
     expect(deps.abortRoot).toHaveBeenCalledWith(root)

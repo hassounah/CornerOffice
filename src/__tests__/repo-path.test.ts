@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -11,7 +11,11 @@ import {
   computeRepoRootStatus,
   realHomedir,
   resolveRepoRoot,
+  resolveCodeRoot,
+  listSandboxWorktreeRoots,
 } from '../main/services/repo-path'
+import { sandboxPaths } from '../main/services/sandbox-paths'
+import type { SandboxPaths } from '../main/services/sandbox-paths'
 
 function makeAppState(workspaces: Record<string, string>): AppState {
   const map = new Map<string, Workspace>()
@@ -29,6 +33,7 @@ function makeAppState(workspaces: Record<string, string>): AppState {
     pluginDetector: null,
     channelConnection: null,
     terminalManager: null,
+    sandboxManager: null,
   }
 }
 
@@ -221,5 +226,143 @@ describe('resolveRepoRoot', () => {
   it('throws denied (PERMISSION_DENIED) when the workspace path is the home directory (M3)', async () => {
     const appState = makeAppState({ ws: os.homedir() })
     await expect(resolveRepoRoot('ws', appState)).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// resolveCodeRoot / listSandboxWorktreeRoots (#0029, TRD §3.10, C2)
+// ---------------------------------------------------------------------------
+
+describe('resolveCodeRoot', () => {
+  const dirs: string[] = []
+  afterEach(() => {
+    for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true })
+  })
+
+  interface Fixture {
+    paths: SandboxPaths
+    repo: string
+    appState: AppState
+    wt: string
+  }
+
+  /** A fake home with a repo and a sandbox worktree whose .git is a pointer FILE. */
+  function fixture(opts: { gitEntry?: 'file' | 'dir' | 'symlink' | 'none' } = {}): Fixture {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'co-resolve-code-root-')))
+    dirs.push(home)
+    const paths = sandboxPaths(home)
+    const repo = path.join(home, 'repo')
+    fs.mkdirSync(repo, { recursive: true })
+    const wt = path.join(paths.sandboxesRoot, 'ws')
+    fs.mkdirSync(wt, { recursive: true })
+    const gitEntry = opts.gitEntry ?? 'file'
+    const gitPath = path.join(wt, '.git')
+    if (gitEntry === 'file') fs.writeFileSync(gitPath, 'gitdir: whatever\n')
+    if (gitEntry === 'dir') fs.mkdirSync(gitPath)
+    if (gitEntry === 'symlink') fs.symlinkSync(path.join(repo, '.git'), gitPath)
+    return { paths, repo, appState: makeAppState({ ws: repo }), wt }
+  }
+
+  it("'workspace' is exactly resolveRepoRoot, with no pin", async () => {
+    const f = fixture()
+    expect(await resolveCodeRoot('ws', 'workspace', f.appState, f.paths)).toEqual({ root: await resolveRepoRoot('ws', f.appState) })
+  })
+
+  it("'sandbox' returns the worktree realpath and a pinned target", async () => {
+    const f = fixture()
+
+    const target = await resolveCodeRoot('ws', 'sandbox', f.appState, f.paths)
+
+    expect(target.root).toBe(f.wt)
+    expect(target.pin).toEqual({
+      gitDir: path.join(f.repo, '.git', 'worktrees', 'ws'),
+      commonDir: path.join(f.repo, '.git'),
+      workTree: f.wt,
+    })
+  })
+
+  it('denies an unknown workspace and a malformed slug', async () => {
+    const f = fixture()
+    await expect(resolveCodeRoot('nope', 'sandbox', f.appState, f.paths)).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+    const bad = makeAppState({ '-bad': f.repo })
+    await expect(resolveCodeRoot('-bad', 'sandbox', bad, f.paths)).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+  })
+
+  it('is NOT_FOUND when the worktree does not exist, or the sandboxes root does not', async () => {
+    const f = fixture()
+    fs.rmSync(f.wt, { recursive: true })
+    await expect(resolveCodeRoot('ws', 'sandbox', f.appState, f.paths)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+
+    fs.rmSync(f.paths.sandboxesRoot, { recursive: true })
+    await expect(resolveCodeRoot('ws', 'sandbox', f.appState, f.paths)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+
+  it('is NOT_FOUND when the workspace path is gone', async () => {
+    const f = fixture()
+    fs.rmSync(f.repo, { recursive: true })
+    await expect(resolveCodeRoot('ws', 'sandbox', f.appState, f.paths)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+
+  it('denies a symlinked worktree that points outside the sandboxes root', async () => {
+    const f = fixture()
+    const outside = path.join(path.dirname(f.paths.sandboxesRoot), 'elsewhere')
+    fs.mkdirSync(outside, { recursive: true })
+    fs.writeFileSync(path.join(outside, '.git'), 'gitdir: x\n')
+    fs.rmSync(f.wt, { recursive: true })
+    fs.symlinkSync(outside, f.wt)
+
+    await expect(resolveCodeRoot('ws', 'sandbox', f.appState, f.paths)).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+  })
+
+  it("denies a symlink to another workspace's worktree inside the sandboxes root (a -> b)", async () => {
+    const f = fixture()
+    const other = path.join(f.paths.sandboxesRoot, 'other')
+    fs.mkdirSync(other)
+    fs.writeFileSync(path.join(other, '.git'), 'gitdir: x\n')
+    fs.rmSync(f.wt, { recursive: true })
+    fs.symlinkSync(other, f.wt)
+
+    await expect(resolveCodeRoot('ws', 'sandbox', f.appState, f.paths)).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+  })
+
+  it('denies when the worktree is a regular file, not a directory', async () => {
+    const f = fixture()
+    fs.rmSync(f.wt, { recursive: true })
+    fs.writeFileSync(f.wt, 'x')
+    await expect(resolveCodeRoot('ws', 'sandbox', f.appState, f.paths)).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+  })
+
+  it.each(['dir', 'symlink', 'none'] as const)('denies when .git is %s rather than a pointer file', async (gitEntry) => {
+    const f = fixture({ gitEntry })
+    await expect(resolveCodeRoot('ws', 'sandbox', f.appState, f.paths)).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+  })
+
+  it('denies an unsafe root (the real home directory)', async () => {
+    const f = fixture()
+    // The sandboxes root being the home directory itself would make the worktree's parent unsafe;
+    // simulate it with a worktree path that IS the home directory.
+    const home = realHomedir()
+    const unsafePaths = { ...f.paths, sandboxesRoot: path.dirname(home) }
+    const appState = makeAppState({ [path.basename(home)]: f.repo })
+    await expect(resolveCodeRoot(path.basename(home), 'sandbox', appState, unsafePaths)).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+  })
+})
+
+describe('listSandboxWorktreeRoots', () => {
+  it('lists the realpath of every well-named worktree, and nothing for a missing root', () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'co-list-worktrees-')))
+    try {
+      const paths = sandboxPaths(home)
+      expect(listSandboxWorktreeRoots(paths)).toEqual([])
+
+      fs.mkdirSync(path.join(paths.sandboxesRoot, 'a'), { recursive: true })
+      fs.mkdirSync(path.join(paths.sandboxesRoot, 'b-2'))
+      fs.mkdirSync(path.join(paths.sandboxesRoot, '-not a slug'))
+      fs.symlinkSync(path.join(home, 'nowhere'), path.join(paths.sandboxesRoot, 'dangling'))
+
+      expect(listSandboxWorktreeRoots(paths).sort()).toEqual([path.join(paths.sandboxesRoot, 'a'), path.join(paths.sandboxesRoot, 'b-2')])
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
   })
 })

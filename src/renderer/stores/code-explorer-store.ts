@@ -51,6 +51,8 @@ export interface OpenExplorerOpts {
   baseline?: 'head' | 'branch'
   entry?: 'browse' | 'review'
   expectedBranch?: string | null
+  /** Which tree to open (#0029, TRD §3.10). Absent means the workspace. */
+  root?: 'workspace' | 'sandbox'
 }
 
 interface StatusState {
@@ -71,9 +73,13 @@ interface FileIndexState {
   at: number
 }
 
+export type CodeRoot = 'workspace' | 'sandbox'
+
 export interface CodeExplorerState {
   open: boolean
   workspaceSlug: string | null
+  /** Which tree is open (#0029, TRD §3.10). Every code.* call sends it. */
+  root: CodeRoot
   gen: number // session generation: bumps on openExplorer and closeExplorer; also the watch token
   repo: RepoInfo | null
   baseline: 'head' | 'branch'
@@ -121,6 +127,8 @@ export interface CodeExplorerState {
 
   // actions (unguarded; UI call sites wrap with guardAction per §3.7.2)
   openExplorer: (slug: string, opts?: OpenExplorerOpts) => void
+  /** Switches between the workspace and its sandbox worktree: closes and reopens the session with a new gen. Unguarded: UI call sites wrap it with guardAction like every other discard-capable action. */
+  setRoot: (root: CodeRoot) => void
   closeExplorer: () => void
   toggleDir: (rel: string) => void
   revealInTree: (rel: string) => void
@@ -164,9 +172,16 @@ const EDIT_RESET = {
   transientNote: null as string | null,
 }
 
+/**
+ * The trailing `root` argument of a code.* call. Only sent for the sandbox: the workspace is main's default, so
+ * every pre-sandbox call keeps its exact shape.
+ */
+const rootArg = (root: CodeRoot): readonly ['sandbox'] | readonly [] => (root === 'sandbox' ? (['sandbox'] as const) : ([] as const))
+
 const CLOSED_STATE = {
   open: false,
   workspaceSlug: null as string | null,
+  root: 'workspace' as CodeRoot,
   repo: null as RepoInfo | null,
   baseline: 'head' as const,
   changedOnly: false,
@@ -225,6 +240,7 @@ function computeDirRollup(changes: CodeChange[]): Record<string, true> {
 // place this store calls code.listDir, guarded by gen + the requested
 // showIgnored (dropped if either has since changed, §3.6.1 rows 2/3).
 function fetchDir(get: Get, set: Set, workspaceSlug: string, gen: number, showIgnored: boolean, rel: string): void {
+  const root = get().root
   set((s) => ({
     dirs: {
       ...s.dirs,
@@ -233,7 +249,7 @@ function fetchDir(get: Get, set: Set, workspaceSlug: string, gen: number, showIg
   }))
   void (async () => {
     try {
-      const response = await window.cornerOffice.code.listDir(workspaceSlug, rel, showIgnored)
+      const response = await window.cornerOffice.code.listDir(workspaceSlug, rel, showIgnored, ...rootArg(root))
       if (get().gen !== gen || get().showIgnored !== showIgnored) return
       if (response.error) {
         set((s) => ({
@@ -343,9 +359,10 @@ function fetchBaseline(
   baseline: 'head' | 'branch',
   reveal: boolean,
 ): void {
+  const root = get().root
   void (async () => {
     try {
-      const response = await window.cornerOffice.code.readBaseline(slug, relPath, baseline, reveal, oldPath)
+      const response = await window.cornerOffice.code.readBaseline(slug, relPath, baseline, reveal, oldPath, ...rootArg(root))
       if (get().gen !== gen || get().fileReq !== fileReq || get().baseline !== baseline) return
       if (response.error) return // the file view itself still works; the TRD has no dedicated baseline-error surface
       set({ baselineDoc: response.data })
@@ -380,7 +397,7 @@ function handleDiskChangeDetected(
 ): void {
   void (async () => {
     try {
-      const response = await window.cornerOffice.code.readFile(slug, relPath, get().revealed)
+      const response = await window.cornerOffice.code.readFile(slug, relPath, get().revealed, ...rootArg(get().root))
       if (get().gen !== gen || get().fileReq !== fileReq) return
 
       if (response.error) {
@@ -457,10 +474,12 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
     const returnFocus = activeElement?.getAttribute('data-return-focus') ?? null
     const newGen = get().gen + 1
     const baseline = opts?.baseline ?? 'head'
+    const root = opts?.root ?? 'workspace'
     set({
       ...CLOSED_STATE,
       open: true,
       workspaceSlug: slug,
+      root,
       gen: newGen,
       baseline,
       changedOnly: opts?.changedOnly ?? false,
@@ -474,7 +493,7 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
 
     void (async () => {
       try {
-        const response = await window.cornerOffice.code.watch(slug, newGen, null, [])
+        const response = await window.cornerOffice.code.watch(slug, newGen, null, [], ...rootArg(root))
         if (get().gen !== newGen) return
         if (!response.error) set({ liveLimited: response.data.limited })
       } catch {
@@ -486,10 +505,19 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
     startFocusRefresh(get)
   },
 
+  setRoot: (root) => {
+    const state = get()
+    if (!state.open || !state.workspaceSlug || state.root === root) return
+    const { workspaceSlug: slug, baseline, returnFocus } = state
+    // The old watch is replaced on the main side (same slug, different root, newer gen); a new gen drops every in-flight response.
+    get().openExplorer(slug, { root, baseline })
+    set({ returnFocus })
+  },
+
   closeExplorer: () => {
     const state = get()
     if (!state.open) return
-    const { workspaceSlug: slug, gen: oldGen, returnFocus } = state
+    const { workspaceSlug: slug, gen: oldGen, returnFocus, root } = state
 
     // Fix #141 item 3: captured here, first, rather than left to each
     // caller to remember — CLOSED_STATE's own reset (right below) clears
@@ -510,7 +538,7 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
     }
     set({ ...CLOSED_STATE, gen: oldGen + 1 })
 
-    if (slug) void window.cornerOffice.code.unwatch(slug, oldGen).catch(() => {})
+    if (slug) void window.cornerOffice.code.unwatch(slug, oldGen, ...rootArg(root)).catch(() => {})
     // Office: the trigger's page may have unmounted (a route change) — its
     // restoration reads this id back from the store directly, once the new
     // page mounts (a future consumeReturnFocus(), step 2.21), not from here.
@@ -592,7 +620,7 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
     try {
       do {
         statusTrailingRequested = false
-        const { workspaceSlug, gen, baseline } = get()
+        const { workspaceSlug, gen, baseline, root } = get()
         if (!workspaceSlug) break
 
         set((s) => ({
@@ -609,7 +637,7 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
         }))
 
         try {
-          const response = await window.cornerOffice.code.getStatus(workspaceSlug, baseline)
+          const response = await window.cornerOffice.code.getStatus(workspaceSlug, baseline, ...rootArg(root))
           if (get().gen !== gen || get().baseline !== baseline) continue // stale — dropped, per the loop's own trailing check
           if (response.error) {
             set((s) => ({ status: s.status ? { ...s.status, loading: false, failed: true } : s.status }))
@@ -639,10 +667,10 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
   },
 
   loadFileIndex: async () => {
-    const { workspaceSlug, gen, showIgnored } = get()
+    const { workspaceSlug, gen, showIgnored, root } = get()
     if (!workspaceSlug) return
     try {
-      const response = await window.cornerOffice.code.getFileIndex(workspaceSlug, showIgnored)
+      const response = await window.cornerOffice.code.getFileIndex(workspaceSlug, showIgnored, ...rootArg(root))
       if (get().gen !== gen || get().showIgnored !== showIgnored) return
       if (response.error) return
       set({
@@ -712,7 +740,7 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
 
     void (async () => {
       try {
-        const response = await window.cornerOffice.code.readFile(slug, rel, false)
+        const response = await window.cornerOffice.code.readFile(slug, rel, false, ...rootArg(get().root))
         if (get().gen !== gen || get().fileReq !== newFileReq) return
         if (response.error) {
           const knownChange = get().status?.byPath[rel]
@@ -753,7 +781,7 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
 
     void (async () => {
       try {
-        const response = await window.cornerOffice.code.readFile(slug, relPath, true)
+        const response = await window.cornerOffice.code.readFile(slug, relPath, true, ...rootArg(get().root))
         if (get().gen !== gen || get().fileReq !== fileReq) return // reveal never applies to another file
         if (response.error) {
           set({ fileError: { code: response.error.code, message: friendlyCodeError(response.error) } })
@@ -825,7 +853,7 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
 
     set({ saving: true, saveError: null })
     try {
-      const response = await window.cornerOffice.code.writeFile(slug, relPath, content, expectedMtime)
+      const response = await window.cornerOffice.code.writeFile(slug, relPath, content, expectedMtime, ...rootArg(get().root))
       if (get().gen !== gen || get().fileReq !== fileReq) {
         // The write already happened on disk regardless of whether this is
         // still the open file — still refresh status, just skip the
@@ -868,7 +896,7 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
 
     void (async () => {
       try {
-        const response = await window.cornerOffice.code.readFile(slug, relPath, revealed)
+        const response = await window.cornerOffice.code.readFile(slug, relPath, revealed, ...rootArg(get().root))
         if (get().gen !== gen || get().fileReq !== newFileReq) return
         if (response.error) {
           set({ fileLoading: false, fileError: { code: response.error.code, message: friendlyCodeError(response.error) } })

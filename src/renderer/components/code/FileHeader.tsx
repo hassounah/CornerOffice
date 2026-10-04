@@ -1,6 +1,9 @@
 import React, { useEffect, useRef } from 'react'
 import { useCodeExplorerStore } from '../../stores/code-explorer-store'
 import { guardAction } from '../../stores/dirty-registry'
+import { useSandboxStore } from '../../stores/sandbox-store'
+import { useSandboxStatusPolling } from '../../hooks/useSandboxStatusPolling'
+import { DisabledReason } from '../shared/DisabledReason'
 import { gitStateBannerCopy, changedOnDiskBannerMessage, deletedOnDiskNotice } from './notice-copy'
 import { ReviewSafeName } from './ReviewSafeName'
 import { ExplorerNotice } from './ExplorerNotice'
@@ -24,9 +27,29 @@ const READ_ONLY_REASON_TEXT: Record<string, string> = {
   symlink: 'Edit the symlink target instead',
 }
 
-export function FileHeader(): React.ReactElement | null {
+/** TRD §3.10 (M1): the sandbox worktree is only writable from the host while no session can be writing to it. */
+const SANDBOX_LOCKED_REASON = 'Stop the sandbox session to edit files here.'
+
+export interface FileHeaderProps {
+  /** Chrome for the shared DisabledReason tooltip; copy is identical in both skins. */
+  skin?: 'office' | 'realm'
+}
+
+export function FileHeader({ skin = 'office' }: FileHeaderProps = {}): React.ReactElement | null {
   const editButtonRef = useRef<HTMLButtonElement>(null)
   const saveButtonRef = useRef<HTMLButtonElement>(null)
+
+  const workspaceSlug = useCodeExplorerStore((s) => s.workspaceSlug)
+  const root = useCodeExplorerStore((s) => s.root)
+  // The sandbox gate reads the live session state; an unknown state counts as locked (fail closed), and the status
+  // is refreshed while this header is mounted on the sandbox root.
+  const sessionState = useSandboxStore((s) => (workspaceSlug ? s.status[workspaceSlug]?.session.state : undefined))
+  const fetchSandboxStatus = useSandboxStore((s) => s.fetchStatus)
+  const sandboxLocked = root === 'sandbox' && sessionState !== 'idle'
+  useEffect(() => {
+    if (root === 'sandbox' && workspaceSlug) void fetchSandboxStatus(workspaceSlug)
+  }, [root, workspaceSlug, fetchSandboxStatus])
+  useSandboxStatusPolling(root === 'sandbox' && workspaceSlug ? workspaceSlug : '')
 
   const selected = useCodeExplorerStore((s) => s.selected)
   const file = useCodeExplorerStore((s) => s.file)
@@ -140,27 +163,38 @@ export function FileHeader(): React.ReactElement | null {
         <div className="flex shrink-0 items-center gap-1">
           {!isDeletedChange &&
             (!editing ? (
-              <button
-                ref={editButtonRef}
-                type="button"
-                onClick={() => {
-                  if (canEdit) enterEdit()
-                }}
-                title={editDisabledReason ?? undefined}
-                aria-disabled={!canEdit}
-              >
-                Edit
-              </button>
+              <DisabledReason reason={canEdit && sandboxLocked ? SANDBOX_LOCKED_REASON : null} skin={skin}>
+                {(props) => (
+                  <button
+                    ref={editButtonRef}
+                    type="button"
+                    onClick={() => {
+                      if (canEdit) enterEdit()
+                    }}
+                    title={editDisabledReason ?? undefined}
+                    aria-disabled={!canEdit}
+                    {...props}
+                  >
+                    Edit
+                  </button>
+                )}
+              </DisabledReason>
             ) : (
               <>
-                <button
-                  ref={saveButtonRef}
-                  type="button"
-                  onClick={() => void save()}
-                  disabled={saving || diskChange?.kind === 'deleted'}
-                >
-                  Save
-                </button>
+                {/* A session that starts mid-edit locks Save, never the editor: the unsaved text stays so it can be copied. */}
+                <DisabledReason reason={sandboxLocked ? SANDBOX_LOCKED_REASON : null} skin={skin}>
+                  {(props) => (
+                    <button
+                      ref={saveButtonRef}
+                      type="button"
+                      onClick={() => void save()}
+                      disabled={saving || diskChange?.kind === 'deleted'}
+                      {...props}
+                    >
+                      Save
+                    </button>
+                  )}
+                </DisabledReason>
                 {/* §3.7.2 row 7: Cancel discards the draft, so it goes through
                     the same guard as every other exit path. */}
                 <button

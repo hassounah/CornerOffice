@@ -61,7 +61,20 @@ describe('CodeExplorerPage — mount/unmount', () => {
       baseline: 'head',
       entry: 'browse',
       expectedBranch: null,
+      root: 'workspace',
     })
+  })
+
+  it('opens the sandbox tree for ?root=sandbox, and ignores any other root value', () => {
+    mockSearch = new URLSearchParams('root=sandbox&entry=review&changed=1&baseline=branch&branch=feat%2Fa')
+    const { unmount } = render(<CodeExplorerPage />)
+    expect(mockOpenExplorer).toHaveBeenCalledWith('test-ws', expect.objectContaining({ root: 'sandbox', entry: 'review' }))
+    unmount()
+
+    mockOpenExplorer.mockClear()
+    mockSearch = new URLSearchParams('root=elsewhere')
+    render(<CodeExplorerPage />)
+    expect(mockOpenExplorer).toHaveBeenCalledWith('test-ws', expect.objectContaining({ root: 'workspace' }))
   })
 
   it('parses ?changed=1&baseline=branch&branch=<expected>&entry=review', () => {
@@ -72,6 +85,7 @@ describe('CodeExplorerPage — mount/unmount', () => {
       baseline: 'branch',
       entry: 'review',
       expectedBranch: 'feat/0028',
+      root: 'workspace',
     })
   })
 

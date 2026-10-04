@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import { hasGitSegment } from '../services/repo-path'
+import { AllowlistEntrySchema } from '../services/sandbox-allowlist'
+import { SANDBOX_SLUG_RE } from '../services/sandbox-spec'
 
 // ---------------------------------------------------------------------------
 // Workspace
@@ -310,25 +312,32 @@ function relPathRefine(rel: string, ctx: z.RefinementCtx, allowEmpty: boolean): 
 export const RelPathSchema = z.string().superRefine((rel, ctx) => relPathRefine(rel, ctx, false))
 export const RelDirSchema = z.string().superRefine((rel, ctx) => relPathRefine(rel, ctx, true))
 
+/** Which tree a code:* call reads (#0029, TRD §3.10). Defaults to the workspace, so every #0028 caller is unchanged. */
+const CodeRootSchema = z.enum(['workspace', 'sandbox']).default('workspace')
+
 export const CodeGetStatusSchema = z.object({
   workspaceSlug: terminalSlug,
+  root: CodeRootSchema,
   baseline: z.enum(['head', 'branch']),
 })
 
 export const CodeListDirSchema = z.object({
   workspaceSlug: terminalSlug,
+  root: CodeRootSchema,
   relDir: RelDirSchema,
   includeIgnored: z.boolean(),
 })
 
 export const CodeReadFileSchema = z.object({
   workspaceSlug: terminalSlug,
+  root: CodeRootSchema,
   relPath: RelPathSchema,
   reveal: z.boolean(),
 })
 
 export const CodeReadBaselineSchema = z.object({
   workspaceSlug: terminalSlug,
+  root: CodeRootSchema,
   relPath: RelPathSchema,
   oldPath: RelPathSchema.optional(),
   baseline: z.enum(['head', 'branch']),
@@ -337,6 +346,7 @@ export const CodeReadBaselineSchema = z.object({
 
 export const CodeWriteFileSchema = z.object({
   workspaceSlug: terminalSlug,
+  root: CodeRootSchema,
   relPath: RelPathSchema,
   // NOT a strict byte cap — Buffer.byteLength in the handler is authoritative (§17 R23)
   content: z.string().max(2 * 1024 * 1024),
@@ -345,11 +355,13 @@ export const CodeWriteFileSchema = z.object({
 
 export const CodeGetFileIndexSchema = z.object({
   workspaceSlug: terminalSlug,
+  root: CodeRootSchema,
   includeIgnored: z.boolean(),
 })
 
 export const CodeWatchSchema = z.object({
   workspaceSlug: terminalSlug,
+  root: CodeRootSchema,
   gen: z.number().int().nonnegative(),
   openFile: RelPathSchema.nullable(),
   expandedDirs: z.array(RelPathSchema).max(512),
@@ -357,6 +369,7 @@ export const CodeWatchSchema = z.object({
 
 export const CodeUnwatchSchema = z.object({
   workspaceSlug: terminalSlug,
+  root: CodeRootSchema,
   gen: z.number().int().nonnegative(),
 })
 
@@ -380,6 +393,51 @@ export type TerminalResizeInput = z.infer<typeof TerminalResizeSchema>
 export type TerminalKillInput = z.infer<typeof TerminalKillSchema>
 export type TerminalGetScrollbackInput = z.infer<typeof TerminalGetScrollbackSchema>
 export type TerminalShowContextMenuInput = z.infer<typeof TerminalShowContextMenuSchema>
+// ---------------------------------------------------------------------------
+// Sandbox sessions (#0029, TRD §3.13.2) — every schema is strict: an extra key is a validation error.
+// ---------------------------------------------------------------------------
+
+export const SandboxSlugSchema = z.string().regex(SANDBOX_SLUG_RE)
+const SandboxSlugOnly = z.object({ workspaceSlug: SandboxSlugSchema }).strict()
+const SandboxNoInput = z.object({}).strict()
+
+export const SandboxGetEnvironmentSchema = z.object({ refresh: z.boolean() }).strict()
+export const SandboxGetStatusSchema = SandboxSlugOnly
+export const SandboxGetSummariesSchema = SandboxNoInput
+export const SandboxStartSessionSchema = z
+  .object({
+    workspaceSlug: SandboxSlugSchema,
+    cols: z.number().int().min(1).max(1000),
+    rows: z.number().int().min(1).max(1000),
+    permissionMode: z.enum(['skip', 'auto']),
+    networkMode: z.enum(['allowlist', 'open']),
+  })
+  .strict()
+export const SandboxHandOffSchema = z.object({ workspaceSlug: SandboxSlugSchema, allowDirty: z.boolean() }).strict()
+export const SandboxPreviewDeleteSchema = SandboxSlugOnly
+export const SandboxDeleteSchema = z.object({ workspaceSlug: SandboxSlugSchema, acknowledgeDirty: z.boolean() }).strict()
+export const SandboxRecreateSchema = z
+  .object({
+    workspaceSlug: SandboxSlugSchema,
+    newPort: z.boolean(),
+    confirmedSpecHash: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict()
+export const SandboxBuildImageSchema = z.object({ rebuild: z.boolean(), requestedFor: SandboxSlugSchema.optional() }).strict()
+export const SandboxCancelBuildSchema = SandboxNoInput
+export const SandboxGetSettingsSchema = SandboxNoInput
+export const SandboxUpdateSettingsSchema = z
+  .object({
+    toolchains: z.object({ node: z.boolean(), go: z.boolean(), buildBase: z.boolean() }).strict().optional(),
+    globalAllowlist: z.array(AllowlistEntrySchema).max(200).optional(),
+    workspaceAllowlist: z
+      .object({ workspaceSlug: SandboxSlugSchema, entries: z.array(AllowlistEntrySchema).max(200) })
+      .strict()
+      .optional(),
+  })
+  .strict()
+export const SandboxGetBlockedSchema = SandboxSlugOnly
+
 export type ShellOpenExternalInput = z.infer<typeof ShellOpenExternalSchema>
 export type CodeGetStatusInput = z.infer<typeof CodeGetStatusSchema>
 export type CodeListDirInput = z.infer<typeof CodeListDirSchema>
@@ -389,3 +447,13 @@ export type CodeWriteFileInput = z.infer<typeof CodeWriteFileSchema>
 export type CodeGetFileIndexInput = z.infer<typeof CodeGetFileIndexSchema>
 export type CodeWatchInput = z.infer<typeof CodeWatchSchema>
 export type CodeUnwatchInput = z.infer<typeof CodeUnwatchSchema>
+export type SandboxGetEnvironmentInput = z.infer<typeof SandboxGetEnvironmentSchema>
+export type SandboxGetStatusInput = z.infer<typeof SandboxGetStatusSchema>
+export type SandboxStartSessionInput = z.infer<typeof SandboxStartSessionSchema>
+export type SandboxHandOffInput = z.infer<typeof SandboxHandOffSchema>
+export type SandboxPreviewDeleteInput = z.infer<typeof SandboxPreviewDeleteSchema>
+export type SandboxDeleteInput = z.infer<typeof SandboxDeleteSchema>
+export type SandboxRecreateInput = z.infer<typeof SandboxRecreateSchema>
+export type SandboxBuildImageInput = z.infer<typeof SandboxBuildImageSchema>
+export type SandboxUpdateSettingsInput = z.infer<typeof SandboxUpdateSettingsSchema>
+export type SandboxGetBlockedInput = z.infer<typeof SandboxGetBlockedSchema>

@@ -743,3 +743,100 @@ describe('NotificationService', () => {
     })
   })
 })
+
+// ---------------------------------------------------------------------------
+// Sandbox provenance and notices (#0029, §3.8.2, §3.12, §3.17, UX-H1)
+// ---------------------------------------------------------------------------
+
+describe('NotificationService — sandbox provenance', () => {
+  it('prefixes an OS title with "Sandbox · <ws>" for a sandbox item, and leaves a host item alone', () => {
+    const callbacks = makeCallbacks()
+    const svc = new NotificationService(callbacks)
+
+    svc.dispatch(makeNotification({ workspace: 'ws-a', summary: 'Needs input', source: 'sandbox' }))
+    svc.dispatch(makeNotification({ workspace: 'ws-a', summary: 'Needs input', source: 'host' }))
+
+    expect(callbacks.showOsNotification).toHaveBeenNthCalledWith(1, 'Sandbox · ws-a -- Needs input', expect.any(String), 'ws-a', expect.any(String))
+    expect(callbacks.showOsNotification).toHaveBeenNthCalledWith(2, 'ws-a -- Needs input', expect.any(String), 'ws-a', expect.any(String))
+  })
+
+  it('passes the click target as a fifth argument only when there is one', () => {
+    const callbacks = makeCallbacks()
+    const svc = new NotificationService(callbacks)
+
+    svc.dispatch(makeNotification({ target: 'sandbox-network' }))
+    svc.dispatch(makeNotification())
+
+    const [withTarget, without] = (callbacks.showOsNotification as ReturnType<typeof vi.fn>).mock.calls
+    expect(withTarget[4]).toBe('sandbox-network')
+    expect(without).toHaveLength(4)
+  })
+
+  it('delivers source and target to the dispatched notification untouched', () => {
+    const callbacks = makeCallbacks()
+    new NotificationService(callbacks).dispatch(makeNotification({ source: 'sandbox', target: 'sandbox-chooser' }))
+    expect(callbacks.onNotificationDispatched).toHaveBeenCalledWith(expect.objectContaining({ source: 'sandbox', target: 'sandbox-chooser' }))
+  })
+})
+
+describe('NotificationService.notifySandbox', () => {
+  function dispatched(callbacks: ReturnType<typeof makeCallbacks>): AppNotification[] {
+    return (callbacks.onNotificationDispatched as ReturnType<typeof vi.fn>).mock.calls.map((args: unknown[]) => args[0] as AppNotification)
+  }
+
+  it('blocked: requiresAction, sandbox source, target sandbox-network, fixed copy that never names a domain', () => {
+    const callbacks = makeCallbacks()
+    new NotificationService(callbacks).notifySandbox({ kind: 'blocked', slug: 'ws-a' })
+
+    const [n] = dispatched(callbacks)
+    expect(n).toMatchObject({
+      workspace: 'ws-a',
+      tier: 'requiresAction',
+      source: 'sandbox',
+      target: 'sandbox-network',
+      detail: 'A network request was blocked. Review it in Sandbox settings.',
+    })
+    expect(callbacks.showOsNotification).toHaveBeenCalledWith('Sandbox · ws-a -- Network request blocked', n.detail, 'ws-a', n.timestamp, 'sandbox-network')
+    expect(callbacks.unacknowledged['ws-a']).toBe(1)
+  })
+
+  it.each([
+    [{ reason: 'docker-unavailable' as const, exitCode: 1 }, 'Docker unavailable'],
+    [{ reason: 'exited' as const, exitCode: 137 }, 'exit code 137'],
+    [{ reason: 'exited' as const, exitCode: null }, 'the session exited'],
+  ])('unexpected-exit %j reads "(%s)"', (extra, why) => {
+    const callbacks = makeCallbacks()
+    new NotificationService(callbacks).notifySandbox({ kind: 'unexpected-exit', slug: 'ws-a', ...extra })
+
+    const [n] = dispatched(callbacks)
+    expect(n).toMatchObject({ tier: 'requiresAction', source: 'sandbox', summary: 'Sandbox session ended unexpectedly' })
+    expect(n.detail).toBe(`The session ended unexpectedly (${why}).`)
+    expect(n).toMatchObject({ workspace: 'ws-a', target: 'sandbox-chooser' })
+    expect(n.detail?.length).toBeLessThanOrEqual(80)
+  })
+
+  it('container-recreated is a progress-tier notice', () => {
+    const callbacks = makeCallbacks()
+    new NotificationService(callbacks).notifySandbox({ kind: 'container-recreated', slug: 'ws-a' })
+    expect(dispatched(callbacks)[0]).toMatchObject({ tier: 'progress', source: 'sandbox', summary: 'Sandbox container recreated' })
+  })
+
+  it('image-ready for a requesting workspace: names it and targets its chooser', () => {
+    const callbacks = makeCallbacks({ tiers: { requiresAction: { enabled: true, sound: false }, idle: { enabled: true, osNotification: true }, progress: { enabled: true, osNotification: true }, activity: { enabled: true } } })
+    new NotificationService(callbacks).notifySandbox({ kind: 'image-ready', slug: 'ws-a' })
+
+    const [n] = dispatched(callbacks)
+    expect(n).toMatchObject({ workspace: 'ws-a', tier: 'progress', summary: 'Sandbox image is ready', target: 'sandbox-chooser', source: 'sandbox' })
+    expect(callbacks.showOsNotification).toHaveBeenCalledWith('Sandbox · ws-a -- Sandbox image is ready', '', 'ws-a', n.timestamp, 'sandbox-chooser')
+  })
+
+  it('image-ready: fixed title, no workspace, target sandbox-image, and a bare OS title', () => {
+    const callbacks = makeCallbacks({ tiers: { requiresAction: { enabled: true, sound: false }, idle: { enabled: true, osNotification: true }, progress: { enabled: true, osNotification: true }, activity: { enabled: true } } })
+    new NotificationService(callbacks).notifySandbox({ kind: 'image-ready', slug: null })
+
+    const [n] = dispatched(callbacks)
+    expect(n).toMatchObject({ workspace: '', tier: 'progress', summary: 'Sandbox image is ready', target: 'sandbox-image', source: 'sandbox' })
+    expect(callbacks.showOsNotification).toHaveBeenCalledWith('Sandbox image is ready', '', '', n.timestamp, 'sandbox-image')
+    expect(callbacks.unacknowledged['']).toBeUndefined()
+  })
+})

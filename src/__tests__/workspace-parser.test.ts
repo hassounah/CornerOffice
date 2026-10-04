@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { WorkspaceParserService } from '@main/services/workspace-parser'
+import { execFileSync } from 'child_process'
+import { WorkspaceParserService, readMemoryDocsRoot, readPipelineBranches } from '@main/services/workspace-parser'
 
 function mkTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'co-parser-test-'))
@@ -281,6 +282,152 @@ describe('WorkspaceParserService', () => {
       const content = 'x'.repeat(2 * 1024 * 1024)
       writeFile(path.join(tmpDir, 'README.md'), content)
       expect(svc.findReadme(tmpDir)).toBe(content)
+    })
+  })
+
+  // ── H2 hardened .rix reads (§10.8, SEC-L4) ─────────────────────────────────
+
+  describe('capped, no-follow .rix reads (H2)', () => {
+    it.skipIf(process.platform === 'win32')('ignores a symlinked .rix/memory.md', () => {
+      const rixDir = path.join(tmpDir, '.rix')
+      fs.mkdirSync(rixDir, { recursive: true })
+      const realFile = path.join(tmpDir, 'outside-memory.md')
+      writeFile(realFile, SAMPLE_MEMORY_MD)
+      const linkPath = path.join(rixDir, 'memory.md')
+      try {
+        fs.symlinkSync(realFile, linkPath)
+      } catch {
+        return // symlinks unsupported on this filesystem
+      }
+
+      const result = svc.parseMemoryMd(linkPath)
+      expect(result.docsRoot).toBeNull()
+      expect(result.nextFeatureId).toBeNull()
+    })
+
+    it.skipIf(process.platform === 'win32')('a .rix/pipelines symlink to another directory yields no parsed pipelines from it', () => {
+      const rixDir = path.join(tmpDir, '.rix')
+      fs.mkdirSync(rixDir, { recursive: true })
+      const outsideDir = path.join(tmpDir, 'outside-pipelines')
+      writeFile(path.join(outsideDir, '0099-evil.md'), SAMPLE_PIPELINE_MD)
+      const pipelinesLink = path.join(rixDir, 'pipelines')
+      try {
+        fs.symlinkSync(outsideDir, pipelinesLink)
+      } catch {
+        return
+      }
+
+      const result = svc.scanPipelinesDir(pipelinesLink)
+      expect(result.active).toHaveLength(0)
+      expect(result.parked).toHaveLength(0)
+    })
+
+    it.skipIf(process.platform === 'win32')('ignores a symlinked .rix/history.md', () => {
+      const rixDir = path.join(tmpDir, '.rix')
+      fs.mkdirSync(rixDir, { recursive: true })
+      const realFile = path.join(tmpDir, 'outside-history.md')
+      writeFile(realFile, SAMPLE_HISTORY_MD)
+      const linkPath = path.join(rixDir, 'history.md')
+      try {
+        fs.symlinkSync(realFile, linkPath)
+      } catch {
+        return
+      }
+
+      expect(svc.parseHistoryMd(linkPath)).toEqual([])
+    })
+
+    it('caps an oversized memory.md at 1 MB (returns defaults rather than reading it whole)', () => {
+      const rixDir = path.join(tmpDir, '.rix')
+      const p = path.join(rixDir, 'memory.md')
+      // Valid settings line placed AFTER the 1 MB cap — never reached.
+      const oversized = '#'.repeat(1024 * 1024 + 10) + '\n- docs_root: /should/not/be/read\n'
+      writeFile(p, oversized)
+
+      const result = svc.parseMemoryMd(p)
+      expect(result.docsRoot).toBeNull()
+    })
+
+    it('a FIFO pipeline card does not hang scanPipelinesDir', () => {
+      const rixDir = path.join(tmpDir, '.rix')
+      const pipelinesDir = path.join(rixDir, 'pipelines')
+      fs.mkdirSync(pipelinesDir, { recursive: true })
+      const fifoPath = path.join(pipelinesDir, '0001-fifo.md')
+      try {
+        execFileSync('mkfifo', [fifoPath])
+      } catch {
+        return // mkfifo unsupported on this platform
+      }
+
+      const result = svc.scanPipelinesDir(pipelinesDir)
+      expect(result.active).toHaveLength(0)
+      expect(result.parked).toHaveLength(0)
+    })
+  })
+
+  describe('readMemoryDocsRoot', () => {
+    it('returns the docs_root setting from .rix/memory.md', () => {
+      writeFile(path.join(tmpDir, '.rix', 'memory.md'), SAMPLE_MEMORY_MD)
+      expect(readMemoryDocsRoot(tmpDir)).toBe('/home/amer/my-project/docs')
+    })
+
+    it('returns null for a relative docs_root (SEC-M1)', () => {
+      writeFile(path.join(tmpDir, '.rix', 'memory.md'), '# Rix Memory\n\n## Settings\n- docs_root: ../other/docs\n')
+      expect(readMemoryDocsRoot(tmpDir)).toBeNull()
+    })
+
+    it('collapses .. segments in an absolute docs_root (SEC-M1)', () => {
+      writeFile(path.join(tmpDir, '.rix', 'memory.md'), '# Rix Memory\n\n## Settings\n- docs_root: /repo/docs/../../other\n')
+      expect(readMemoryDocsRoot(tmpDir)).toBe('/other')
+    })
+
+    it('returns null when memory.md has no docs_root setting', () => {
+      writeFile(path.join(tmpDir, '.rix', 'memory.md'), '# Rix Memory\n\n## Project Context\nSome context.\n')
+      expect(readMemoryDocsRoot(tmpDir)).toBeNull()
+    })
+
+    it('returns null when .rix/memory.md does not exist', () => {
+      expect(readMemoryDocsRoot(tmpDir)).toBeNull()
+    })
+
+    it.skipIf(process.platform === 'win32')('ignores a symlinked memory.md (H2)', () => {
+      const rixDir = path.join(tmpDir, '.rix')
+      fs.mkdirSync(rixDir, { recursive: true })
+      const realFile = path.join(tmpDir, 'outside-memory.md')
+      writeFile(realFile, SAMPLE_MEMORY_MD)
+      try {
+        fs.symlinkSync(realFile, path.join(rixDir, 'memory.md'))
+      } catch {
+        return
+      }
+
+      expect(readMemoryDocsRoot(tmpDir)).toBeNull()
+    })
+  })
+
+  describe('readPipelineBranches', () => {
+    it('returns branch names from both active and parked pipeline cards', () => {
+      const pipelinesDir = path.join(tmpDir, '.rix', 'pipelines')
+      writeFile(path.join(pipelinesDir, '0003-my-feature.md'), SAMPLE_PIPELINE_MD) // Branch: feat/my-feature
+      writeFile(path.join(pipelinesDir, '0003-my-feature.lock'), '') // active
+      const parkedMd = SAMPLE_PIPELINE_MD.replace('feat/my-feature', 'feat/other-feature')
+      writeFile(path.join(pipelinesDir, '0004-other-feature.md'), parkedMd) // parked (no .lock)
+
+      expect(readPipelineBranches(tmpDir)).toEqual(expect.arrayContaining(['feat/my-feature', 'feat/other-feature']))
+      expect(readPipelineBranches(tmpDir)).toHaveLength(2)
+    })
+
+    it('omits a card with no Branch field (null branch)', () => {
+      const pipelinesDir = path.join(tmpDir, '.rix', 'pipelines')
+      const noBranchMd = SAMPLE_PIPELINE_MD.split('\n').filter((l) => !l.startsWith('- **Branch**')).join('\n')
+      writeFile(path.join(pipelinesDir, '0003-my-feature.md'), noBranchMd)
+      writeFile(path.join(pipelinesDir, '0003-my-feature.lock'), '')
+
+      expect(readPipelineBranches(tmpDir)).toEqual([])
+    })
+
+    it('returns an empty array when .rix/pipelines does not exist', () => {
+      expect(readPipelineBranches(tmpDir)).toEqual([])
     })
   })
 

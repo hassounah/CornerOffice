@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { GitDisabled } from './git-runner'
-import type { GitService, RepoCtx, GitRunResult } from './git-runner'
+import type { GitService, RepoCtx, GitRunResult, WorktreePin } from './git-runner'
 import type {
   RepoInfo,
   RepoState,
@@ -548,31 +548,47 @@ export interface StatusOptions {
 // createRepoService
 // ---------------------------------------------------------------------------
 
+/**
+ * A repo root, optionally pinned to a sandbox worktree's real
+ * gitdir/commondir (C2, §3.6.4). Every `RepoService` method's first
+ * parameter accepts either a bare root string (the #0028 shape, kept so
+ * those suites stay byte-identical) or this object. This type alone doesn't
+ * force the pin — the 1.9 fail-closed guard in git-runner.ts's `runGit` is
+ * the real control that rejects an unpinned call under SANDBOXES_ROOT.
+ */
+export type RepoTarget = { root: string; pin?: WorktreePin }
+
+function normalizeTarget(target: string | RepoTarget): RepoTarget {
+  return typeof target === 'string' ? { root: target } : target
+}
+
 export interface RepoService {
-  getRepoInfo(root: string, workspaceRoots: readonly string[]): Promise<RepoInfo>
-  getStatus(root: string, workspaceRoots: readonly string[], baseline: 'head' | 'branch', opts?: StatusOptions): Promise<CodeStatusResponse>
+  getRepoInfo(target: string | RepoTarget, workspaceRoots: readonly string[]): Promise<RepoInfo>
+  getStatus(target: string | RepoTarget, workspaceRoots: readonly string[], baseline: 'head' | 'branch', opts?: StatusOptions): Promise<CodeStatusResponse>
   /** Raw blob content at a baseline (`cat-file`), classified through
    *  code-fs's classifyBuffer. The secret gate checks `relPath` OR `oldPath`
    *  (M6) before any read. Reuses the cache's headOid/mergeBase (no
    *  re-probe) — the caller must have already run getRepoInfo/getStatus for
    *  this root this session. */
-  readBlob(root: string, workspaceRoots: readonly string[], baseline: 'head' | 'branch', relPath: string, oldPath: string | undefined): Promise<CodeBaselineResponse>
+  readBlob(target: string | RepoTarget, workspaceRoots: readonly string[], baseline: 'head' | 'branch', relPath: string, oldPath: string | undefined): Promise<CodeBaselineResponse>
   /** The subset of `relPaths` that are git-ignored (`check-ignore --stdin`). */
-  checkIgnore(root: string, workspaceRoots: readonly string[], relPaths: readonly string[]): Promise<ReadonlySet<string>>
+  checkIgnore(target: string | RepoTarget, workspaceRoots: readonly string[], relPaths: readonly string[]): Promise<ReadonlySet<string>>
   /** All tracked + untracked (+ ignored, if requested) paths, deduplicated
    *  and capped at FILE_INDEX_CAP. Falls back to the plain fs walk
    *  (code-fs's walkFileIndex) for a non-git root, an unsafe root, or any
    *  unexpected git failure — this only feeds quick-open, not a security
    *  control, so availability wins over a hard failure. */
-  getFileIndex(root: string, workspaceRoots: readonly string[], includeIgnored: boolean): Promise<CodeFileIndexResponse>
+  getFileIndex(target: string | RepoTarget, workspaceRoots: readonly string[], includeIgnored: boolean): Promise<CodeFileIndexResponse>
   /** Clears the whole cached entry for `root`, including `unsafe`. Only
-   *  called when a new watch generation starts (a deliberate reopen). */
-  resetRoot(root: string): void
+   *  called when a new watch generation starts (a deliberate reopen). The
+   *  cache is keyed by the root string alone — a pin carries no separate
+   *  cache identity, so it's accepted here only for signature uniformity. */
+  resetRoot(target: string | RepoTarget): void
   /** The cache entry populated by the most recent getRepoInfo(root, ...) —
    *  gitDir/commonDir/gitlinks etc. for readBlob()/checkIgnore() (step 1.13)
    *  to reuse without re-probing. undefined before the first probe, or after
    *  resetRoot. */
-  getCachedEntry(root: string): RepoCacheEntry | undefined
+  getCachedEntry(target: string | RepoTarget): RepoCacheEntry | undefined
 }
 
 export function createRepoService(git: GitService): RepoService {
@@ -605,14 +621,15 @@ export function createRepoService(git: GitService): RepoService {
     })
   }
 
-  async function getRepoInfo(root: string, workspaceRoots: readonly string[]): Promise<RepoInfo> {
+  async function getRepoInfo(target: string | RepoTarget, workspaceRoots: readonly string[]): Promise<RepoInfo> {
+    const { root, pin } = normalizeTarget(target)
     // Sec H-6: once unsafe, no further runGit call for this root until a
     // deliberate resetRoot — checked before even the version probe below.
     if (isUnsafe(root)) {
       return inertRepoInfo('git-unsafe', null)
     }
 
-    const ctx: RepoCtx = { root, workspaceRoots }
+    const ctx: RepoCtx = { root, workspaceRoots, pin }
 
     // Version gate first (M5). A too-old git is never trusted for the
     // output-format assumptions the probe below makes.
@@ -725,18 +742,19 @@ export function createRepoService(git: GitService): RepoService {
   }
 
   async function getStatus(
-    root: string,
+    target: string | RepoTarget,
     workspaceRoots: readonly string[],
     baseline: 'head' | 'branch',
     opts: StatusOptions = {},
   ): Promise<CodeStatusResponse> {
+    const { root, pin } = normalizeTarget(target)
     const zeroed = { files: 0, added: 0, removed: 0, approximate: false }
-    const repo = await getRepoInfo(root, workspaceRoots)
+    const repo = await getRepoInfo(target, workspaceRoots)
     if (repo.state !== 'git') {
       return { baseline, repo, changes: [], totals: zeroed, truncated: false }
     }
 
-    const ctx: RepoCtx = { root, workspaceRoots }
+    const ctx: RepoCtx = { root, workspaceRoots, pin }
 
     try {
       assertNotUnsafe(root)
@@ -855,12 +873,13 @@ export function createRepoService(git: GitService): RepoService {
   }
 
   async function readBlob(
-    root: string,
+    target: string | RepoTarget,
     workspaceRoots: readonly string[],
     baseline: 'head' | 'branch',
     relPath: string,
     oldPath: string | undefined,
   ): Promise<CodeBaselineResponse> {
+    const { root, pin } = normalizeTarget(target)
     // Secret gate FIRST (M6), uses relPath OR oldPath, before any read.
     if (isSecret(path.basename(relPath)) || (oldPath !== undefined && isSecret(path.basename(oldPath)))) {
       return { kind: 'secret' }
@@ -872,7 +891,7 @@ export function createRepoService(git: GitService): RepoService {
       return { kind: 'unavailable' }
     }
 
-    const ctx: RepoCtx = { root, workspaceRoots }
+    const ctx: RepoCtx = { root, workspaceRoots, pin }
     const cached = cache.get(root)
 
     try {
@@ -934,7 +953,8 @@ export function createRepoService(git: GitService): RepoService {
     }
   }
 
-  async function checkIgnore(root: string, workspaceRoots: readonly string[], relPaths: readonly string[]): Promise<ReadonlySet<string>> {
+  async function checkIgnore(target: string | RepoTarget, workspaceRoots: readonly string[], relPaths: readonly string[]): Promise<ReadonlySet<string>> {
+    const { root, pin } = normalizeTarget(target)
     if (relPaths.length === 0) return new Set()
     try {
       assertNotUnsafe(root)
@@ -942,7 +962,7 @@ export function createRepoService(git: GitService): RepoService {
       return new Set() // fails closed to "nothing known ignored" — same as the FALLBACK_IGNORES gate elsewhere when git can't be trusted
     }
 
-    const ctx: RepoCtx = { root, workspaceRoots }
+    const ctx: RepoCtx = { root, workspaceRoots, pin }
     try {
       const stdin = Buffer.from(relPaths.join('\0') + '\0', 'utf-8')
       // Exit 1 means none of the given paths are ignored (verified empirically
@@ -956,8 +976,9 @@ export function createRepoService(git: GitService): RepoService {
     }
   }
 
-  async function getFileIndex(root: string, workspaceRoots: readonly string[], includeIgnored: boolean): Promise<CodeFileIndexResponse> {
-    const repo = await getRepoInfo(root, workspaceRoots)
+  async function getFileIndex(target: string | RepoTarget, workspaceRoots: readonly string[], includeIgnored: boolean): Promise<CodeFileIndexResponse> {
+    const { root, pin } = normalizeTarget(target)
+    const repo = await getRepoInfo(target, workspaceRoots)
     if (repo.state !== 'git') {
       return walkFileIndex(root)
     }
@@ -968,7 +989,7 @@ export function createRepoService(git: GitService): RepoService {
       return walkFileIndex(root)
     }
 
-    const ctx: RepoCtx = { root, workspaceRoots }
+    const ctx: RepoCtx = { root, workspaceRoots, pin }
     try {
       const cachedResult = await git.runGit(ctx, ['ls-files', '--cached', '--others', '--exclude-standard', '-z'])
       const paths = new Set(splitNulRecords(cachedResult.stdout).filter((p) => p !== ''))
@@ -991,11 +1012,13 @@ export function createRepoService(git: GitService): RepoService {
     }
   }
 
-  function resetRoot(root: string): void {
+  function resetRoot(target: string | RepoTarget): void {
+    const { root } = normalizeTarget(target)
     cache.delete(root)
   }
 
-  function getCachedEntry(root: string): RepoCacheEntry | undefined {
+  function getCachedEntry(target: string | RepoTarget): RepoCacheEntry | undefined {
+    const { root } = normalizeTarget(target)
     return cache.get(root)
   }
 

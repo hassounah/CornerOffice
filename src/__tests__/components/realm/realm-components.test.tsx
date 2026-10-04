@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import React from 'react'
 import type { Workspace } from '@main/types/workspace'
 import type { AppConfig } from '@main/types/config'
 import type { CharacterInstance } from '@main/types/realm'
+import type { SandboxStatus } from '@main/types/sandbox'
 
 // ---------------------------------------------------------------------------
 // Store mocks (hoisted for per-test mutation)
@@ -68,11 +69,12 @@ const mockDocViewerStore = vi.hoisted(() => ({
 }))
 
 const mockNotificationStore = vi.hoisted(() => ({
-  items: [] as { id: string; title: string; body?: string; tier: string; workspace: string; dismissed: boolean }[],
+  items: [] as { id: string; title: string; body?: string; tier: string; workspace: string; dismissed: boolean; target?: string }[],
   loading: false,
   error: null as string | null,
   fetchHistory: vi.fn().mockResolvedValue(undefined),
   dismiss: vi.fn(),
+  requestOpen: vi.fn(),
 }))
 
 vi.mock('../../../renderer/stores/realm-store', () => ({
@@ -114,6 +116,12 @@ const mockTerminalStore = vi.hoisted(() => ({
   sessions: {} as Record<string, string>,
   overlayVisible: {} as Record<string, boolean>,
   spawnError: {} as Record<string, string | null>,
+  // The sandbox chooser and actions (#0029) read these per workspace.
+  spawnFailure: {} as Record<string, string | null>,
+  buildPrompt: {} as Record<string, unknown>,
+  recreatePrompt: {} as Record<string, unknown>,
+  clearBuildPrompt: vi.fn(),
+  clearRecreatePrompt: vi.fn(),
   spawn: vi.fn(),
   spawnShell: vi.fn(),
   kill: vi.fn(),
@@ -254,6 +262,8 @@ import { TowerView } from '../../../renderer/components/realm/overlays/TowerView
 import { NotificationScroll } from '../../../renderer/components/realm/overlays/NotificationScroll'
 import { TownSquareCelebration } from '../../../renderer/components/realm/overlays/TownSquareCelebration'
 import { RealmDocViewer } from '../../../renderer/components/realm/overlays/RealmDocViewer'
+import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
+import { ELIGIBILITY_COPY } from '../../../renderer/utils/sandbox-copy'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1055,10 +1065,11 @@ describe('SettingsChamber', () => {
     mockWorkspaceStore.workspaces = []
   })
 
-  it('renders 5 tab buttons', () => {
+  it('renders 6 tab buttons, The Armory among them', () => {
     render(<SettingsChamber />)
     const tabs = screen.getAllByRole('tab')
-    expect(tabs).toHaveLength(5)
+    expect(tabs).toHaveLength(6)
+    expect(screen.getByRole('tab', { name: 'The Armory' })).toBeInTheDocument()
   })
 
   it('defaults to kingdom section', () => {
@@ -1093,6 +1104,99 @@ describe('SettingsChamber', () => {
     render(<SettingsChamber />)
     await user.click(screen.getByRole('tab', { name: /Appearance/i }))
     expect(screen.getByTestId('appearance-settings')).toBeInTheDocument()
+  })
+
+  describe('The Armory (sandbox settings, 6.3)', () => {
+    let savedCornerOffice: typeof window.cornerOffice
+
+    beforeEach(() => {
+      savedCornerOffice = window.cornerOffice
+      window.cornerOffice = {
+        sandbox: {
+          getEnvironment: vi.fn().mockResolvedValue({ data: { docker: 'ok', dockerVersion: '28.0.1', image: { state: 'ready', builtAt: null, sizeBytes: null } }, error: null }),
+          getSettings: vi.fn().mockResolvedValue({ data: { toolchains: { node: true, go: true, buildBase: true }, defaultAllowlist: ['github.com'], globalAllowlist: [], workspaceAllowlists: {} }, error: null }),
+          getSummaries: vi.fn().mockResolvedValue({ data: {}, error: null }),
+          getStatus: vi.fn().mockResolvedValue({ data: null, error: null }),
+          getBlocked: vi.fn().mockResolvedValue({ data: [], error: null }),
+        },
+        on: vi.fn(() => vi.fn()),
+      } as unknown as typeof window.cornerOffice
+      useSandboxStore.setState({ settingsRequest: null, settings: null })
+    })
+
+    afterEach(() => {
+      window.cornerOffice = savedCornerOffice
+      useSandboxStore.setState({ settingsRequest: null, settings: null })
+    })
+
+    it('renders the sandbox sections in Realm chrome when its tab is clicked', async () => {
+      const user = userEvent.setup()
+      render(<SettingsChamber />)
+      await user.click(screen.getByRole('tab', { name: 'The Armory' }))
+
+      expect(screen.getByRole('tab', { name: 'The Armory' })).toHaveAttribute('aria-selected', 'true')
+      for (const name of ['Docker', 'Image', 'Toolchains', 'Network', 'Sandboxes']) {
+        expect(await screen.findByRole('region', { name })).toBeInTheDocument()
+      }
+    })
+
+    it('is reachable by keyboard: arrows move onto it and past it', () => {
+      render(<SettingsChamber initialSection="notifications" />)
+      fireEvent.keyDown(screen.getByRole('tab', { name: /Notifications/i }), { key: 'ArrowRight' })
+      expect(screen.getByRole('tab', { name: 'The Armory' })).toHaveAttribute('aria-selected', 'true')
+
+      fireEvent.keyDown(screen.getByRole('tab', { name: 'The Armory' }), { key: 'ArrowRight' })
+      expect(screen.getByRole('tab', { name: /Appearance/i })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it("the Blocked feed's confirm-first Allow everywhere works in the Realm", async () => {
+      const user = userEvent.setup()
+      mockWorkspaceStore.workspaces = [makeWorkspace('my-project')]
+      const sandbox = window.cornerOffice.sandbox as unknown as Record<string, ReturnType<typeof vi.fn>>
+      sandbox.getBlocked.mockResolvedValue({ data: [{ domain: 'crates.io', count: 2, firstSeen: 't', lastSeen: 't' }], error: null })
+      sandbox.updateSettings = vi.fn().mockResolvedValue({ data: null, error: null })
+      render(<SettingsChamber initialSection="sandbox" />)
+
+      await user.click(await screen.findByRole('button', { name: 'Allow everywhere: crates.io' }))
+      const dialog = screen.getByRole('alertdialog')
+      expect(dialog).toHaveTextContent('Allow crates.io for every sandbox?')
+      expect(sandbox.updateSettings).not.toHaveBeenCalled()
+
+      await user.click(within(dialog).getByRole('button', { name: 'Allow everywhere' }))
+      expect(sandbox.updateSettings).toHaveBeenCalledWith({ globalAllowlist: ['crates.io'] })
+    })
+
+    it('opens on the Armory with the requested workspace selected, and consumes the request', async () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace('my-project'), makeWorkspace('other')]
+      useSandboxStore.setState({ settingsRequest: 'other' })
+      render(<SettingsChamber />)
+
+      expect(screen.getByRole('tab', { name: 'The Armory' })).toHaveAttribute('aria-selected', 'true')
+      expect(useSandboxStore.getState().settingsRequest).toBeNull()
+      expect(await screen.findByRole('combobox', { name: 'Workspace' })).toHaveValue('other')
+    })
+
+    it('an empty settings request (image ready, requester unknown) opens the Armory with no workspace forced', async () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace('my-project'), makeWorkspace('other')]
+      useSandboxStore.setState({ settingsRequest: '' })
+      render(<SettingsChamber />)
+
+      expect(screen.getByRole('tab', { name: 'The Armory' })).toHaveAttribute('aria-selected', 'true')
+      expect(useSandboxStore.getState().settingsRequest).toBeNull()
+      expect(await screen.findByRole('combobox', { name: 'Workspace' })).toHaveValue('my-project')
+    })
+
+    it('a request that arrives while the chamber is open switches to the Armory and selects the workspace', async () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace('my-project'), makeWorkspace('other')]
+      render(<SettingsChamber />)
+      expect(screen.getByRole('tab', { name: /Kingdom/i })).toHaveAttribute('aria-selected', 'true')
+
+      act(() => useSandboxStore.getState().requestSettings('other'))
+
+      expect(screen.getByRole('tab', { name: 'The Armory' })).toHaveAttribute('aria-selected', 'true')
+      expect(useSandboxStore.getState().settingsRequest).toBeNull()
+      expect(await screen.findByRole('combobox', { name: 'Workspace' })).toHaveValue('other')
+    })
   })
 
   it('opens to initialSection when prop provided', () => {
@@ -1239,6 +1343,36 @@ describe('NotificationScroll', () => {
     expect(screen.getByText('Gate 1 passed')).toBeInTheDocument()
   })
 
+  it('an item with a target gets an Open button that closes the scroll, then requests it', () => {
+    const item = { id: 'n1', title: 'Network request blocked', body: 'A network request was blocked. Review it in Sandbox settings.', tier: 'requiresAction', workspace: 'my-project', dismissed: false, target: 'sandbox-network' }
+    mockNotificationStore.items = [item]
+    const order: string[] = []
+    mockRealmStore.closeOverlay = vi.fn(() => order.push('close'))
+    mockNotificationStore.requestOpen.mockImplementation(() => order.push('open'))
+    render(<NotificationScroll />)
+
+    expect(screen.getByText('A network request was blocked. Review it in The Armory.')).toBeInTheDocument() // under 80 chars: never truncated
+    fireEvent.click(screen.getByRole('button', { name: 'Open: Network request blocked' }))
+    expect(mockNotificationStore.requestOpen).toHaveBeenCalledWith(item)
+    expect(order).toEqual(['close', 'open'])
+  })
+
+  it('the blocked notice names The Armory in the Realm scroll, within the 80-character body limit', () => {
+    const body = 'A network request was blocked. Review it in Sandbox settings.'
+    mockNotificationStore.items = [{ id: 'n1', title: 'Network request blocked', body, tier: 'requiresAction', workspace: 'my-project', dismissed: false, target: 'sandbox-network' }]
+    render(<NotificationScroll />)
+    const realm = 'A network request was blocked. Review it in The Armory.'
+    expect(realm.length).toBeLessThanOrEqual(80)
+    expect(screen.getByText(realm)).toBeInTheDocument()
+    expect(screen.queryByText(/Sandbox settings/)).toBeNull()
+  })
+
+  it('an item without a target has no Open button', () => {
+    mockNotificationStore.items = [{ id: 'n1', title: 'Gate 1 passed', tier: 'progress', workspace: 'my-project', dismissed: false }]
+    render(<NotificationScroll />)
+    expect(screen.queryByRole('button', { name: /^Open:/ })).not.toBeInTheDocument()
+  })
+
   it('truncates title at 60 chars', () => {
     mockNotificationStore.items = [
       {
@@ -1275,6 +1409,69 @@ describe('NotificationScroll', () => {
   it('calls fetchHistory on mount', () => {
     render(<NotificationScroll />)
     expect(mockNotificationStore.fetchHistory).toHaveBeenCalledOnce()
+  })
+
+  // Provenance (#0029 step 6.4, §3.17, SEC-H3): main decides, the Realm only reads `source`.
+  describe('sandbox provenance (6.4)', () => {
+    const item = (overrides: Record<string, unknown> = {}) => ({
+      id: 'n1',
+      title: 'Blocked a request',
+      tier: 'requiresAction',
+      workspace: 'my-project',
+      dismissed: false,
+      ...overrides,
+    })
+    const tags = () => screen.queryAllByText(/^Sandbox$/, { selector: 'span' })
+
+    it('tags an item main marked as sandbox, in Realm chrome, naming the workspace for assistive tech', () => {
+      mockNotificationStore.items = [item({ source: 'sandbox' })]
+      render(<NotificationScroll />)
+
+      const chip = screen.getByText(/^Sandbox$/, { selector: 'span' })
+      expect(chip).toHaveTextContent('Sandbox (from the sandbox for my-project)')
+      expect(chip.style.fontFamily).toBe('serif') // the Realm chip, not the Office one
+    })
+
+    it('does not tag a host item, whether the source is absent or explicitly host', () => {
+      mockNotificationStore.items = [item({ id: 'a' }), item({ id: 'b', source: 'host' })]
+      render(<NotificationScroll />)
+      expect(tags()).toHaveLength(0)
+    })
+
+    it('fails closed: an unexpected source value is shown as sandbox', () => {
+      mockNotificationStore.items = [item({ source: 'something-new' })]
+      render(<NotificationScroll />)
+      expect(tags()).toHaveLength(1)
+    })
+
+    it('tags only the sandbox items in a mixed list', () => {
+      mockNotificationStore.items = [item({ id: 'a', title: 'Host one' }), item({ id: 'b', title: 'Sandbox one', source: 'sandbox' })]
+      render(<NotificationScroll />)
+      expect(tags()).toHaveLength(1)
+    })
+
+    it('an image-ready notice with no workspace shows no workspace text, and the tag still reads sensibly', () => {
+      mockNotificationStore.items = [item({ title: 'Sandbox image is ready', tier: 'progress', workspace: '', source: 'sandbox' })]
+      render(<NotificationScroll />)
+
+      expect(screen.getByText('Progress')).toBeInTheDocument()
+      expect(screen.queryByText(/·/)).toBeNull()
+      expect(screen.getByText(/^Sandbox$/, { selector: 'span' })).toHaveTextContent('Sandbox (from the sandbox)')
+    })
+
+    it('renders hostile agent text literally: no markup is created and the tag still shows', () => {
+      mockNotificationStore.items = [
+        item({ source: 'sandbox', title: '<img src=x onerror=alert(1)>', body: '<script>alert(1)</script> **bold** [link](http://evil.example)' }),
+      ]
+      const { container } = render(<NotificationScroll />)
+
+      expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeInTheDocument()
+      expect(screen.getByText(/<script>alert\(1\)<\/script> \*\*bold\*\* \[link\]\(http:\/\/evil\.example\)/)).toBeInTheDocument()
+      expect(container.querySelector('script')).toBeNull()
+      expect(container.querySelector('a')).toBeNull()
+      expect(container.querySelector('img[src="x"]')).toBeNull()
+      expect(tags()).toHaveLength(1)
+    })
   })
 })
 
@@ -1759,5 +1956,273 @@ describe('WizardsStudy — DocsRootBanner', () => {
     banner.focus()
     await user.keyboard('{Enter}')
     expect(mockDocViewerStore.openFolder).toHaveBeenCalledWith('/home/user/my-project/docs', 'my-project')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// WizardsStudy — sandbox sessions (#0029 step 6.1): the same chooser, badge,
+// actions and gating as Office, in Realm chrome, with the shared copy.
+// ---------------------------------------------------------------------------
+
+describe('WizardsStudy — sandbox sessions (6.1)', () => {
+  const getStatus = vi.fn()
+  let savedCornerOffice: typeof window.cornerOffice
+
+  function sandboxStatus(overrides: Partial<SandboxStatus> = {}): SandboxStatus {
+    return {
+      workspaceSlug: 'my-project',
+      eligibility: { ok: true, baseBranch: 'main', warnings: [] },
+      exists: false,
+      container: 'absent',
+      worktree: 'absent',
+      session: { state: 'idle', permissionMode: null, networkMode: null, lastExit: null },
+      git: null,
+      recreatePending: false,
+      recreatePlan: null,
+      channel: 'none',
+      ...overrides,
+    }
+  }
+
+  function setStatus(status: SandboxStatus): void {
+    getStatus.mockResolvedValue({ data: status, error: null })
+    useSandboxStore.setState({ status: { 'my-project': status }, chooserRequest: null })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    savedCornerOffice = window.cornerOffice
+    window.cornerOffice = {
+      sandbox: { getStatus, getEnvironment: vi.fn().mockResolvedValue({ data: null, error: null }), getSummaries: vi.fn().mockResolvedValue({ data: {}, error: null }) },
+      on: vi.fn(() => vi.fn()),
+    } as unknown as typeof window.cornerOffice
+    mockWorkspaceStore.workspaces = [makeWorkspace('my-project')]
+    mockTerminalStore.sessions = {}
+    setStatus(sandboxStatus())
+  })
+
+  afterEach(() => {
+    window.cornerOffice = savedCornerOffice
+    mockTerminalStore.sessions = {}
+    useSandboxStore.setState({ status: {}, chooserRequest: null })
+  })
+
+  it('fetches the sandbox status when the Study opens', async () => {
+    render(<WizardsStudy workspaceSlug="my-project" />)
+    await vi.waitFor(() => expect(getStatus).toHaveBeenCalledWith('my-project'))
+  })
+
+  it('Start Session opens the chooser, and nothing starts until Host or Sandbox is chosen and Start is pressed', async () => {
+    const user = userEvent.setup()
+    render(<WizardsStudy workspaceSlug="my-project" />)
+
+    await user.click(screen.getByRole('button', { name: 'Start Session' }))
+
+    const chooser = screen.getByRole('dialog', { name: 'Start a session' })
+    expect(within(chooser).getByRole('radio', { name: 'Host' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(chooser).getByRole('radio', { name: 'Sandbox' })).toBeInTheDocument()
+    expect(mockTerminalStore.spawn).not.toHaveBeenCalled()
+  })
+
+  it('Host Start runs the unchanged host spawn and closes the chooser', async () => {
+    const user = userEvent.setup()
+    render(<WizardsStudy workspaceSlug="my-project" />)
+    await user.click(screen.getByRole('button', { name: 'Start Session' }))
+
+    await user.click(within(screen.getByRole('dialog', { name: 'Start a session' })).getByRole('button', { name: 'Start' }))
+
+    expect(mockTerminalStore.spawn).toHaveBeenCalledTimes(1)
+    expect(mockTerminalStore.spawn).toHaveBeenCalledWith('my-project')
+    expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull()
+  })
+
+  it('shows the same eligibility copy as Office when Sandbox is unavailable', async () => {
+    const user = userEvent.setup()
+    setStatus(sandboxStatus({ eligibility: { ok: false, reason: 'docker-daemon-down' } }))
+    render(<WizardsStudy workspaceSlug="my-project" />)
+    await user.click(screen.getByRole('button', { name: 'Start Session' }))
+
+    const sandbox = within(screen.getByRole('dialog', { name: 'Start a session' })).getByRole('radio', { name: 'Sandbox' })
+    expect(sandbox).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.focus(sandbox)
+    expect(screen.getByRole('tooltip')).toHaveTextContent(ELIGIBILITY_COPY['docker-daemon-down'])
+  })
+
+  it('Escape closes the chooser and returns focus to Start Session', async () => {
+    const user = userEvent.setup()
+    render(<WizardsStudy workspaceSlug="my-project" />)
+    const start = screen.getByRole('button', { name: 'Start Session' })
+    await user.click(start)
+
+    fireEvent.keyDown(screen.getByRole('radio', { name: 'Host' }), { key: 'Escape' })
+
+    await vi.waitFor(() => expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull())
+    expect(screen.getByRole('button', { name: 'Start Session' })).toHaveFocus()
+  })
+
+  it('Start Session is aria-disabled with a reason while the sandbox is ending, and opens nothing', async () => {
+    const user = userEvent.setup()
+    setStatus(sandboxStatus({ exists: true, session: { state: 'ending', permissionMode: null, networkMode: null, lastExit: null } }))
+    render(<WizardsStudy workspaceSlug="my-project" />)
+
+    const start = screen.getByRole('button', { name: 'Start Session' })
+    expect(start).toHaveAttribute('aria-disabled', 'true')
+    expect(start).not.toBeDisabled()
+    fireEvent.focus(start)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('The sandbox is still stopping')
+
+    await user.click(start)
+    expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull()
+  })
+
+  it('renders the badge and the actions with the Realm chrome for a workspace that has a sandbox', () => {
+    setStatus(
+      sandboxStatus({
+        exists: true,
+        container: 'running',
+        worktree: 'ready',
+        session: { state: 'running', permissionMode: 'skip', networkMode: 'open', lastExit: null },
+        git: { branch: 'feat/x', headShort: 'abc1234', ahead: 2, dirtyCount: 0, base: 'main' },
+      }),
+    )
+    mockTerminalStore.sessions = { 'my-project': 'running' }
+    render(<WizardsStudy workspaceSlug="my-project" />)
+
+    const badge = screen.getByRole('group', { name: 'Sandbox status' })
+    expect(badge).toHaveTextContent('Sandbox · feat/x · +2')
+    expect(badge).toHaveTextContent('Unrestricted network')
+    expect(screen.getByRole('group', { name: 'Sandbox actions' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'End Session' })).toBeInTheDocument()
+  })
+
+  it('shows neither badge nor actions for a workspace without a sandbox', () => {
+    render(<WizardsStudy workspaceSlug="my-project" />)
+    expect(screen.queryByRole('group', { name: 'Sandbox status' })).toBeNull()
+    expect(screen.queryByRole('group', { name: 'Sandbox actions' })).toBeNull()
+  })
+
+  it('"Show log" asks for the Armory with this workspace and opens the settings chamber', async () => {
+    const user = userEvent.setup()
+    useSandboxStore.setState({
+      build: { running: true, lines: ['Step 1'], phase: 'running', requestedFor: { slug: 'my-project', permissionMode: 'skip', networkMode: 'allowlist' } },
+      settingsRequest: null,
+    })
+    mockTerminalStore.sessions = {}
+    render(<WizardsStudy workspaceSlug="my-project" />)
+    await user.click(screen.getByRole('button', { name: 'Start Session' }))
+
+    await user.click(screen.getByRole('button', { name: 'Show log' }))
+
+    expect(useSandboxStore.getState().settingsRequest).toBe('my-project')
+    expect(mockRealmStore.openOverlay).toHaveBeenCalledWith({ overlayId: 'settings-chamber', initialSection: 'sandbox' })
+    useSandboxStore.setState({ settingsRequest: null, build: { running: false, lines: [], phase: 'idle', requestedFor: null } })
+  })
+
+  describe('chooser request (the "Sandbox image is ready" notification)', () => {
+    it('opens the chooser, and closing it clears the request', async () => {
+      useSandboxStore.setState({ chooserRequest: 'my-project' })
+      render(<WizardsStudy workspaceSlug="my-project" />)
+
+      const chooser = screen.getByRole('dialog', { name: 'Start a session' })
+      fireEvent.keyDown(within(chooser).getByRole('radio', { name: 'Host' }), { key: 'Escape' })
+
+      expect(useSandboxStore.getState().chooserRequest).toBeNull()
+      await vi.waitFor(() => expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull())
+    })
+
+    it('ignores a request for another workspace', () => {
+      useSandboxStore.setState({ chooserRequest: 'other' })
+      render(<WizardsStudy workspaceSlug="my-project" />)
+      expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull()
+      expect(useSandboxStore.getState().chooserRequest).toBe('other')
+    })
+
+    it('drops a request it cannot honour (a session already exists) instead of leaving it to pop open later', () => {
+      mockTerminalStore.sessions = { 'my-project': 'running' }
+      useSandboxStore.setState({ chooserRequest: 'my-project' })
+      render(<WizardsStudy workspaceSlug="my-project" />)
+      expect(useSandboxStore.getState().chooserRequest).toBeNull()
+      expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull()
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// KingdomMap — unmerged sandbox work (#0029 step 6.2): a marker on the
+// workspace's building and a line in its tooltip, with review-safe branch names.
+// ---------------------------------------------------------------------------
+
+describe('KingdomMap — unmerged sandbox work (6.2)', () => {
+  const summary = (unmergedBranches: string[]) => ({ exists: true, running: false, unmergedBranches })
+  const tooltipOf = (location: string): string =>
+    (screen.getByTestId(`building-sprite-${location}`).closest('[data-tooltip]') as HTMLElement).getAttribute('data-tooltip') ?? ''
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockRealmStore.buildings = {}
+    mockRealmStore.characters = []
+    mockSettingsStore.config = makeConfig({
+      realm: {
+        enabled: true,
+        mapping: [
+          { location: 'castle', workspaceSlug: 'my-project' },
+          { location: 'barracks', workspaceSlug: null },
+        ],
+        shipCelebration: 'townSquare',
+      },
+    })
+    mockTerminalStore.sessions = {}
+    window.cornerOffice = { ...window.cornerOffice, on: vi.fn(() => vi.fn()) } as unknown as typeof window.cornerOffice
+    useSandboxStore.setState({ summaries: {} })
+  })
+
+  afterEach(() => {
+    useSandboxStore.setState({ summaries: {} })
+  })
+
+  it('shows no marker and keeps the plain tooltip when nothing is unmerged', () => {
+    useSandboxStore.setState({ summaries: { 'my-project': summary([]) } })
+    render(<KingdomMap />)
+    expect(screen.queryByRole('img', { name: /Unmerged sandbox work/ })).toBeNull()
+    expect(tooltipOf('castle')).toBe('my-project')
+  })
+
+  it('shows a marker on the building and a tooltip line naming the branches, even with no session running', () => {
+    useSandboxStore.setState({ summaries: { 'my-project': summary(['feat/a', 'feat/b']) } })
+    render(<KingdomMap />)
+
+    expect(screen.getByRole('img', { name: 'Unmerged sandbox work: feat/a, feat/b' })).toBeInTheDocument()
+    expect(tooltipOf('castle')).toBe('my-project — Unmerged sandbox work: feat/a, feat/b')
+  })
+
+  it('caps the names at three and counts the rest, in both the marker and the tooltip', () => {
+    useSandboxStore.setState({ summaries: { 'my-project': summary(['a', 'b', 'c', 'd', 'e']) } })
+    render(<KingdomMap />)
+
+    expect(screen.getByRole('img', { name: 'Unmerged sandbox work: a, b, c, +2 more' })).toBeInTheDocument()
+    expect(tooltipOf('castle')).toBe('my-project — Unmerged sandbox work: a, b, c, +2 more')
+  })
+
+  it('renders a branch name with a bidi override review-safe (visible placeholder, no raw control character)', () => {
+    const evil = 'feat/‮gnp.exe'
+    useSandboxStore.setState({ summaries: { 'my-project': summary([evil]) } })
+    render(<KingdomMap />)
+
+    const label = tooltipOf('castle')
+    expect(label).not.toContain('‮')
+    expect(label).toContain('feat/')
+    const marker = screen.getByRole('img', { name: /Unmerged sandbox work/ })
+    expect(marker.getAttribute('aria-label')).not.toContain('‮')
+
+    fireEvent.focus(marker)
+    expect(screen.getByRole('tooltip').textContent).not.toContain('‮')
+  })
+
+  it('puts the marker only on the building mapped to that workspace', () => {
+    useSandboxStore.setState({ summaries: { 'my-project': summary(['x']), unmapped: summary(['y']) } })
+    render(<KingdomMap />)
+
+    expect(screen.getAllByRole('img', { name: /Unmerged sandbox work/ })).toHaveLength(1)
+    expect(tooltipOf('barracks')).toBe('No workspace assigned')
   })
 })

@@ -79,7 +79,7 @@ export function CodeExplorer({ skin, onBack }: CodeExplorerProps): React.ReactEl
         <div className="flex flex-1 min-h-0 flex-col">
           {selected ? (
             <>
-              <FileHeader />
+              <FileHeader skin={skin} />
               <CodePane skin={skin} onQuickOpen={() => setQuickOpenOpen(true)} />
             </>
           ) : (

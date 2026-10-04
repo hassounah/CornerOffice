@@ -3,6 +3,7 @@ import { useTerminalStore } from '../../stores/terminal-store'
 import { TerminalPanel } from './TerminalPanel'
 import type { TerminalPanelHandle } from './TerminalPanel'
 import { ShimmerOverlay } from './ShimmerOverlay'
+import { SandboxBadge } from '../sandbox/SandboxBadge'
 import { unwrapIpc } from '../../utils/ipc'
 import type { TerminalWindowBounds } from '@main/types/config'
 
@@ -84,6 +85,7 @@ export function TerminalOverlay({
 }: TerminalOverlayProps): React.ReactElement {
   const sessionState = useTerminalStore((s) => s.sessions[workspaceSlug] ?? 'none')
   const { kill } = useTerminalStore()
+  const isSandboxSession = useTerminalStore((s) => s.sessionKind[workspaceSlug] === 'sandbox')
   const [shimmerVisible, setShimmerVisible] = useState(true)
 
   // Two-tap End Session confirmation
@@ -509,7 +511,9 @@ export function TerminalOverlay({
           floatingRef.current = el
           overlayContainerRef.current = el
         }}
-        style={{ ...floatingStyle, pointerEvents: 'all' }}
+        data-terminal-overlay={workspaceSlug}
+        tabIndex={-1}
+        style={{ ...floatingStyle, pointerEvents: 'all', outline: 'none' }}
       >
         {/* Resize handles */}
         {EDGES.map((edge) => (
@@ -581,7 +585,9 @@ export function TerminalOverlay({
             </span>
           </div>
 
-          <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: '8px', flexShrink: 0, alignItems: 'center' }}>
+            {/* A compact sandbox badge before End Session / Hide: label, branch, +ahead, Review and the degraded states. */}
+            {isSandboxSession && <SandboxBadge slug={workspaceSlug} skin="office" compact />}
             <button
               onClick={handleEndSession}
               onMouseDown={(e) => e.stopPropagation()}

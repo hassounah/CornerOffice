@@ -3,6 +3,9 @@ import { render, screen, fireEvent, act, within } from '@testing-library/react'
 import { FileHeader } from '../../../renderer/components/code/FileHeader'
 import { useCodeExplorerStore } from '../../../renderer/stores/code-explorer-store'
 import { useGuardDialogStore } from '../../../renderer/stores/dirty-registry'
+import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
+import { Text } from '@codemirror/state'
+import type { SandboxStatus } from '@main/types/sandbox'
 import { REPO_STATE_FIXTURES } from '../../helpers/repo-state-fixtures'
 import { gitStateBannerCopy } from '../../../renderer/components/code/notice-copy'
 import type { CodeChange, CodeFileResponse } from '@main/types/code'
@@ -538,5 +541,144 @@ describe('FileHeader — disk-change matrix (§3.9.2)', () => {
     seed({ file: textFile(), editing: false, deletedPath: 'some/other/file.ts' })
     render(<FileHeader />)
     expect(screen.queryByText('Deleted on disk')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Sandbox save gate (#0029 step 5.9, TRD §3.10 M1, UX-C2)
+// ---------------------------------------------------------------------------
+
+describe('FileHeader — sandbox write gate', () => {
+  const REASON = 'Stop the sandbox session to edit files here.'
+
+  function sessionState(state: 'idle' | 'preparing' | 'running' | 'ending' | null): void {
+    useSandboxStore.setState({
+      status: state === null ? {} : { 'test-ws': { session: { state } } as unknown as SandboxStatus },
+    })
+  }
+
+  beforeEach(() => {
+    sessionState(null)
+  })
+
+  it('Edit is aria-disabled (not disabled) with the exact reason while a session is preparing, running or ending', () => {
+    for (const state of ['preparing', 'running', 'ending'] as const) {
+      sessionState(state)
+      const enterEdit = vi.fn()
+      seed({ file: textFile({ editable: true }), root: 'sandbox', enterEdit })
+      const { unmount } = render(<FileHeader />)
+
+      const edit = screen.getByRole('button', { name: 'Edit' })
+      expect(edit).toHaveAttribute('aria-disabled', 'true')
+      expect(edit).not.toBeDisabled()
+      fireEvent.focus(edit)
+      expect(screen.getByRole('tooltip')).toHaveTextContent(REASON)
+      fireEvent.click(edit)
+      expect(enterEdit).not.toHaveBeenCalled()
+      unmount()
+    }
+  })
+
+  it('Edit works when the sandbox session is idle', () => {
+    sessionState('idle')
+    const enterEdit = vi.fn()
+    seed({ file: textFile({ editable: true }), root: 'sandbox', enterEdit })
+    render(<FileHeader />)
+
+    const edit = screen.getByRole('button', { name: 'Edit' })
+    expect(edit).not.toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(edit)
+    expect(enterEdit).toHaveBeenCalledTimes(1)
+  })
+
+  it('an unknown session state counts as locked (fail closed)', () => {
+    seed({ file: textFile({ editable: true }), root: 'sandbox' })
+    render(<FileHeader />)
+    expect(screen.getByRole('button', { name: 'Edit' })).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('never gates the workspace tree, whatever the sandbox session is doing', () => {
+    sessionState('running')
+    const enterEdit = vi.fn()
+    seed({ file: textFile({ editable: true }), root: 'workspace', enterEdit })
+    render(<FileHeader />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+
+    expect(enterEdit).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it("a file that isn't editable keeps its own reason, not the sandbox one", () => {
+    sessionState('running')
+    seed({ file: textFile({ editable: false, readOnlyReason: 'encoding' }), root: 'sandbox' })
+    render(<FileHeader />)
+
+    const edit = screen.getByRole('button', { name: 'Edit' })
+    expect(edit).toHaveAttribute('title', 'Not plain UTF-8 text')
+    fireEvent.focus(edit)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('a session that starts mid-edit disables Save with the same reason, and the unsaved text stays', () => {
+    sessionState('idle')
+    const save = vi.fn()
+    const draft = Text.of(['my unsaved edit'])
+    seed({ file: textFile({ editable: true }), root: 'sandbox', editing: true, dirty: true, draftDoc: draft, save })
+    render(<FileHeader />)
+    expect(screen.getByRole('button', { name: 'Save' })).not.toHaveAttribute('aria-disabled', 'true')
+
+    act(() => sessionState('running'))
+
+    const saveButton = screen.getByRole('button', { name: 'Save' })
+    expect(saveButton).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.focus(saveButton)
+    expect(screen.getByRole('tooltip')).toHaveTextContent(REASON)
+    fireEvent.click(saveButton)
+    expect(save).not.toHaveBeenCalled()
+    // Still editing, with the draft intact: nothing was discarded.
+    expect(useCodeExplorerStore.getState().editing).toBe(true)
+    expect(useCodeExplorerStore.getState().draftDoc?.toString()).toBe('my unsaved edit')
+  })
+
+  it('Save works while the sandbox is idle and in the workspace tree', () => {
+    sessionState('running')
+    const save = vi.fn()
+    seed({ file: textFile({ editable: true }), root: 'workspace', editing: true, dirty: true, draftDoc: Text.of(['x']), save })
+    render(<FileHeader />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+
+  it('Cancel still discards while Save is locked', () => {
+    sessionState('running')
+    seed({ file: textFile({ editable: true }), root: 'sandbox', editing: true, dirty: false, draftDoc: Text.of(['x']) })
+    render(<FileHeader />)
+    expect(screen.getByRole('button', { name: 'Cancel' })).not.toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('refreshes the sandbox status when it shows the sandbox tree, and not for the workspace', () => {
+    const original = useSandboxStore.getState().fetchStatus
+    const fetchStatus = vi.fn()
+    useSandboxStore.setState({ fetchStatus })
+    seed({ file: textFile(), root: 'workspace' })
+    const { unmount } = render(<FileHeader />)
+    expect(fetchStatus).not.toHaveBeenCalled()
+    unmount()
+
+    seed({ file: textFile(), root: 'sandbox' })
+    render(<FileHeader />)
+    expect(fetchStatus).toHaveBeenCalledWith('test-ws')
+    useSandboxStore.setState({ fetchStatus: original })
+  })
+
+  it('uses the same reason and chrome in the realm skin', () => {
+    sessionState('running')
+    seed({ file: textFile({ editable: true }), root: 'sandbox' })
+    render(<FileHeader skin="realm" />)
+    fireEvent.focus(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(REASON)
   })
 })

@@ -21,6 +21,7 @@ function buildCodePath(slug: string, opts?: OpenExplorerOpts): string {
   if (opts?.baseline) params.set('baseline', opts.baseline)
   if (opts?.expectedBranch) params.set('branch', opts.expectedBranch)
   if (opts?.entry) params.set('entry', opts.entry)
+  if (opts?.root === 'sandbox') params.set('root', 'sandbox')
   const qs = params.toString()
   return `/workspace/${encodeURIComponent(slug)}/code${qs ? `?${qs}` : ''}`
 }

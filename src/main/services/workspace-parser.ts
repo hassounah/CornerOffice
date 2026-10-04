@@ -1,6 +1,11 @@
 import fs from 'fs'
 import path from 'path'
+import { readRegularFileCappedSync } from './safe-fs'
 import type { Pipeline, ShippedFeature, FixCycleBreakdown } from '../types/workspace'
+
+// 1 MB cap for .rix files (H2, §10.8) — memory.md, history.md, and each
+// pipeline card.
+const RIX_READ_CAP = 1024 * 1024
 
 // Regex for memory.md settings section
 const DOCS_ROOT_RE = /^-\s+docs_root:\s*(.+)$/m
@@ -39,12 +44,15 @@ export interface MemoryMdData {
   learnedConventions: string
 }
 
-function readFileSafe(filePath: string): string | null {
-  try {
-    return fs.readFileSync(filePath, 'utf-8')
-  } catch {
-    return null
-  }
+/**
+ * Capped, no-follow read of a file under `.rix` (H2, SEC-L4): `root` pins
+ * containment to `.rix` itself, so a symlinked subdirectory (e.g.
+ * `.rix/pipelines`) can't redirect a read outside it. Returns null for a
+ * symlink, FIFO, directory, oversized file, or anything outside root.
+ */
+function readRixFileSafe(root: string, filePath: string): string | null {
+  const capped = readRegularFileCappedSync(filePath, RIX_READ_CAP, { root })
+  return capped === null ? null : capped.buf.toString('utf-8')
 }
 
 function extractSection(content: string, sectionName: string): string {
@@ -79,7 +87,7 @@ export class WorkspaceParserService {
    * Returns defaults for missing sections, never throws.
    */
   parseMemoryMd(filePath: string): MemoryMdData {
-    const content = readFileSafe(filePath)
+    const content = readRixFileSafe(path.dirname(filePath), filePath)
     if (!content) {
       return { docsRoot: null, nextFeatureId: null, projectContext: '', backlog: '', learnedConventions: '' }
     }
@@ -111,11 +119,12 @@ export class WorkspaceParserService {
     const entrySet = new Set(entries)
     const active: Pipeline[] = []
     const parked: Pipeline[] = []
+    const rixRoot = path.dirname(dirPath) // dirPath is `.rix/pipelines`; root is `.rix`
 
     for (const entry of entries) {
       if (!entry.endsWith('.md')) continue
       const filePath = path.join(dirPath, entry)
-      const content = readFileSafe(filePath)
+      const content = readRixFileSafe(rixRoot, filePath)
       if (!content) continue
 
       const pipeline = this._parsePipelineContent(content)
@@ -139,7 +148,7 @@ export class WorkspaceParserService {
    * Parse history.md — returns array of ShippedFeature, empty array if not found.
    */
   parseHistoryMd(filePath: string): ShippedFeature[] {
-    const content = readFileSafe(filePath)
+    const content = readRixFileSafe(path.dirname(filePath), filePath)
     if (!content) return []
 
     const features: ShippedFeature[] = []
@@ -258,4 +267,38 @@ export class WorkspaceParserService {
       lastDecision: kvMap['last decision'] ?? null,
     }
   }
+}
+
+/**
+ * Reads just `.rix/memory.md`'s `docs_root` setting, for 3.4's docs_root
+ * mount-source derivation (host-side docs_root vs the workspace default) —
+ * a small, dependency-free helper so callers that only need this one field
+ * don't have to construct a full `WorkspaceParserService` and parse every
+ * memory.md section. Same capped, no-follow read as `parseMemoryMd`
+ * (H2, SEC-L4): null for a missing, symlinked, oversized or unreadable file.
+ */
+export function readMemoryDocsRoot(wsPath: string): string | null {
+  const rixRoot = path.join(wsPath, '.rix')
+  const memoryMdPath = path.join(rixRoot, 'memory.md')
+  const content = readRixFileSafe(rixRoot, memoryMdPath)
+  if (!content) return null
+  const match = DOCS_ROOT_RE.exec(content)
+  if (!match) return null
+  // SEC-M1: a relative value has no trustworthy base; resolve() collapses `..` segments
+  // so the caller's inside-repo test can't be bypassed lexically.
+  const raw = match[1].trim()
+  return path.isAbsolute(raw) ? path.resolve(raw) : null
+}
+
+/**
+ * Branch names from every pipeline card (active and parked) under
+ * `<wsPath>/.rix/pipelines` — for 3.5/3.7's unmerged-branch detection
+ * (SEC-L5: the caller only ever compares these against git's own
+ * `for-each-ref` output, never passes them to a git command). Same
+ * dependency-free shape as `readMemoryDocsRoot`: a caller that only needs
+ * branch names doesn't have to construct a full `WorkspaceParserService`.
+ */
+export function readPipelineBranches(wsPath: string): string[] {
+  const { active, parked } = new WorkspaceParserService().scanPipelinesDir(path.join(wsPath, '.rix', 'pipelines'))
+  return [...active, ...parked].map((p) => p.branch).filter((b): b is string => b !== null)
 }

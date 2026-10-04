@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
+import log from 'electron-log/main'
 import { IPC_ERROR_CODES } from '../types/ipc'
 
 // ---------------------------------------------------------------------------
@@ -293,5 +294,260 @@ export async function durableWrite(o: DurableWriteOptions): Promise<DurableWrite
     resolvedFile,
     size: stat.size,
     lastModified: stat.mtime.toISOString(),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// readRegularFileCapped[Sync] — hardened reads of agent/host-writable files
+// (TRD §10.8, H2, X1). lstat -> isFile() -> open(O_NOFOLLOW | O_NONBLOCK) ->
+// fstat re-check -> a capped read from an offset. Refuses (and logs) a
+// symlink, FIFO, directory or anything else that isn't a plain regular
+// file, and never follows the final path component even if it turns into
+// one between the lstat and the open — closed by the fstat re-check.
+// ---------------------------------------------------------------------------
+
+export interface ReadCappedOptions {
+  /** Byte offset to start reading from. Default 0. */
+  offset?: number
+  /**
+   * When given, the target's realpath must be contained in realpath(root),
+   * and the post-open dev/ino must match a fresh lstat — reusing the
+   * code-fs.ts `openVerified` containment pattern instead of a second one
+   * (SEC-L4). Without `root`, only the type/no-follow checks apply.
+   */
+  root?: string
+}
+
+export interface ReadCappedResult {
+  /** Bytes actually read, at most `cap`. */
+  buf: Buffer
+  /** The file's total size, from the post-open fstat. */
+  size: number
+}
+
+export interface ReadCappedTestHooks {
+  /**
+   * Test-only: fires right after the initial lstat confirms a regular file,
+   * before open(). Lets a test plant a non-regular file (e.g. a FIFO) in its
+   * place, so the fstat re-check — not the initial lstat — is what catches
+   * the type swap.
+   */
+  onAfterLstat?: () => void
+  /**
+   * Test-only: fires right after the post-open fstat confirms a regular
+   * file, before the `root` dev/ino re-check (SEC-L4). Lets a test simulate
+   * a TOCTOU swap to a different regular file, mirroring code-fs.ts
+   * `openVerified`'s `onAfterOpen` hook.
+   */
+  onAfterOpen?: () => void
+}
+
+function containedRealpathSync(filePath: string, root: string): string | null {
+  let resolvedRoot: string
+  try {
+    resolvedRoot = fs.realpathSync(root)
+  } catch {
+    return null
+  }
+  let real: string
+  try {
+    real = fs.realpathSync(filePath)
+  } catch {
+    return null
+  }
+  if (real !== resolvedRoot && !real.startsWith(resolvedRoot + path.sep)) return null
+  return real
+}
+
+async function containedRealpath(filePath: string, root: string): Promise<string | null> {
+  let resolvedRoot: string
+  try {
+    resolvedRoot = await fs.promises.realpath(root)
+  } catch {
+    return null
+  }
+  let real: string
+  try {
+    real = await fs.promises.realpath(filePath)
+  } catch {
+    return null
+  }
+  if (real !== resolvedRoot && !real.startsWith(resolvedRoot + path.sep)) return null
+  return real
+}
+
+/**
+ * Sync variant — needed because the existing readers (event-parser,
+ * event-rotator's callers, workspace-parser, homunculus-parser) are
+ * synchronous (Appendix C item 2).
+ */
+export function readRegularFileCappedSync(
+  filePath: string,
+  cap: number,
+  opts: ReadCappedOptions & ReadCappedTestHooks = {},
+): ReadCappedResult | null {
+  const { offset = 0, root, onAfterLstat, onAfterOpen } = opts
+  if (offset < 0 || cap <= 0) return null // defensive: never trust a caller-supplied range blindly
+
+  let lst: fs.Stats
+  try {
+    lst = fs.lstatSync(filePath)
+  } catch {
+    return null // no such file — nothing to read
+  }
+  if (!lst.isFile()) {
+    log.warn(`[safe-fs] refusing to read a non-regular file: ${filePath}`)
+    return null
+  }
+
+  // With `root`, everything from here on operates on the already-resolved
+  // `real` path, never a fresh re-walk of the raw `filePath` — mirrors
+  // code-fs.ts's `openVerified`, which is always handed an already-resolved
+  // `real` by its caller. Re-deriving from `filePath` at open() and at the
+  // post-open recheck (as this used to) means a symlink repointed after
+  // this containment check — e.g. an agent-writable `.rix/pipelines` — gets
+  // silently re-followed by both, and the recheck then "matches" the very
+  // path it just followed, defeating containment entirely (SEC-L4).
+  let target = filePath
+  if (root !== undefined) {
+    const real = containedRealpathSync(filePath, root)
+    if (real === null) {
+      log.warn(`[safe-fs] path escapes root, refusing read: ${filePath}`)
+      return null
+    }
+    target = real
+  }
+
+  onAfterLstat?.()
+
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
+  let fd: number
+  try {
+    fd = fs.openSync(target, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  } catch {
+    return null // gone, or turned into a symlink (ELOOP) since the lstat above
+  }
+
+  try {
+    let st: fs.Stats
+    try {
+      st = fs.fstatSync(fd)
+    } catch {
+      return null
+    }
+    if (!st.isFile()) {
+      log.warn(`[safe-fs] type changed between lstat and open, refusing: ${filePath}`)
+      return null
+    }
+    onAfterOpen?.()
+    if (root !== undefined) {
+      let recheck: fs.Stats
+      try {
+        recheck = fs.lstatSync(target)
+      } catch {
+        return null
+      }
+      if (recheck.dev !== st.dev || recheck.ino !== st.ino) {
+        log.warn(`[safe-fs] path swapped after open, refusing: ${filePath}`)
+        return null
+      }
+    }
+
+    const size = st.size
+    if (size <= offset) return { buf: Buffer.alloc(0), size }
+    const readLen = Math.min(cap, size - offset)
+    const buf = Buffer.alloc(readLen)
+    const bytesRead = readLen > 0 ? fs.readSync(fd, buf, 0, readLen, offset) : 0
+    return { buf: bytesRead === readLen ? buf : buf.subarray(0, bytesRead), size }
+  } finally {
+    try {
+      fs.closeSync(fd)
+    } catch {
+      // best-effort close, mirrors the async variant's fh.close().catch()
+    }
+  }
+}
+
+/** Async variant, for readers that can await (e.g. channel-discovery cards). */
+export async function readRegularFileCapped(
+  filePath: string,
+  cap: number,
+  opts: ReadCappedOptions & {
+    onAfterLstat?: () => Promise<void> | void
+    onAfterOpen?: () => Promise<void> | void
+  } = {},
+): Promise<ReadCappedResult | null> {
+  const { offset = 0, root, onAfterLstat, onAfterOpen } = opts
+  if (offset < 0 || cap <= 0) return null // defensive: never trust a caller-supplied range blindly
+
+  let lst: fs.Stats
+  try {
+    lst = await fs.promises.lstat(filePath)
+  } catch {
+    return null
+  }
+  if (!lst.isFile()) {
+    log.warn(`[safe-fs] refusing to read a non-regular file: ${filePath}`)
+    return null
+  }
+
+  // See the sync variant's comment: everything from here on operates on the
+  // already-resolved `real` path (with `root`), never a fresh re-walk of the
+  // raw `filePath` (SEC-L4).
+  let target = filePath
+  if (root !== undefined) {
+    const real = await containedRealpath(filePath, root)
+    if (real === null) {
+      log.warn(`[safe-fs] path escapes root, refusing read: ${filePath}`)
+      return null
+    }
+    target = real
+  }
+
+  if (onAfterLstat) await onAfterLstat()
+
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
+  let fh: fs.promises.FileHandle
+  try {
+    fh = await fs.promises.open(target, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  } catch {
+    return null
+  }
+
+  try {
+    let st: fs.Stats
+    try {
+      st = await fh.stat()
+    } catch {
+      return null
+    }
+    if (!st.isFile()) {
+      log.warn(`[safe-fs] type changed between lstat and open, refusing: ${filePath}`)
+      return null
+    }
+    if (onAfterOpen) await onAfterOpen()
+    if (root !== undefined) {
+      let recheck: fs.Stats
+      try {
+        recheck = await fs.promises.lstat(target)
+      } catch {
+        return null
+      }
+      if (recheck.dev !== st.dev || recheck.ino !== st.ino) {
+        log.warn(`[safe-fs] path swapped after open, refusing: ${filePath}`)
+        return null
+      }
+    }
+
+    const size = st.size
+    if (size <= offset) return { buf: Buffer.alloc(0), size }
+    const readLen = Math.min(cap, size - offset)
+    const buf = Buffer.alloc(readLen)
+    const { bytesRead } = readLen > 0
+      ? await fh.read(buf, 0, readLen, offset)
+      : { bytesRead: 0 }
+    return { buf: bytesRead === readLen ? buf : buf.subarray(0, bytesRead), size }
+  } finally {
+    await fh.close().catch(() => {})
   }
 }

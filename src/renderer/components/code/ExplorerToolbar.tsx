@@ -1,6 +1,8 @@
 import React, { useRef, useState } from 'react'
 import type { RepoInfo } from '@main/types/code'
 import { useCodeExplorerStore } from '../../stores/code-explorer-store'
+import { useSandboxStore } from '../../stores/sandbox-store'
+import { guardAction } from '../../stores/dirty-registry'
 import { gitStateBannerCopy } from './notice-copy'
 import { RefName } from './RefName'
 import { tokenizeNameToText } from '../../utils/name-safety'
@@ -56,7 +58,8 @@ function baseUnavailableReasonText(repo: RepoInfo): string | null {
   return repo.base.available ? null : BASE_UNAVAILABLE_COPY[repo.base.reason]
 }
 
-const BUTTON_COUNT = 7 // Back, Compare (Uncommitted, This branch), Changed files, Show ignored, Refresh/Retry, Go to file
+const BASE_BUTTON_COUNT = 7 // Back, Compare (Uncommitted, This branch), Changed files, Show ignored, Refresh/Retry, Go to file
+const ROOT_TOGGLE_COUNT = 2 // Workspace | Sandbox, appended after the base buttons when a sandbox exists
 
 export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarProps): React.ReactElement {
   const repo = useCodeExplorerStore((s) => s.repo)
@@ -68,6 +71,12 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
   const setChangedOnly = useCodeExplorerStore((s) => s.setChangedOnly)
   const setShowIgnored = useCodeExplorerStore((s) => s.setShowIgnored)
   const refreshStatus = useCodeExplorerStore((s) => s.refreshStatus)
+  const root = useCodeExplorerStore((s) => s.root)
+  const setRoot = useCodeExplorerStore((s) => s.setRoot)
+  const slug = useCodeExplorerStore((s) => s.workspaceSlug)
+  // The toggle exists only for a workspace that has a sandbox (TRD §3.10).
+  const hasSandbox = useSandboxStore((s) => (slug ? (s.summaries[slug]?.exists ?? false) : false))
+  const buttonCount = BASE_BUTTON_COUNT + (hasSandbox ? ROOT_TOGGLE_COUNT : 0)
 
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([])
   const [focusedIndex, setFocusedIndex] = useState(0)
@@ -88,7 +97,7 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return
     e.preventDefault()
     const delta = e.key === 'ArrowRight' ? 1 : -1
-    focusIndex((focusedIndex + delta + BUTTON_COUNT) % BUTTON_COUNT)
+    focusIndex((focusedIndex + delta + buttonCount) % buttonCount)
   }
 
   const gitBanner = repo ? gitStateBannerCopy(repo.state, repo.stateDetail) : null
@@ -229,6 +238,27 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
           {'⌕'} Go to file <span className="opacity-60">Ctrl+P</span>
         </button>
       </div>
+
+      {hasSandbox && (
+        <div role="group" aria-label="Tree" className="flex items-center gap-1">
+          {(['workspace', 'sandbox'] as const).map((target, i) => (
+            <button
+              key={target}
+              ref={refForIndex(BASE_BUTTON_COUNT + i)}
+              type="button"
+              tabIndex={focusedIndex === BASE_BUTTON_COUNT + i ? 0 : -1}
+              onFocus={() => setFocusedIndex(BASE_BUTTON_COUNT + i)}
+              aria-pressed={root === target}
+              onClick={() => {
+                // Switching trees closes and reopens the session, which would discard an unsaved edit: same guard as every other exit.
+                if (root !== target) guardAction(() => setRoot(target), ['code-explorer'])
+              }}
+            >
+              {target === 'workspace' ? 'Workspace' : 'Sandbox'}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -87,6 +87,12 @@ const mockTerminalStore = vi.hoisted(() => ({
   sessions: {} as Record<string, string>,
   overlayVisible: {} as Record<string, boolean>,
   spawnError: {} as Record<string, string | null>,
+  // The sandbox chooser and actions (#0029) read these per workspace.
+  spawnFailure: {} as Record<string, string | null>,
+  buildPrompt: {} as Record<string, unknown>,
+  recreatePrompt: {} as Record<string, unknown>,
+  clearBuildPrompt: vi.fn(),
+  clearRecreatePrompt: vi.fn(),
   spawn: vi.fn(),
   spawnShell: vi.fn(),
   kill: vi.fn(),
@@ -142,7 +148,7 @@ vi.mock('../../../renderer/stores/terminal-store', () => ({
   }),
 }))
 
-const mockRealmSubscribe = vi.fn(() => () => {})
+const mockRealmSubscribe = vi.hoisted(() => vi.fn(() => () => {}))
 vi.mock('../../../renderer/stores/realm-store', () => ({
   useRealmStore: Object.assign(
     vi.fn((selector: (s: typeof mockRealmStore) => unknown) => selector(mockRealmStore)),

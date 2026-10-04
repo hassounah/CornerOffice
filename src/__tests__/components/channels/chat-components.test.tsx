@@ -262,3 +262,74 @@ describe('ChatPanel', () => {
     expect(screen.getByText(/implement/i)).toBeDefined()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Sandbox provenance (#0029 step 5.10, TRD §3.17, M3)
+// ---------------------------------------------------------------------------
+
+describe('ChatMessage — sandbox provenance', () => {
+  it('tags every assistant bubble of a sandbox session, and never a user bubble', () => {
+    render(<ChatMessage message={makeMessage({ role: 'assistant', text: 'From the agent' })} sandboxWorkspace="my-ws" />)
+    expect(screen.getByText('(from the sandbox for my-ws)')).toBeInTheDocument()
+  })
+
+  it('does not tag a user message, even in a sandbox session', () => {
+    render(<ChatMessage message={makeMessage({ role: 'user', text: 'Me' })} sandboxWorkspace="my-ws" />)
+    expect(screen.queryByText(/\(from the sandbox/)).toBeNull()
+  })
+
+  it('does not tag a host session', () => {
+    render(<ChatMessage message={makeMessage({ role: 'assistant', text: 'Host reply' })} />)
+    expect(screen.queryByText(/\(from the sandbox/)).toBeNull()
+  })
+
+  it('renders HTML and a javascript: URL from the agent as literal text, with no element and no link (M3)', () => {
+    const hostile = '<img src=x onerror="alert(1)"> javascript:alert(1) <a href="javascript:alert(1)">click</a>'
+    const { container } = render(<ChatMessage message={makeMessage({ role: 'assistant', text: hostile })} sandboxWorkspace="my-ws" />)
+
+    expect(screen.getByText(hostile)).toBeInTheDocument()
+    expect(container.querySelector('a')).toBeNull()
+    expect(container.querySelector('img[onerror]')).toBeNull()
+    expect(container.querySelectorAll('img')).toHaveLength(1) // only Rix's own portrait
+  })
+})
+
+describe('ChatPanel — sandbox provenance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(useWorkspaceStore).mockImplementation((selector) =>
+      selector({ workspaces: [{ slug: 'my-ws', path: '/home/user/project' }] } as Parameters<typeof selector>[0]),
+    )
+  })
+
+  function renderWith(session: ChannelSession, messages: ChatMessageType[] = []) {
+    vi.mocked(useChannelsStore).mockImplementation((selector) =>
+      selector(makeChannelsState({ sessions: [session], messages: { 'sess-1': messages }, activeSessionId: 'sess-1' }) as Parameters<typeof selector>[0]),
+    )
+    return render(<ChatPanel workspaceSlug="my-ws" />)
+  }
+
+  it('tags the session header and each assistant bubble of a sandbox session', () => {
+    renderWith(makeSession({ sandboxSlug: 'my-ws' }), [
+      makeMessage({ id: 'a1', role: 'assistant', text: 'one' }),
+      makeMessage({ id: 'a2', role: 'assistant', text: 'two' }),
+      makeMessage({ id: 'u1', role: 'user', text: 'mine' }),
+    ])
+    // header + two assistant bubbles
+    expect(screen.getAllByText(/\(from the sandbox for my-ws\)/)).toHaveLength(3)
+  })
+
+  it('shows no tag for a host session', () => {
+    renderWith(makeSession(), [makeMessage({ role: 'assistant', text: 'host reply' })])
+    expect(screen.queryByText(/\(from the sandbox/)).toBeNull()
+  })
+
+  it('shows the one-line plugin-outdated notice, and only then', () => {
+    const { unmount } = renderWith(makeSession({ sandboxSlug: 'my-ws', channelBlocked: 'plugin-outdated' }))
+    expect(screen.getByText('Channel link needs a newer corner-office plugin.')).toBeInTheDocument()
+    unmount()
+
+    renderWith(makeSession({ sandboxSlug: 'my-ws' }))
+    expect(screen.queryByText(/needs a newer corner-office plugin/)).toBeNull()
+  })
+})

@@ -10,8 +10,17 @@ import {
   KILL_TIMEOUT_MS,
   MAX_CONCURRENT_SESSIONS,
 } from '../types/terminal'
-import type { TerminalSession, TerminalSpawnOptions, TerminalSpawnResult, ShellSpawnOptions, ShellSpawnResult } from '../types/terminal'
+import type {
+  TerminalSession,
+  TerminalSessionKind,
+  TerminalSpawnOptions,
+  TerminalSpawnResult,
+  ShellSpawnOptions,
+  ShellSpawnResult,
+} from '../types/terminal'
+import type { SandboxSessionDelegate } from '../types/sandbox'
 import { TERMINAL_IPC } from '../ipc/channels'
+import { sanitizedEnv } from './env-policy'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -22,24 +31,6 @@ const USER_SHELL = process.env.SHELL || '/bin/bash'
 const CLAUDE_COMMAND = 'claude --dangerously-load-development-channels plugin:corner-office@amerh --teammate-mode in-process'
 const SPAWN_COMMAND = USER_SHELL
 const SPAWN_ARGS = ['--login', '-i', '-c', CLAUDE_COMMAND]
-
-/** Env var keys stripped from the child process environment. */
-const ENV_DENYLIST = new Set([
-  'ELECTRON_RUN_AS_NODE',
-  'ELECTRON_NO_ASAR',
-  'NODE_OPTIONS',
-  'LD_PRELOAD',
-  'CLAUDECODE',
-  // Secrets (amendment P8)
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SESSION_TOKEN',
-  'GH_TOKEN',
-  'GITHUB_TOKEN',
-  'NPM_TOKEN',
-  'OPENAI_API_KEY',
-  'DATABASE_URL',
-])
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -105,6 +96,8 @@ export class TerminalManagerService {
   private readonly _sessions = new Map<string, TerminalSession>()
   private readonly _getMainWindow: () => BrowserWindow | null
   private readonly _appState: AppState
+  /** Setter-injected (breaks the construction cycle with sandbox-manager, §3.12). Null until index.ts wires it (step 3.9). */
+  private _delegate: SandboxSessionDelegate | null = null
 
   constructor(getMainWindow: () => BrowserWindow | null, appState: AppState) {
     this._getMainWindow = getMainWindow
@@ -112,6 +105,10 @@ export class TerminalManagerService {
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
+
+  setSandboxDelegate(delegate: SandboxSessionDelegate): void {
+    this._delegate = delegate
+  }
 
   spawn(options: TerminalSpawnOptions): TerminalSpawnResult {
     const { workspaceSlug, cols, rows } = options
@@ -122,6 +119,12 @@ export class TerminalManagerService {
     if (this._sessions.has(workspaceSlug)) {
       throw new Error(`Session already exists for workspace: ${workspaceSlug}`)
     }
+    // Appendix C item 8: a sandbox session's own state (preparing/ending)
+    // isn't reflected in `_sessions` the same way a host pty is, so this is
+    // checked separately from the two guards above.
+    if (this._delegate?.isBusy(workspaceSlug)) {
+      throw new Error(`Sandbox session is busy for workspace: ${workspaceSlug}`)
+    }
 
     const workspace = this._appState.workspaces.get(workspaceSlug)
     if (!workspace) {
@@ -131,94 +134,32 @@ export class TerminalManagerService {
     const cwd = fs.existsSync(workspace.path) ? workspace.path : os.homedir()
 
     // Build sanitized environment
-    const env: Record<string, string> = {}
-    for (const [key, value] of Object.entries(process.env)) {
-      if (value !== undefined && !ENV_DENYLIST.has(key)) {
-        env[key] = value
-      }
-    }
+    const env = sanitizedEnv(process.env)
     env.TERM = 'xterm-256color'
 
-    let pty: nodePty.IPty
-    try {
-      pty = nodePty.spawn(SPAWN_COMMAND, SPAWN_ARGS, {
-        name: 'xterm-256color',
-        cols,
-        rows,
-        cwd,
-        env,
-      })
-    } catch (err) {
-      log.error(`[Terminal] Spawn failed for workspace=${workspaceSlug}:`, err)
-      throw new Error(`Failed to spawn terminal: ${err instanceof Error ? err.message : String(err)}`, { cause: err })
-    }
-
-    log.info(`[Terminal] Spawned pid=${pty.pid} workspace=${workspaceSlug}`)
-
-    // Build exit promise (amendment A3 + P1)
-    let exitResolve: (() => void) | null = null
-    const exitPromise = new Promise<void>((resolve) => {
-      exitResolve = resolve
-    })
-
-    const session: TerminalSession = {
-      workspaceSlug,
-      pty,
-      scrollback: '',
-      pendingData: '',
-      batchTimer: null,
-      exitResolve,
-      exitPromise,
-    }
-
-    // Wire data batching with scrollback truncation
-    pty.onData((data: string) => {
-      session.pendingData += data
-      session.scrollback += data
-
-      // Truncate scrollback to MAX_SCROLLBACK_CHARS (amendment A13)
-      if (session.scrollback.length > MAX_SCROLLBACK_CHARS) {
-        const targetIndex = session.scrollback.length - MAX_SCROLLBACK_CHARS
-        const safeStart = findSafeStartIndex(session.scrollback, targetIndex)
-        session.scrollback = session.scrollback.slice(safeStart)
-      }
-
-      if (session.batchTimer !== null) return
-
-      session.batchTimer = setTimeout(() => {
-        session.batchTimer = null
-        const chunk = session.pendingData
-        session.pendingData = ''
-
-        const win = this._getMainWindow()
-        // isDestroyed() guard (amendment A12 + P4)
-        if (!win || win.isDestroyed()) return
-        win.webContents.send(TERMINAL_IPC.DATA, { workspaceSlug, data: chunk })
-      }, DATA_BATCH_MS)
-    })
-
-    // Wire exit handler
-    pty.onExit(({ exitCode, signal }) => {
-      log.info(
-        `[Terminal] Exited pid=${pty.pid} workspace=${workspaceSlug} exitCode=${exitCode} signal=${signal ?? 'none'}`,
-      )
-
-      session.exitResolve?.()
-
-      this._cleanup(workspaceSlug)
-
-      const win = this._getMainWindow()
-      // isDestroyed() guard (amendment A12 + P4)
-      if (!win || win.isDestroyed()) return
-      win.webContents.send(TERMINAL_IPC.EXITED, {
-        workspaceSlug,
-        exitCode,
-        signal: signal !== undefined ? String(signal) : undefined,
-      })
-    })
-
-    this._sessions.set(workspaceSlug, session)
+    this._spawnPty(workspaceSlug, 'host', SPAWN_COMMAND, SPAWN_ARGS, cwd, env, cols, rows)
     return { workspaceSlug }
+  }
+
+  /**
+   * §3.12: the container's exec pty. `cwd` is always `os.homedir()` — the
+   * container's own working directory comes from `--workdir` in `argv`
+   * itself, so the local `docker` CLI's cwd is irrelevant (same reasoning as
+   * `spawnShell`'s cwd).
+   */
+  spawnSandbox(slug: string, dockerAbs: string, argv: readonly string[], cols: number, rows: number): TerminalSpawnResult {
+    if (this._sessions.size >= MAX_CONCURRENT_SESSIONS) {
+      throw new Error(`Maximum concurrent sessions (${MAX_CONCURRENT_SESSIONS}) reached`)
+    }
+    if (this._sessions.has(slug)) {
+      throw new Error(`Session already exists for workspace: ${slug}`)
+    }
+
+    const env = sanitizedEnv(process.env)
+    env.TERM = 'xterm-256color'
+
+    this._spawnPty(slug, 'sandbox', dockerAbs, [...argv], os.homedir(), env, cols, rows)
+    return { workspaceSlug: slug }
   }
 
   spawnShell(options: ShellSpawnOptions): ShellSpawnResult {
@@ -241,12 +182,7 @@ export class TerminalManagerService {
     const cwd = os.homedir()
 
     // Build sanitized environment
-    const env: Record<string, string> = {}
-    for (const [key, value] of Object.entries(process.env)) {
-      if (value !== undefined && !ENV_DENYLIST.has(key)) {
-        env[key] = value
-      }
-    }
+    const env = sanitizedEnv(process.env)
     env.TERM = 'xterm-256color'
 
     let pty: nodePty.IPty
@@ -273,6 +209,7 @@ export class TerminalManagerService {
 
     const session: TerminalSession = {
       workspaceSlug: sessionKey,
+      kind: 'host',
       pty,
       scrollback: '',
       pendingData: '',
@@ -322,6 +259,7 @@ export class TerminalManagerService {
         workspaceSlug: sessionKey,
         exitCode,
         signal: signal !== undefined ? String(signal) : undefined,
+        kind: 'host',
       })
     })
 
@@ -339,8 +277,24 @@ export class TerminalManagerService {
     session.pty.resize(cols, rows)
   }
 
+  /**
+   * §3.12: a sandbox session routes to `delegate.endSession`, which awaits
+   * the pty exit (via `awaitExit`, bounded by `SANDBOX_KILL_TIMEOUT_MS`) and
+   * confirms the container stopped — so this resolves at the end of
+   * `ending`, not at pty exit. Also routes when the pty is already gone but
+   * the sandbox is still busy (`ending`), so a `terminal:kill` that arrives
+   * just after an unexpected pty exit still completes normally.
+   */
   async kill(workspaceSlug: string): Promise<void> {
-    const session = this._getSessionOrThrow(workspaceSlug)
+    const session = this._sessions.get(workspaceSlug)
+
+    if (session?.kind === 'sandbox' || (!session && this._delegate?.isBusy(workspaceSlug))) {
+      if (!this._delegate) throw new Error(`No sandbox delegate registered for workspace: ${workspaceSlug}`)
+      await this._delegate.endSession(workspaceSlug)
+      return
+    }
+
+    if (!session) throw new Error(`No active session for workspace: ${workspaceSlug}`)
 
     session.pty.kill('SIGTERM')
 
@@ -366,24 +320,63 @@ export class TerminalManagerService {
     return this._sessions.has(sessionKey)
   }
 
+  /**
+   * Waits for `slug`'s pty to exit, up to `ms`. `true` if it exited within
+   * the budget (or there was no session to begin with), `false` on timeout.
+   * The manager's `ending` step 2 calls this with `SANDBOX_KILL_TIMEOUT_MS`,
+   * then `forceKill` on a `false` result (H-B1).
+   */
+  async awaitExit(slug: string, ms: number): Promise<boolean> {
+    const session = this._sessions.get(slug)
+    if (!session || !session.exitPromise) return true
+
+    return Promise.race([
+      session.exitPromise.then(() => true),
+      timeout(ms).then(() => false),
+    ])
+  }
+
+  /** SIGKILLs `slug`'s pty directly. A no-op if there's no session (already exited). */
+  forceKill(slug: string): void {
+    const session = this._sessions.get(slug)
+    if (!session) return
+    log.info(`[Terminal] forceKill SIGKILL pid=${session.pty.pid} workspace=${slug}`)
+    session.pty.kill('SIGKILL')
+  }
+
+  /**
+   * §3.12: sandbox sessions get `delegate.stopForQuit(slug)` in parallel
+   * with the SIGTERM of host ptys — `docker stop` (run by the delegate)
+   * makes the sandbox's `docker exec` pty exit on its own, so this file
+   * never signals a sandbox pty directly. Still bounded by the same 5 s
+   * race as host sessions; a sandbox that doesn't finish stopping in time is
+   * the delegate's own problem to bound (the quit budget, TRD §14.5 #4).
+   */
   async destroyAll(): Promise<void> {
     if (this._sessions.size === 0) return
 
-    // SIGTERM all sessions in parallel (amendment P3)
     const sessions = Array.from(this._sessions.values())
-    for (const session of sessions) {
+    const hostSessions = sessions.filter((s) => s.kind !== 'sandbox')
+    const sandboxSessions = sessions.filter((s) => s.kind === 'sandbox')
+
+    // SIGTERM all host sessions, and stopForQuit all sandbox sessions, in
+    // parallel (amendment P3, §3.12).
+    for (const session of hostSessions) {
       session.pty.kill('SIGTERM')
     }
+    const stopForQuitPromises = sandboxSessions.map((session) =>
+      this._delegate ? this._delegate.stopForQuit(session.workspaceSlug) : Promise.resolve(),
+    )
 
-    // Race all exit promises against a single 5s timeout (amendment P3)
-    const exitPromises = sessions
+    // Race all exit/stop promises against a single 5s timeout (amendment P3)
+    const exitPromises = hostSessions
       .map((s) => s.exitPromise)
       .filter((p): p is Promise<void> => p !== null)
 
-    await Promise.race([Promise.allSettled(exitPromises), timeout(KILL_TIMEOUT_MS)])
+    await Promise.race([Promise.allSettled([...exitPromises, ...stopForQuitPromises]), timeout(KILL_TIMEOUT_MS)])
 
-    // SIGKILL survivors
-    for (const session of sessions) {
+    // SIGKILL host survivors (a sandbox pty is never SIGKILLed directly here).
+    for (const session of hostSessions) {
       if (this._sessions.has(session.workspaceSlug)) {
         log.info(
           `[Terminal] destroyAll SIGKILL pid=${session.pty.pid} workspace=${session.workspaceSlug}`,
@@ -402,6 +395,112 @@ export class TerminalManagerService {
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
+
+  /**
+   * Spawns a pty and wires data batching, scrollback truncation and exit
+   * handling — shared by `spawn()` (host) and `spawnSandbox()`. `spawnShell`
+   * is deliberately left with its own copy (no unrelated refactor, plan step
+   * 3.8).
+   */
+  private _spawnPty(
+    key: string,
+    kind: TerminalSessionKind,
+    file: string,
+    args: readonly string[],
+    cwd: string,
+    env: Record<string, string>,
+    cols: number,
+    rows: number,
+  ): TerminalSession {
+    let pty: nodePty.IPty
+    try {
+      pty = nodePty.spawn(file, [...args], {
+        name: 'xterm-256color',
+        cols,
+        rows,
+        cwd,
+        env,
+      })
+    } catch (err) {
+      log.error(`[Terminal] Spawn failed for ${kind} key=${key}:`, err)
+      throw new Error(`Failed to spawn terminal: ${err instanceof Error ? err.message : String(err)}`, { cause: err })
+    }
+
+    log.info(`[Terminal] Spawned ${kind} pid=${pty.pid} key=${key}`)
+
+    // Build exit promise (amendment A3 + P1)
+    let exitResolve: (() => void) | null = null
+    const exitPromise = new Promise<void>((resolve) => {
+      exitResolve = resolve
+    })
+
+    const session: TerminalSession = {
+      workspaceSlug: key,
+      kind,
+      pty,
+      scrollback: '',
+      pendingData: '',
+      batchTimer: null,
+      exitResolve,
+      exitPromise,
+    }
+
+    // Wire data batching with scrollback truncation
+    pty.onData((data: string) => {
+      session.pendingData += data
+      session.scrollback += data
+
+      // Truncate scrollback to MAX_SCROLLBACK_CHARS (amendment A13)
+      if (session.scrollback.length > MAX_SCROLLBACK_CHARS) {
+        const targetIndex = session.scrollback.length - MAX_SCROLLBACK_CHARS
+        const safeStart = findSafeStartIndex(session.scrollback, targetIndex)
+        session.scrollback = session.scrollback.slice(safeStart)
+      }
+
+      if (session.batchTimer !== null) return
+
+      session.batchTimer = setTimeout(() => {
+        session.batchTimer = null
+        const chunk = session.pendingData
+        session.pendingData = ''
+
+        const win = this._getMainWindow()
+        // isDestroyed() guard (amendment A12 + P4)
+        if (!win || win.isDestroyed()) return
+        win.webContents.send(TERMINAL_IPC.DATA, { workspaceSlug: key, data: chunk })
+      }, DATA_BATCH_MS)
+    })
+
+    // Wire exit handler
+    pty.onExit(({ exitCode, signal }) => {
+      log.info(
+        `[Terminal] Exited pid=${pty.pid} key=${key} exitCode=${exitCode} signal=${signal ?? 'none'}`,
+      )
+
+      session.exitResolve?.()
+
+      this._cleanup(key)
+
+      // §3.12: notifies the manager so it can run `ending` if it wasn't
+      // already underway, and surface a notification on an unexpected exit.
+      if (kind === 'sandbox') {
+        this._delegate?.onPtyExit(key, exitCode)
+      }
+
+      const win = this._getMainWindow()
+      // isDestroyed() guard (amendment A12 + P4)
+      if (!win || win.isDestroyed()) return
+      win.webContents.send(TERMINAL_IPC.EXITED, {
+        workspaceSlug: key,
+        exitCode,
+        signal: signal !== undefined ? String(signal) : undefined,
+        kind,
+      })
+    })
+
+    this._sessions.set(key, session)
+    return session
+  }
 
   private _getSessionOrThrow(workspaceSlug: string): TerminalSession {
     const session = this._sessions.get(workspaceSlug)

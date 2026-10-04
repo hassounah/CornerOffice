@@ -122,3 +122,32 @@ describe('PermissionRequestItem', () => {
     expect(onVerdict).toHaveBeenCalledWith('deny')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Sandbox provenance (#0029 step 5.10, TRD §3.17)
+// ---------------------------------------------------------------------------
+
+describe('PermissionRequestItem — sandbox provenance', () => {
+  it('shows the Sandbox tag and "Requested from the sandbox" for a sandbox request', () => {
+    render(<PermissionRequestItem request={makeRequest()} isActive={true} onVerdict={vi.fn()} sandboxWorkspace="my-ws" />)
+    expect(screen.getByText('(from the sandbox for my-ws)')).toBeInTheDocument()
+    expect(screen.getByText('Requested from the sandbox')).toBeInTheDocument()
+  })
+
+  it('shows neither for a host request', () => {
+    render(<PermissionRequestItem request={makeRequest()} isActive={true} onVerdict={vi.fn()} />)
+    expect(screen.queryByText(/\(from the sandbox/)).toBeNull()
+    expect(screen.queryByText('Requested from the sandbox')).toBeNull()
+  })
+
+  it('still renders the agent-supplied preview as literal text next to the tag (M3)', () => {
+    const hostile = '<img src=x onerror="alert(1)"> javascript:alert(1)'
+    const { container } = render(
+      <PermissionRequestItem request={makeRequest({ inputPreview: hostile, description: '<b>bold?</b>' })} isActive={true} onVerdict={vi.fn()} sandboxWorkspace="my-ws" />,
+    )
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('b')).toBeNull()
+    expect(container.querySelector('a')).toBeNull()
+    expect(screen.getByText('<b>bold?</b>')).toBeInTheDocument()
+  })
+})

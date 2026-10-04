@@ -59,4 +59,8 @@ export interface NotificationItem {
   timestamp: string;               // ISO 8601
   dismissed: boolean;
   actionLabel: string | null;
+  /** Provenance (#0029, §3.17), decided in main. Absent means host. The renderer never re-derives it. */
+  source?: 'host' | 'sandbox';
+  /** Where a click should land (e.g. 'sandbox-network', 'sandbox-chooser'); handled by the renderer. */
+  target?: string;
 }

@@ -7,7 +7,7 @@ import {
   MAX_WS_FRAME,
   WS_AUTH_CLOSE_CODE,
 } from '../types/channels'
-import type { ChatMessage, ChannelSession, ConnectionState } from '../types/channels'
+import type { ChatMessage, ChannelSession, ConnectionState, IsAlive } from '../types/channels'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -18,6 +18,16 @@ const MAX_GLOBAL_HISTORY_BYTES = 10 * 1024 * 1024 // 10 MB
 const MAX_RATE_PER_SECOND = 50
 /** Exponential backoff delays in ms: 1s, 2s, 4s, 8s, 16s, 30s (capped). */
 const BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000]
+
+/** Default `isAlive` — today's PID-only behavior (TRD §3.7.2). */
+export const defaultIsAlive: IsAlive = (session) => {
+  try {
+    process.kill(session.pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -58,15 +68,18 @@ export class ChannelConnectionService {
   private readonly _onMessage: (shortId: string, message: ChatMessage) => void
   private readonly _onConnectionStateChange: (shortId: string, state: ConnectionState) => void
   private readonly _onPermissionRequest: (shortId: string, payload: { requestId: string; toolName: string; description: string; inputPreview: string; receivedAt: number }) => void
+  private readonly _isAlive: IsAlive
 
   constructor(
     onMessage: (shortId: string, message: ChatMessage) => void,
     onConnectionStateChange: (shortId: string, state: ConnectionState) => void,
     onPermissionRequest: (shortId: string, payload: { requestId: string; toolName: string; description: string; inputPreview: string; receivedAt: number }) => void = () => {},
+    isAlive: IsAlive = defaultIsAlive,
   ) {
     this._onMessage = onMessage
     this._onConnectionStateChange = onConnectionStateChange
     this._onPermissionRequest = onPermissionRequest
+    this._isAlive = isAlive
   }
 
   // -------------------------------------------------------------------------
@@ -75,14 +88,33 @@ export class ChannelConnectionService {
 
   /**
    * Open a WebSocket connection to the given session.
-   * No-op if channelPort or channelToken is absent, or already connected.
+   * No-op if `channelBlocked` is set, channelPort or channelToken is absent,
+   * or already connected under the same identity.
    */
   connect(session: ChannelSession): void {
+    if (session.channelBlocked) {
+      log.info(`[ChannelConnection] Skipping ${session.shortId} — channelBlocked=${session.channelBlocked}`)
+      return
+    }
     if (!session.channelPort || !session.channelToken) {
       log.info(`[ChannelConnection] Skipping ${session.shortId} — no port/token (port=${session.channelPort}, token=${session.channelToken ? 'present' : 'null'})`)
       return
     }
-    if (this._connections.has(session.shortId)) return
+
+    const existing = this._connections.get(session.shortId)
+    if (existing) {
+      // SEC-H4: the host source always wins card discovery, but the same
+      // shortId key can then be reused by a different identity (a host card
+      // replacing a sandbox-held entry, or vice versa never happens — see
+      // channel-discovery.ts). Only a matching sandboxSlug means "still the
+      // same session, already connected/connecting" — anything else is a
+      // stale connection to the wrong container and must be closed first.
+      if (existing.session.sandboxSlug === session.sandboxSlug) return
+      log.info(`[ChannelConnection] Identity changed for ${session.shortId} (sandboxSlug ${existing.session.sandboxSlug ?? 'host'} -> ${session.sandboxSlug ?? 'host'}) — closing stale connection`)
+      this._closeEntry(existing)
+      this._connections.delete(session.shortId)
+    }
+
     log.info(`[ChannelConnection] Connecting to ${session.shortId} at ws://127.0.0.1:${session.channelPort}`)
     this._openConnection(session, 0)
   }
@@ -159,11 +191,11 @@ export class ChannelConnectionService {
   // -------------------------------------------------------------------------
 
   private _openConnection(session: ChannelSession, retryCount: number): void {
-    const { shortId, channelPort, channelToken, pid } = session
+    const { shortId, channelPort, channelToken } = session
     if (!channelPort || !channelToken) return
 
-    // PID check before each (re)connect attempt
-    if (!this._isPidAlive(pid)) {
+    // Liveness check before each (re)connect attempt
+    if (!this._isAlive(session)) {
       this._emitState(shortId, 'disconnected')
       return
     }
@@ -238,7 +270,7 @@ export class ChannelConnectionService {
   }
 
   private _scheduleRetry(session: ChannelSession, prevRetryCount: number): void {
-    if (!this._isPidAlive(session.pid)) {
+    if (!this._isAlive(session)) {
       this._emitState(session.shortId, 'disconnected')
       return
     }
@@ -424,12 +456,4 @@ export class ChannelConnectionService {
     this._onConnectionStateChange(shortId, state)
   }
 
-  private _isPidAlive(pid: number): boolean {
-    try {
-      process.kill(pid, 0)
-      return true
-    } catch {
-      return false
-    }
-  }
 }

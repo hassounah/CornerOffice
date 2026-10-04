@@ -1,8 +1,14 @@
 import log from 'electron-log/main'
-import fs from 'fs'
 import crypto from 'crypto'
 import { z } from 'zod'
+import { readRegularFileCappedSync } from './safe-fs'
 import type { HookEvent, HookEventName, ActivityFeedItem, ActivityType } from '../types'
+
+// Read at most 1 MB per call (H2, §10.8, Appendix C item 2); the rest is
+// read on the next call. A large backlog (e.g. after the app was closed for
+// a long time) drains across several poll cycles instead of in one shot —
+// no caller may assume one events:changed tick means fully caught up (B-L1).
+const EVENTS_READ_CAP = 1024 * 1024
 
 // ---------------------------------------------------------------------------
 // Zod schema for HookEvent validation at parse boundary
@@ -105,35 +111,31 @@ export class EventParserService {
     filePath: string,
     byteOffset: number
   ): { events: HookEvent[]; newOffset: number } {
-    if (!fs.existsSync(filePath)) {
+    // Hardened, capped, no-follow read (H2): a symlinked events file or a
+    // FIFO is refused (and logged) rather than followed or hung on.
+    const capped = readRegularFileCappedSync(filePath, EVENTS_READ_CAP, { offset: byteOffset })
+    if (capped === null || capped.buf.length === 0) {
       return { events: [], newOffset: byteOffset }
     }
+    const { buf: chunk, size: fileSize } = capped
 
-    let stat: fs.Stats
-    try {
-      stat = fs.statSync(filePath)
-    } catch {
-      return { events: [], newOffset: byteOffset }
+    // If this read didn't reach the current end of file, the chunk boundary
+    // is arbitrary and may cut a line in half. Only advance the offset past
+    // the last complete line in the chunk; the remainder is picked up (with
+    // more bytes appended) on the next call.
+    const reachedEnd = byteOffset + chunk.length >= fileSize
+    let consumedLen = chunk.length
+    if (!reachedEnd) {
+      const lastNewline = chunk.lastIndexOf(0x0a) // '\n'
+      if (lastNewline === -1) {
+        // No complete line in this 1 MB chunk yet — make no progress until
+        // more data lands (drains over later poll cycles, B-L1).
+        return { events: [], newOffset: byteOffset }
+      }
+      consumedLen = lastNewline + 1
     }
 
-    const fileSize = stat.size
-    if (fileSize <= byteOffset) {
-      return { events: [], newOffset: byteOffset }
-    }
-
-    // Read only the new bytes since last offset
-    const readSize = fileSize - byteOffset
-    let chunk: Buffer
-    try {
-      const fd = fs.openSync(filePath, 'r')
-      chunk = Buffer.alloc(readSize)
-      fs.readSync(fd, chunk, 0, readSize, byteOffset)
-      fs.closeSync(fd)
-    } catch {
-      return { events: [], newOffset: byteOffset }
-    }
-
-    const text = chunk.toString('utf-8')
+    const text = chunk.subarray(0, consumedLen).toString('utf-8')
     const lines = text.split('\n')
     const events: HookEvent[] = []
 
@@ -165,7 +167,7 @@ export class EventParserService {
       }
     }
 
-    return { events, newOffset: fileSize }
+    return { events, newOffset: byteOffset + consumedLen }
   }
 
   /**

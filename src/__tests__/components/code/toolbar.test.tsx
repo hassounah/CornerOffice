@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within, act } from '@testing-library/react'
 import { ExplorerToolbar } from '../../../renderer/components/code/ExplorerToolbar'
 import { useCodeExplorerStore } from '../../../renderer/stores/code-explorer-store'
+import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
+import { registerDirtySource, useGuardDialogStore } from '../../../renderer/stores/dirty-registry'
 import { REPO_STATE_FIXTURES } from '../../helpers/repo-state-fixtures'
 import { gitStateBannerCopy } from '../../../renderer/components/code/notice-copy'
 import type { CodeChange } from '@main/types/code'
@@ -402,5 +404,131 @@ describe('skin="realm" — themed navigation copy', () => {
     expect(screen.getByText('This branch')).toBeInTheDocument()
     expect(screen.getByText(/Changed files/)).toBeInTheDocument()
     expect(screen.getByText(/Go to file/)).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Workspace | Sandbox toggle (#0029 step 5.9, TRD §3.10)
+// ---------------------------------------------------------------------------
+
+describe('ExplorerToolbar — Workspace | Sandbox toggle', () => {
+  function withSummary(exists: boolean | null): void {
+    useSandboxStore.setState({ summaries: exists === null ? {} : { 'test-ws': { exists, running: false, unmergedBranches: [] } } })
+  }
+  const group = () => screen.queryByRole('group', { name: 'Tree' })
+
+  beforeEach(() => {
+    useGuardDialogStore.setState({ open: false, pendingAction: null, scope: undefined })
+    withSummary(null)
+  })
+
+  it('is hidden without a sandbox: no summary, or a summary that says none exists', () => {
+    renderToolbar()
+    expect(group()).toBeNull()
+
+    withSummary(false)
+    renderToolbar()
+    expect(group()).toBeNull()
+  })
+
+  it('shows both options when the workspace has a sandbox, with the current tree pressed', () => {
+    withSummary(true)
+    renderToolbar()
+
+    const tree = within(group()!)
+    expect(tree.getByRole('button', { name: 'Workspace' })).toHaveAttribute('aria-pressed', 'true')
+    expect(tree.getByRole('button', { name: 'Sandbox' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('reflects a sandbox root', () => {
+    withSummary(true)
+    renderToolbar({ root: 'sandbox' })
+    const tree = within(group()!)
+    expect(tree.getByRole('button', { name: 'Sandbox' })).toHaveAttribute('aria-pressed', 'true')
+    expect(tree.getByRole('button', { name: 'Workspace' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('switching goes through setRoot when nothing is dirty', () => {
+    withSummary(true)
+    const setRoot = vi.fn()
+    renderToolbar({ setRoot })
+
+    fireEvent.click(within(group()!).getByRole('button', { name: 'Sandbox' }))
+
+    expect(setRoot).toHaveBeenCalledExactlyOnceWith('sandbox')
+    expect(useGuardDialogStore.getState().open).toBe(false)
+  })
+
+  it('clicking the tree that is already open does nothing', () => {
+    withSummary(true)
+    const setRoot = vi.fn()
+    renderToolbar({ setRoot })
+    fireEvent.click(within(group()!).getByRole('button', { name: 'Workspace' }))
+    expect(setRoot).not.toHaveBeenCalled()
+  })
+
+  it('an unsaved edit puts the unsaved-changes guard in front of the switch; confirming switches, cancelling does not', () => {
+    withSummary(true)
+    const setRoot = vi.fn()
+    const unregister = registerDirtySource({ id: 'code-explorer', isDirty: () => true, discard: vi.fn() })
+    renderToolbar({ setRoot })
+
+    fireEvent.click(within(group()!).getByRole('button', { name: 'Sandbox' }))
+    expect(setRoot).not.toHaveBeenCalled()
+    expect(useGuardDialogStore.getState().open).toBe(true)
+
+    useGuardDialogStore.getState().confirm()
+    expect(setRoot).toHaveBeenCalledExactlyOnceWith('sandbox')
+    unregister()
+  })
+
+  it('an unrelated dirty source does not block the switch (the guard is scoped to the explorer)', () => {
+    withSummary(true)
+    const setRoot = vi.fn()
+    const unregister = registerDirtySource({ id: 'docviewer', isDirty: () => true, discard: vi.fn() })
+    renderToolbar({ setRoot })
+
+    fireEvent.click(within(group()!).getByRole('button', { name: 'Sandbox' }))
+
+    expect(setRoot).toHaveBeenCalledWith('sandbox')
+    unregister()
+  })
+
+  it('the arrow keys reach the toggle buttons after the base controls, and wrap', () => {
+    withSummary(true)
+    renderToolbar()
+    const goToFile = screen.getByRole('button', { name: /Go to file/ })
+    act(() => goToFile.focus())
+
+    fireEvent.keyDown(screen.getByRole('toolbar'), { key: 'ArrowRight' })
+    expect(within(group()!).getByRole('button', { name: 'Workspace' })).toHaveFocus()
+    fireEvent.keyDown(screen.getByRole('toolbar'), { key: 'ArrowRight' })
+    expect(within(group()!).getByRole('button', { name: 'Sandbox' })).toHaveFocus()
+    fireEvent.keyDown(screen.getByRole('toolbar'), { key: 'ArrowRight' })
+    expect(screen.getByRole('button', { name: /Back/ })).toHaveFocus()
+  })
+
+  it('without a sandbox the arrow keys still wrap over the original seven controls', () => {
+    renderToolbar()
+    act(() => screen.getByRole('button', { name: /Go to file/ }).focus())
+    fireEvent.keyDown(screen.getByRole('toolbar'), { key: 'ArrowRight' })
+    expect(screen.getByRole('button', { name: /Back/ })).toHaveFocus()
+  })
+})
+
+describe('ExplorerToolbar — the Sandbox toggle after a cold start', () => {
+  it('appears once the summaries load into a cold sandbox store (not only after the settings panel was opened)', async () => {
+    useSandboxStore.setState({ summaries: {} })
+    ;(window.cornerOffice as unknown as { sandbox: unknown }).sandbox = {
+      getSummaries: vi.fn().mockResolvedValue({ data: { 'test-ws': { exists: true, running: false, unmergedBranches: [] } }, error: null }),
+    }
+    renderToolbar()
+    expect(screen.queryByRole('group', { name: 'Tree' })).toBeNull()
+
+    await act(async () => {
+      await useSandboxStore.getState().fetchSummaries()
+    })
+
+    expect(screen.getByRole('group', { name: 'Tree' })).toBeInTheDocument()
   })
 })

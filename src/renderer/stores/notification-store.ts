@@ -16,6 +16,11 @@ interface NotificationState {
   pushBanner: (item: NotificationItem) => void
   dismissBanner: (id: string) => void
   initListeners: () => () => void
+
+  /** An in-app "Open" click, routed by App exactly like an OS notification click. Main chose the target. */
+  openRequest: { workspace: string; target: string } | null
+  requestOpen: (item: NotificationItem) => void
+  clearOpenRequest: () => void
 }
 
 export const useNotificationStore = create<NotificationState>((set) => ({
@@ -23,6 +28,13 @@ export const useNotificationStore = create<NotificationState>((set) => ({
   bannerStack: [],
   loading: false,
   error: null,
+  openRequest: null,
+
+  requestOpen: (item) => {
+    if (item.target) set({ openRequest: { workspace: item.workspace, target: item.target } })
+  },
+
+  clearOpenRequest: () => set({ openRequest: null }),
 
   fetchHistory: async (limit = 100) => {
     set({ loading: true, error: null })

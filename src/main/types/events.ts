@@ -60,6 +60,7 @@ export interface ActivityFeedItem {
   detail: string | null;           // Optional detail text
   toolName?: string;               // Tool name from hook event (e.g. "Bash", "Read")
   agentType?: string;              // Agent type from hook event (e.g. "security", "backend")
+  source?: 'host' | 'sandbox';     // Provenance (#0029, §3.17), decided in main. Absent means host.
 }
 
 // NOTE: Both instinct_learned AND instinct_evolved are included (review finding UX-7)

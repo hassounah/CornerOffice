@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import type { PermissionRequest } from '../../stores/permission-store'
 import { formatToolPreview } from '../../utils/format-tool-preview'
+import { SandboxTag } from '../sandbox/SandboxTag'
 
 // ---------------------------------------------------------------------------
 // Props
@@ -11,6 +12,8 @@ export interface PermissionRequestItemProps {
   /** Controls whether action buttons are visible (true for the head of queue). */
   isActive: boolean
   onVerdict: (behavior: 'allow' | 'deny') => void
+  /** Set (to the workspace slug) when the request comes from a sandbox session: it says so, since the prompt text is agent-controlled (TRD §3.17). */
+  sandboxWorkspace?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -40,6 +43,7 @@ export function PermissionRequestItem({
   request,
   isActive,
   onVerdict,
+  sandboxWorkspace,
 }: PermissionRequestItemProps): React.ReactElement {
   const [loading, setLoading] = useState(false)
 
@@ -64,6 +68,13 @@ export function PermissionRequestItem({
       className="px-3 py-2 border-b border-stone-800/60 last:border-b-0"
       tabIndex={isActive ? 0 : -1}
     >
+      {sandboxWorkspace !== undefined && (
+        <div className="mb-1 flex items-center gap-1.5 text-xs text-stone-400">
+          <SandboxTag workspace={sandboxWorkspace} />
+          <span>Requested from the sandbox</span>
+        </div>
+      )}
+
       {/* Tool name badge + description row */}
       <div className="flex items-start gap-2 mb-1">
         <span

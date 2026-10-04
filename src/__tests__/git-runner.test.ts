@@ -5,13 +5,16 @@ import os from 'os'
 import { execFileSync } from 'child_process'
 import {
   resolveGitBinary,
+  resolveExecutable,
   buildEnv,
   parseGitVersion,
   redactUrlUserinfo,
   createGitService,
   gitRunnerSettings,
   GitDisabled,
+  UnpinnedWorktree,
   type RepoCtx,
+  type WorktreePin,
 } from '../main/services/git-runner'
 
 // ---------------------------------------------------------------------------
@@ -54,8 +57,16 @@ function initRepo(dir: string): void {
   execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: dir, env: hermeticEnv })
 }
 
-function ctxFor(root: string, workspaceRoots: readonly string[] = []): RepoCtx {
-  return { root, workspaceRoots }
+function ctxFor(root: string, workspaceRoots: readonly string[] = [], pin?: WorktreePin): RepoCtx {
+  return { root, workspaceRoots, pin }
+}
+
+/** A pin whose workTree realpath-equals the given repo — self-referential
+ *  and not a real worktree layout, but enough to satisfy the SEC-L2 pin
+ *  check for tests that only care about the pin's *effect*, not sandbox
+ *  worktree layout itself (that's sandbox-worktree.ts, step 3.1+). */
+function selfPinFor(repo: string): WorktreePin {
+  return { gitDir: path.join(repo, '.git'), commonDir: path.join(repo, '.git'), workTree: repo }
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +136,53 @@ describe('resolveGitBinary', () => {
     makeExecutable(binDir, 'git')
     const result = resolveGitBinary(binDir, [], 'win32')
     expect(result).toEqual({ available: false, reason: 'not-found' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// resolveExecutable (L5) — the generic PATH walk resolveGitBinary now
+// delegates to, shared with docker-runner.ts (step 1.3)
+// ---------------------------------------------------------------------------
+
+describe('resolveExecutable', () => {
+  it('resolves an arbitrary binary name (docker) with the same rules as git', () => {
+    const binDir = path.join(tmpDir, 'bin')
+    makeExecutable(binDir, 'docker')
+    const result = resolveExecutable('docker', binDir, [])
+    expect(result).toEqual({ available: true, absPath: fs.realpathSync(path.join(binDir, 'docker')) })
+  })
+
+  it('refuses docker when it resolves inside a refusal root, same as git', () => {
+    const binDir = path.join(tmpDir, 'workspace', 'bin')
+    makeExecutable(binDir, 'docker')
+    const result = resolveExecutable('docker', binDir, [path.join(tmpDir, 'workspace')])
+    expect(result).toEqual({ available: false, reason: 'inside-workspace' })
+  })
+
+  it('picks docker.exe on win32', () => {
+    const binDir = path.join(tmpDir, 'bin')
+    makeExecutable(binDir, 'docker.exe')
+    const result = resolveExecutable('docker', binDir, [], 'win32')
+    expect(result).toEqual({ available: true, absPath: fs.realpathSync(path.join(binDir, 'docker.exe')) })
+  })
+
+  it('a binary in a temp dir standing in for each rw mount root is refused (L5)', () => {
+    // Simulates each of sandboxPaths(...).rwMountRoots — ~/.claude,
+    // SANDBOXES_ROOT, SANDBOX_STATE_ROOT, ~/.corner-office/events — by using
+    // a stand-in temp directory as the refusal root, the same shape
+    // createGitService's refusalRoots() passes through.
+    for (const mountName of ['claude-dir', 'sandboxes-root', 'sandbox-state-root', 'events-root']) {
+      const mountRoot = path.join(tmpDir, mountName)
+      const binDir = path.join(mountRoot, 'bin')
+      makeExecutable(binDir, 'git')
+      const gitResult = resolveGitBinary(binDir, [mountRoot])
+      expect(gitResult).toEqual({ available: false, reason: 'inside-workspace' })
+
+      const dockerBinDir = path.join(mountRoot, 'bin2')
+      makeExecutable(dockerBinDir, 'docker')
+      const dockerResult = resolveExecutable('docker', dockerBinDir, [mountRoot])
+      expect(dockerResult).toEqual({ available: false, reason: 'inside-workspace' })
+    }
   })
 })
 
@@ -592,5 +650,157 @@ describe('createGitService — getVersion', () => {
     } finally {
       process.env.PATH = originalPath
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildEnv — pin (C2, §3.6.4)
+// ---------------------------------------------------------------------------
+
+describe('buildEnv — pin', () => {
+  const pin: WorktreePin = { gitDir: '/pinned/gitdir', commonDir: '/pinned/commondir', workTree: '/pinned/worktree' }
+
+  it('sets GIT_DIR/GIT_COMMON_DIR/GIT_WORK_TREE from the pin', () => {
+    const env = buildEnv({}, undefined, undefined, '/some/root', pin)
+    expect(env.GIT_DIR).toBe('/pinned/gitdir')
+    expect(env.GIT_COMMON_DIR).toBe('/pinned/commondir')
+    expect(env.GIT_WORK_TREE).toBe('/pinned/worktree')
+  })
+
+  it('the pin wins over base env values for the same keys', () => {
+    const base = {
+      GIT_DIR: '/base/gitdir',
+      GIT_COMMON_DIR: '/base/commondir',
+      GIT_WORK_TREE: '/base/worktree',
+    }
+    const env = buildEnv(base, undefined, undefined, '/some/root', pin)
+    expect(env.GIT_DIR).toBe('/pinned/gitdir')
+    expect(env.GIT_COMMON_DIR).toBe('/pinned/commondir')
+    expect(env.GIT_WORK_TREE).toBe('/pinned/worktree')
+  })
+
+  it('the pin wins over a hostile override attempting to set the same keys', () => {
+    const overrides = {
+      GIT_DIR: '/hostile/gitdir',
+      GIT_COMMON_DIR: '/hostile/commondir',
+      GIT_WORK_TREE: '/hostile/worktree',
+    }
+    const env = buildEnv({}, overrides, undefined, '/some/root', pin)
+    expect(env.GIT_DIR).toBe('/pinned/gitdir')
+    expect(env.GIT_COMMON_DIR).toBe('/pinned/commondir')
+    expect(env.GIT_WORK_TREE).toBe('/pinned/worktree')
+  })
+
+  it('without a pin, GIT_DIR/GIT_COMMON_DIR/GIT_WORK_TREE are left unset (unchanged #0028 behavior)', () => {
+    const env = buildEnv({}, undefined, undefined, '/some/root')
+    expect(env.GIT_DIR).toBeUndefined()
+    expect(env.GIT_COMMON_DIR).toBeUndefined()
+    expect(env.GIT_WORK_TREE).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Pinned worktree git — fail-closed guard (C2, SEC-L2)
+// ---------------------------------------------------------------------------
+
+describe('createGitService — UnpinnedWorktree fail-closed guard', () => {
+  it('an unpinned ctx under a temp sandboxes root rejects with UnpinnedWorktree and never spawns git', async () => {
+    const sandboxesRoot = path.join(tmpDir, 'sandboxes')
+    const worktree = path.join(sandboxesRoot, 'my-slug')
+    initRepo(worktree)
+
+    // Fake git on PATH that leaves a marker if it's ever actually invoked —
+    // module-level execFile mocking is unreliable in this project's vitest
+    // config (see the "real spawned process" test above), so this reuses
+    // the same real-subprocess technique to prove zero spawns.
+    const markerFile = path.join(tmpDir, 'spawned.marker')
+    const binDir = path.join(tmpDir, 'guard-bin')
+    makeExecutable(binDir, 'git', `#!/bin/sh\ntouch "${markerFile}"\nexit 0\n`)
+    const originalPath = process.env.PATH
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath}`
+    try {
+      const service = createGitService({ sandboxesRootOverride: sandboxesRoot })
+      await expect(
+        service.runGit(ctxFor(worktree), ['rev-parse', 'HEAD']),
+      ).rejects.toBeInstanceOf(UnpinnedWorktree)
+      expect(fs.existsSync(markerFile)).toBe(false)
+    } finally {
+      process.env.PATH = originalPath
+    }
+  })
+
+  it('an unpinned ctx whose root no longer exists (realpath throws) is still rejected', async () => {
+    const sandboxesRoot = path.join(tmpDir, 'sandboxes')
+    fs.mkdirSync(sandboxesRoot, { recursive: true })
+    const neverCreated = path.join(sandboxesRoot, 'deleted-slug')
+
+    const service = createGitService({ sandboxesRootOverride: sandboxesRoot })
+    await expect(
+      service.runGit(ctxFor(neverCreated), ['rev-parse', 'HEAD']),
+    ).rejects.toBeInstanceOf(UnpinnedWorktree)
+  })
+
+  it('an unpinned ctx outside the sandboxes root is unaffected by the guard', async () => {
+    const sandboxesRoot = path.join(tmpDir, 'sandboxes')
+    fs.mkdirSync(sandboxesRoot, { recursive: true })
+    const repo = path.join(tmpDir, 'ordinary-repo')
+    initRepo(repo)
+
+    const service = createGitService({ sandboxesRootOverride: sandboxesRoot })
+    const result = await service.runGit(ctxFor(repo), ['rev-parse', 'HEAD'])
+    expect(result.stdout.toString('utf-8').trim()).toMatch(/^[0-9a-f]{40}$/)
+  })
+
+  it('a pin for a different worktree is rejected', async () => {
+    const repoA = path.join(tmpDir, 'repo-a')
+    const repoB = path.join(tmpDir, 'repo-b')
+    initRepo(repoA)
+    initRepo(repoB)
+
+    const service = createGitService()
+    const mismatchedPin = selfPinFor(repoB) // pin.workTree = repoB, but ctx.root = repoA
+    await expect(
+      service.runGit(ctxFor(repoA, [], mismatchedPin), ['rev-parse', 'HEAD']),
+    ).rejects.toBeInstanceOf(UnpinnedWorktree)
+  })
+
+  it('a pin whose workTree does not exist is rejected', async () => {
+    const repo = path.join(tmpDir, 'repo')
+    initRepo(repo)
+
+    const service = createGitService()
+    const badPin: WorktreePin = { gitDir: '/nope/gitdir', commonDir: '/nope/commondir', workTree: path.join(tmpDir, 'never-created') }
+    await expect(
+      service.runGit(ctxFor(repo, [], badPin), ['rev-parse', 'HEAD']),
+    ).rejects.toBeInstanceOf(UnpinnedWorktree)
+  })
+
+  it('a correctly pinned ctx succeeds, including under the sandboxes root', async () => {
+    const sandboxesRoot = path.join(tmpDir, 'sandboxes')
+    const worktree = path.join(sandboxesRoot, 'my-slug')
+    initRepo(worktree)
+
+    const service = createGitService({ sandboxesRootOverride: sandboxesRoot })
+    const pin = selfPinFor(worktree)
+    const result = await service.runGit(ctxFor(worktree, [], pin), ['rev-parse', 'HEAD'])
+    expect(result.stdout.toString('utf-8').trim()).toMatch(/^[0-9a-f]{40}$/)
+  })
+
+  it('sandboxesRootOverride is refused when isPackaged is true', () => {
+    expect(() => createGitService({ sandboxesRootOverride: '/tmp/x', isPackaged: true })).toThrow()
+  })
+
+  it('the same argv pinned vs unpinned produces two different single-flight keys', async () => {
+    const repo = path.join(tmpDir, 'repo')
+    initRepo(repo)
+    const service = createGitService()
+    const pin = selfPinFor(repo)
+
+    const p1 = service.runGit(ctxFor(repo), ['rev-parse', 'HEAD'])
+    const p2 = service.runGit(ctxFor(repo, [], pin), ['rev-parse', 'HEAD'])
+    expect(p1).not.toBe(p2)
+    const [r1, r2] = await Promise.all([p1, p2])
+    expect(r1.stdout.toString('utf-8').trim()).toMatch(/^[0-9a-f]{40}$/)
+    expect(r2.stdout.toString('utf-8').trim()).toMatch(/^[0-9a-f]{40}$/)
   })
 })

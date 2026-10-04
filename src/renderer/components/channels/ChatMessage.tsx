@@ -1,9 +1,12 @@
 import React from 'react'
 import type { ChatMessage as ChatMessageType } from '@main/types/channels'
 import rixPortrait from '../../../../assets/realm/study/Rix_portrait.png'
+import { SandboxTag } from '../sandbox/SandboxTag'
 
 interface ChatMessageProps {
   message: ChatMessageType
+  /** Set (to the workspace slug) when the message's session runs in a sandbox: channel content from a sandbox is agent-controlled and must say so (TRD §3.17). */
+  sandboxWorkspace?: string
 }
 
 /**
@@ -12,7 +15,7 @@ interface ChatMessageProps {
  * - Assistant messages: left-aligned with Rix portrait, muted background
  * Plain text only — content is never rendered as HTML.
  */
-export function ChatMessage({ message }: ChatMessageProps): React.ReactElement {
+export function ChatMessage({ message, sandboxWorkspace }: ChatMessageProps): React.ReactElement {
   const isUser = message.role === 'user'
 
   const timestamp = new Date(message.timestamp).toLocaleTimeString([], {
@@ -38,6 +41,11 @@ export function ChatMessage({ message }: ChatMessageProps): React.ReactElement {
           }
         `}
       >
+        {!isUser && sandboxWorkspace !== undefined && (
+          <div className="mb-1">
+            <SandboxTag workspace={sandboxWorkspace} />
+          </div>
+        )}
         {/* Plain text — whitespace preserved, no HTML injection */}
         <p className="whitespace-pre-wrap break-words">{message.text}</p>
         <time

@@ -17,6 +17,8 @@ extraResources:
     to: assets/icon.png
   - from: assets/tray-icon.png
     to: assets/tray-icon.png
+  - from: resources/sandbox
+    to: sandbox
 
 asarUnpack:
   - "**/node_modules/node-pty/**"

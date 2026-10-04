@@ -93,7 +93,9 @@ export type {
 
 export type {
   ConnectionState,
+  IsAlive,
   ChannelSession,
+  ChannelSandboxResolver,
   ChatMessage,
   PluginStatus,
   ChannelRegistration,

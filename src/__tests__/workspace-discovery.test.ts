@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import fg from 'fast-glob'
 
 const mockLog = vi.hoisted(() => ({
   info: vi.fn(),
@@ -12,6 +13,7 @@ const mockLog = vi.hoisted(() => ({
 vi.mock('electron-log/main', () => ({ default: mockLog }))
 
 import { WorkspaceDiscoveryService } from '@main/services/workspace-discovery'
+import { sandboxPaths } from '@main/services/sandbox-paths'
 
 function mkTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'co-discovery-test-'))
@@ -86,5 +88,77 @@ describe('WorkspaceDiscoveryService', () => {
     svc['_runGlob'] = origGlob
     expect(result.timedOut).toBe(true)
     expect(result.workspaces).toEqual([])
+  })
+
+  // ── 3.10: SANDBOXES_ROOT exclusion (TRD §3.11) ──────────────────────────
+
+  it('excludes a .rix inside the sandboxes root, even with dot:true forced on the glob', async () => {
+    const paths = sandboxPaths(tmpDir)
+    mkdir(path.join(paths.sandboxesRoot, 'some-workspace', '.rix'))
+    mkdir(path.join(tmpDir, 'real-project', '.rix'))
+
+    const ignorePatterns = [`${fg.escapePath(paths.sandboxesRoot)}/**`]
+    // dot:true is forced here so the result depends only on the explicit
+    // SANDBOXES_ROOT pattern above, not on fast-glob's dot:false default
+    // (SANDBOXES_ROOT sits under the dot directory ~/.corner-office).
+    const results = await svc['_runGlob'](tmpDir, ignorePatterns, true)
+
+    expect(results.some((p) => p.includes('real-project'))).toBe(true)
+    expect(results.some((p) => p.startsWith(paths.sandboxesRoot))).toBe(false)
+  })
+
+  it('discover() itself wires the sandboxes root into its ignore patterns', async () => {
+    // A fresh module instance is required: resolveRealHome() caches at
+    // module scope, and an earlier test in this file already resolved it
+    // against the real machine home via the top-level `svc` — mocking
+    // os.homedir() here wouldn't be consulted by that cached instance.
+    vi.resetModules()
+    const homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpDir)
+    try {
+      const { WorkspaceDiscoveryService: FreshService } = await import('@main/services/workspace-discovery')
+      const freshSvc = new FreshService()
+
+      const paths = sandboxPaths(fs.realpathSync(tmpDir))
+      mkdir(path.join(paths.sandboxesRoot, 'some-workspace', '.rix'))
+      mkdir(path.join(tmpDir, 'real-project', '.rix'))
+
+      const result = await freshSvc.discover()
+      const resultPaths = result.workspaces.map((w) => w.path)
+
+      expect(resultPaths).toContain(path.join(tmpDir, 'real-project'))
+      expect(resultPaths.some((p) => p.startsWith(paths.sandboxesRoot))).toBe(false)
+    } finally {
+      homedirSpy.mockRestore()
+    }
+  })
+
+  it('logs a warning and still discovers workspaces when the sandboxes root cannot be resolved', async () => {
+    mockLog.warn.mockClear()
+    vi.resetModules()
+    vi.doMock('@main/services/sandbox-paths', () => ({
+      resolveRealHome: () => {
+        throw new Error('cannot resolve real home')
+      },
+      sandboxPaths: () => {
+        throw new Error('unreachable')
+      },
+    }))
+    const homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpDir)
+    try {
+      const { WorkspaceDiscoveryService: FreshService } = await import('@main/services/workspace-discovery')
+      const freshSvc = new FreshService()
+      mkdir(path.join(tmpDir, 'real-project', '.rix'))
+
+      const result = await freshSvc.discover()
+
+      expect(result.workspaces.map((w) => w.path)).toContain(path.join(tmpDir, 'real-project'))
+      expect(mockLog.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Could not resolve the sandboxes root'),
+        expect.anything(),
+      )
+    } finally {
+      homedirSpy.mockRestore()
+      vi.doUnmock('@main/services/sandbox-paths')
+    }
   })
 })

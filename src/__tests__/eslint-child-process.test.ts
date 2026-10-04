@@ -58,4 +58,35 @@ describe('eslint child_process restriction (Sec M-9)', () => {
     const messages = await lint(staticImport, 'src/__tests__/x.test.ts')
     expect(messages.some((m) => m.ruleId === 'no-restricted-imports')).toBe(false)
   })
+
+  // ── docker-runner.ts (step 1.3, Sec M-9) ──────────────────────────────────
+
+  it('does not error on a static import in docker-runner.ts', async () => {
+    const messages = await lint(staticImport, 'src/main/services/docker-runner.ts')
+    expect(messages.some((m) => m.ruleId === 'no-restricted-imports')).toBe(false)
+  })
+
+  it('does not error on a dynamic import in docker-runner.ts', async () => {
+    const messages = await lint(dynamicImport, 'src/main/services/docker-runner.ts')
+    expect(messages.some((m) => m.ruleId === 'no-restricted-syntax')).toBe(false)
+  })
+
+  it('still errors on a static import in a sibling like sandbox-manager.ts', async () => {
+    const messages = await lint(staticImport, 'src/main/services/sandbox-manager.ts')
+    expect(messages.some((m) => m.ruleId === 'no-restricted-imports')).toBe(true)
+  })
+
+  it('still errors on a dynamic import in a sibling like sandbox-manager.ts', async () => {
+    const messages = await lint(dynamicImport, 'src/main/services/sandbox-manager.ts')
+    expect(messages.some((m) => m.ruleId === 'no-restricted-syntax')).toBe(true)
+  })
+
+  it("the rule's ignores list (read from the flat config) is exactly git-runner.ts and docker-runner.ts", async () => {
+    const config = (await import(path.join(projectRoot, 'eslint.config.mjs'))).default as Array<{
+      ignores?: string[]
+      rules?: Record<string, unknown>
+    }>
+    const block = config.find((c) => c.rules && 'no-restricted-imports' in c.rules)
+    expect(block?.ignores).toEqual(['src/main/services/git-runner.ts', 'src/main/services/docker-runner.ts'])
+  })
 })

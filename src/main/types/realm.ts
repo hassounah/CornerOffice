@@ -42,6 +42,7 @@ export type SettingsSectionId =
   | 'workspaces'
   | 'hooks'
   | 'notifications'
+  | 'sandbox'
   | 'appearance'
 
 export interface WizardsStudyContext {

@@ -11,6 +11,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:perf": "vitest run --config vitest.perf.config.ts",
+    "test:docker": "vitest run --config vitest.docker.config.ts",
     "test:e2e": "playwright test",
     "lint": "eslint src && tsc --noEmit",
     "typecheck": "tsc --noEmit",

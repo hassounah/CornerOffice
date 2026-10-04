@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router'
 import type { ActivityFeedItem, ActivityType } from '@main/types/events'
 import { RelativeTime } from '../shared/RelativeTime'
 import { useSettingsStore } from '../../stores/settings-store'
+import { SandboxTag } from '../sandbox/SandboxTag'
+import { isSandboxSource } from '../../utils/provenance'
 
 // ---------------------------------------------------------------------------
 // Icon + color per activity type — uses small colored dots instead of emojis
@@ -36,6 +38,8 @@ interface ActivityItemProps {
 export function ActivityItem({ item }: ActivityItemProps): React.ReactElement {
   const navigate = useNavigate()
   const compactView = useSettingsStore((s) => s.config?.appearance.compactView ?? false)
+  // Provenance is main's decision; an unknown source fails closed as sandbox (SEC-H3).
+  const sandbox = isSandboxSource(item.source)
   const { icon, colorClass } = TYPE_CONFIG[item.type] ?? { icon: '\u2022', colorClass: 'text-co-text-muted' }
 
   function handleClick(): void {
@@ -52,6 +56,7 @@ export function ActivityItem({ item }: ActivityItemProps): React.ReactElement {
       >
         <span className={`text-lg leading-none shrink-0 ${colorClass}`} aria-hidden="true">{icon}</span>
         <p className="text-[12px] text-co-text-primary truncate flex-1">{item.title}</p>
+        {sandbox && <SandboxTag workspace={item.workspace} />}
         <span className="text-[10px] text-co-text-muted/60 shrink-0">{item.workspace}</span>
       </button>
     )
@@ -66,7 +71,14 @@ export function ActivityItem({ item }: ActivityItemProps): React.ReactElement {
     >
       <span className={`text-lg mt-0.5 leading-none shrink-0 ${colorClass}`} aria-hidden="true">{icon}</span>
       <div className="flex-1 min-w-0">
-        <p className="text-[13px] text-co-text-primary truncate">{item.title}</p>
+        <p className="text-[13px] text-co-text-primary truncate">
+          {item.title}
+          {sandbox && (
+            <span className="ml-1.5 align-middle">
+              <SandboxTag workspace={item.workspace} />
+            </span>
+          )}
+        </p>
         {item.detail && (
           <p className="text-[11px] text-co-text-muted truncate mt-0.5">{item.detail}</p>
         )}

@@ -239,8 +239,8 @@ describe('Preload channel whitelist', () => {
     }
   })
 
-  it('whitelist has exactly 17 entries', () => {
-    expect(ALLOWED_PUSH_CHANNELS).toHaveLength(17)
+  it('whitelist has exactly 20 entries', () => {
+    expect(ALLOWED_PUSH_CHANNELS).toHaveLength(20)
   })
 
   it('includes notification:clicked channel', () => {

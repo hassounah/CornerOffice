@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import yaml from 'js-yaml'
 import { z } from 'zod'
+import { readRegularFileCappedSync } from './safe-fs'
 import type {
   Instinct,
   Observation,
@@ -12,6 +13,9 @@ import type {
   HomunculusStats,
   CrossWorkspacePattern,
 } from '../types'
+
+// 1 MB cap for homunculus files (H2, §10.8) — instincts, evolved artifacts.
+const HOMUNCULUS_READ_CAP = 1024 * 1024
 
 // ---------------------------------------------------------------------------
 // Zod schemas for validation at parse boundary
@@ -66,8 +70,13 @@ export class HomunculusParserService {
 
       for (const file of files) {
         const filePath = path.join(instinctsDir, file)
+        const capped = readRegularFileCappedSync(filePath, HOMUNCULUS_READ_CAP)
+        if (capped === null) {
+          log.warn(`[HomunculusParser] Skipping unreadable instinct file: ${filePath}`)
+          continue
+        }
         try {
-          const raw = fs.readFileSync(filePath, 'utf-8')
+          const raw = capped.buf.toString('utf-8')
           const parsed = parseFrontmatter(raw)
           const fm = parsed.data as Record<string, unknown>
 
@@ -94,78 +103,105 @@ export class HomunculusParserService {
   /**
    * Tail-read last `limit` lines from observations.jsonl.
    * Never loads the full file into memory — reads from the end.
+   *
+   * H2 hardening: lstat -> isFile() -> open(O_NOFOLLOW | O_NONBLOCK) -> fstat
+   * re-check, the same sequence as safe-fs.ts's readRegularFileCapped[Sync],
+   * but done once here (not per chunk) since this reads backwards from a
+   * single open handle across several `readSync` calls rather than one
+   * capped forward read — that shape doesn't fit the shared helper. The
+   * previous version re-opened the raw path (no O_NOFOLLOW) on every chunk
+   * iteration; a single verified handle, reused for every read, is both the
+   * fix and a lot less work per call.
    */
   parseRecentObservations(filePath: string, limit: number): Observation[] {
-    if (!fs.existsSync(filePath)) return []
-
-    let stat: fs.Stats
+    let lst: fs.Stats
     try {
-      stat = fs.statSync(filePath)
+      lst = fs.lstatSync(filePath)
     } catch {
       return []
     }
+    if (!lst.isFile()) return [] // symlink, FIFO, directory — never followed
 
-    const fileSize = stat.size
-    if (fileSize === 0) return []
-
-    // Read backwards in chunks to find the last `limit` lines
-    const CHUNK_SIZE = 16 * 1024 // 16KB
-    let remaining = fileSize
-    let linesFound: string[] = []
-    let partial = ''
-
-    while (remaining > 0 && linesFound.length < limit) {
-      const readSize = Math.min(CHUNK_SIZE, remaining)
-      const position = remaining - readSize
-      remaining = position
-
-      let chunk: Buffer
-      let fd: number | undefined
-      try {
-        fd = fs.openSync(filePath, 'r')
-        chunk = Buffer.alloc(readSize)
-        fs.readSync(fd, chunk, 0, readSize, position)
-      } catch {
-        break
-      } finally {
-        if (fd !== undefined) fs.closeSync(fd)
-      }
-
-      const text = chunk.toString('utf-8') + partial
-      const lines = text.split('\n')
-      // First element may be a partial line (no newline at start of chunk)
-      partial = lines[0]
-      const completeLines = lines.slice(1).reverse()
-      linesFound = [...completeLines, ...linesFound]
+    const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
+    let fd: number
+    try {
+      fd = fs.openSync(filePath, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+    } catch {
+      return [] // gone, or turned into a symlink since the lstat above
     }
 
-    // Add any remaining partial line
-    if (partial.trim()) linesFound = [partial, ...linesFound]
-
-    const observations: Observation[] = []
-    const linesToProcess = linesFound.slice(-limit)
-
-    for (const line of linesToProcess) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
+    try {
+      let fstat: fs.Stats
       try {
-        const raw = JSON.parse(trimmed) as unknown
-        const result = ObservationSchema.safeParse(raw)
-        if (result.success) {
-          observations.push({
-            timestamp: result.data.timestamp,
-            event: result.data.event,
-            tool: result.data.tool ?? null,
-            session: result.data.session ?? '',
-            raw: result.data.raw ?? null,
-          })
+        fstat = fs.fstatSync(fd)
+      } catch {
+        return []
+      }
+      if (!fstat.isFile()) return [] // type changed between lstat and open
+
+      const fileSize = fstat.size
+      if (fileSize === 0) return []
+
+      // Read backwards in chunks to find the last `limit` lines
+      const CHUNK_SIZE = 16 * 1024 // 16KB
+      let remaining = fileSize
+      let linesFound: string[] = []
+      let partial = ''
+
+      while (remaining > 0 && linesFound.length < limit) {
+        const readSize = Math.min(CHUNK_SIZE, remaining)
+        const position = remaining - readSize
+        remaining = position
+
+        const chunk = Buffer.alloc(readSize)
+        try {
+          fs.readSync(fd, chunk, 0, readSize, position)
+        } catch {
+          break
         }
+
+        const text = chunk.toString('utf-8') + partial
+        const lines = text.split('\n')
+        // First element may be a partial line (no newline at start of chunk)
+        partial = lines[0]
+        const completeLines = lines.slice(1).reverse()
+        linesFound = [...completeLines, ...linesFound]
+      }
+
+      // Add any remaining partial line
+      if (partial.trim()) linesFound = [partial, ...linesFound]
+
+      const observations: Observation[] = []
+      const linesToProcess = linesFound.slice(-limit)
+
+      for (const line of linesToProcess) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        try {
+          const raw = JSON.parse(trimmed) as unknown
+          const result = ObservationSchema.safeParse(raw)
+          if (result.success) {
+            observations.push({
+              timestamp: result.data.timestamp,
+              event: result.data.event,
+              tool: result.data.tool ?? null,
+              session: result.data.session ?? '',
+              raw: result.data.raw ?? null,
+            })
+          }
+        } catch {
+          log.warn(`[HomunculusParser] Skipping malformed observation line`)
+        }
+      }
+
+      return observations
+    } finally {
+      try {
+        fs.closeSync(fd)
       } catch {
-        log.warn(`[HomunculusParser] Skipping malformed observation line`)
+        // best-effort close, mirrors safe-fs.ts's readRegularFileCappedSync
       }
     }
-
-    return observations
   }
 
   /**
@@ -193,15 +229,15 @@ export class HomunculusParserService {
 
       for (const file of files) {
         const filePath = path.join(evolvedDir, file)
+        const capped = readRegularFileCappedSync(filePath, HOMUNCULUS_READ_CAP)
+        if (capped === null) continue // symlink, FIFO, directory, or unreadable — skipped, not logged (was a silent stat.isFile() skip before too)
         try {
-          const stat = fs.statSync(filePath)
-          if (!stat.isFile()) continue
-          const content = fs.readFileSync(filePath, 'utf-8')
+          const content = capped.buf.toString('utf-8')
           artifacts.push({
             name: path.basename(file, path.extname(file)),
             type,
             filePath,
-            lastModified: stat.mtime.toISOString(),
+            lastModified: this._mtime(filePath),
             content: content.slice(0, 500), // preview only
           })
         } catch (err) {
