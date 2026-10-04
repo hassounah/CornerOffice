@@ -15,7 +15,8 @@ import type {
   SandboxManagerWorktreeDeps,
 } from '../main/services/sandbox-manager'
 import { resolveBase, ensure } from '../main/services/sandbox-worktree'
-import { worktreePath, cardDir } from '../main/services/sandbox-spec'
+import { worktreePath, cardDir, settingsOverlayPath } from '../main/services/sandbox-spec'
+import { prepareClaudeConfig } from '../main/services/sandbox-claude-config'
 import type { SandboxImageService, ImageState } from '../main/services/sandbox-image'
 import { FakeDockerRunner } from './helpers/fake-docker-runner'
 import { makeTmpDir, git, initRepo, writeFile, commitAll, makeSimpleRepo, serviceEnvOverrides } from './helpers/git-fixtures'
@@ -57,13 +58,15 @@ afterEach(() => {
   sandboxSettings.disabled = COMMITTED_DISABLED_DEFAULT
 })
 
-function fakeSandboxPaths(realHome: string): { sandboxesRoot: string; sandboxStateRoot: string; claudeDir: string; claudeJson: string; eventsRoot: string; rwMountRoots: string[] } {
+function fakeSandboxPaths(realHome: string): { sandboxesRoot: string; sandboxStateRoot: string; claudeDir: string; claudeJson: string; claudeSettings: string; claudeMd: string; claudeSettingsLocal: string; claudeRoDirs: string[]; claudeShadowDirs: string[]; eventsRoot: string; rwMountRoots: string[] } {
   const sandboxesRoot = path.join(realHome, '.corner-office', 'sandboxes')
   const sandboxStateRoot = path.join(realHome, '.corner-office', 'sandbox')
   const claudeDir = path.join(realHome, '.claude')
   const claudeJson = path.join(realHome, '.claude.json')
   const eventsRoot = path.join(realHome, '.corner-office', 'events')
-  return { sandboxesRoot, sandboxStateRoot, claudeDir, claudeJson, eventsRoot, rwMountRoots: [claudeDir, sandboxesRoot, sandboxStateRoot, eventsRoot] }
+  const claudeRoDirs = ['plugins', 'commands', 'agents', 'skills', 'hooks'].map((d) => path.join(claudeDir, d))
+  const claudeShadowDirs = ['shell-snapshots', 'session-env', 'backups', 'security', 'ide'].map((d) => path.join(claudeDir, d))
+  return { sandboxesRoot, sandboxStateRoot, claudeDir, claudeJson, claudeSettings: path.join(claudeDir, 'settings.json'), claudeMd: path.join(claudeDir, 'CLAUDE.md'), claudeSettingsLocal: path.join(claudeDir, 'settings.local.json'), claudeRoDirs, claudeShadowDirs, eventsRoot, rwMountRoots: [claudeDir, sandboxesRoot, sandboxStateRoot, eventsRoot] }
 }
 
 function fakeImage(state: ImageState['state'] = 'ready'): SandboxImageService {
@@ -466,6 +469,65 @@ describe('getEligibility — claude-home-missing', () => {
     await manager.getEligibility('myslug')
     expect(fs.existsSync(path.join(realHome, '.claude'))).toBe(false)
     expect(fs.existsSync(path.join(realHome, '.claude.json'))).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// claude-config-invalid (#0030): the same lstat rules Start's prepare uses
+// ---------------------------------------------------------------------------
+
+describe('getEligibility — claude-config-invalid', () => {
+  function symlinkClaudeEntry(realHome: string, name: string): void {
+    const target = path.join(realHome, '..', `real-${name}`)
+    fs.mkdirSync(target, { recursive: true })
+    fs.symlinkSync(target, path.join(realHome, '.claude', name))
+  }
+
+  it('symlinked ~/.claude/skills', async () => {
+    sandboxSettings.disabled = false
+    const { realHome, repo, makeDeps } = setup()
+    symlinkClaudeEntry(realHome, 'skills')
+    makeSimpleRepo(repo, 'main')
+    const manager = createSandboxManager(makeDeps())
+    expect(await manager.getEligibility('myslug')).toEqual({ ok: false, reason: 'claude-config-invalid' })
+  })
+
+  it('symlinked shadowed ~/.claude/ide', async () => {
+    sandboxSettings.disabled = false
+    const { realHome, repo, makeDeps } = setup()
+    symlinkClaudeEntry(realHome, 'ide')
+    makeSimpleRepo(repo, 'main')
+    const manager = createSandboxManager(makeDeps())
+    expect(await manager.getEligibility('myslug')).toEqual({ ok: false, reason: 'claude-config-invalid' })
+  })
+
+  it('a file where a folder belongs', async () => {
+    sandboxSettings.disabled = false
+    const { realHome, repo, makeDeps } = setup()
+    fs.writeFileSync(path.join(realHome, '.claude', 'plugins'), 'x')
+    makeSimpleRepo(repo, 'main')
+    const manager = createSandboxManager(makeDeps())
+    expect(await manager.getEligibility('myslug')).toEqual({ ok: false, reason: 'claude-config-invalid' })
+  })
+
+  it('claude-home-missing wins when ~/.claude.json is missing too', async () => {
+    sandboxSettings.disabled = false
+    const { realHome, repo, makeDeps } = setup()
+    symlinkClaudeEntry(realHome, 'skills')
+    fs.rmSync(path.join(realHome, '.claude.json'), { force: true })
+    makeSimpleRepo(repo, 'main')
+    const manager = createSandboxManager(makeDeps())
+    expect(await manager.getEligibility('myslug')).toEqual({ ok: false, reason: 'claude-home-missing' })
+  })
+
+  it('is read-only: nothing under ~/.claude is created by the check', async () => {
+    sandboxSettings.disabled = false
+    const { realHome, repo, makeDeps } = setup()
+    makeSimpleRepo(repo, 'main')
+    const before = fs.readdirSync(path.join(realHome, '.claude')).sort()
+    const manager = createSandboxManager(makeDeps())
+    await manager.getEligibility('myslug')
+    expect(fs.readdirSync(path.join(realHome, '.claude')).sort()).toEqual(before)
   })
 })
 
@@ -893,8 +955,9 @@ describe('getEligibility — additional coverage', () => {
    *  directory. Mirrors what a real `preparing` run would have already done
    *  for a previously-prepared sandbox, so the real `planMounts` (which
    *  needs every fixed mount source to exist) has something to check. */
-  function precreateRemainingMountSources(realHome: string, repo: string, slug: string): void {
+  function precreateRemainingMountSources(realHome: string, repo: string, slug: string, withClaudeConfig: boolean = true): void {
     const paths = fakeSandboxPaths(realHome)
+    if (withClaudeConfig) expect(prepareClaudeConfig(paths, slug)).toEqual({ ok: true }) // 0030: ro config sources + per-sandbox copies
     fs.mkdirSync(cardDir(paths, slug), { recursive: true })
     fs.mkdirSync(path.join(paths.claudeDir, 'channels'), { recursive: true }) // §14.5 #2: pre-created as the mount target for cardDir
     fs.mkdirSync(path.join(paths.eventsRoot, slug), { recursive: true })
@@ -935,6 +998,20 @@ describe('getEligibility — additional coverage', () => {
     }
     const manager = createSandboxManager(makeDeps({ config }))
     expect(await manager.getEligibility('myslug')).toEqual({ ok: false, reason: 'docs-root-unsafe' })
+  })
+
+  it('when $WT exists but the 0030 config sources do not yet (an upgrade), eligibility falls back and stays ok, with no side effects', async () => {
+    sandboxSettings.disabled = false
+    const { repo, realHome, gitService, makeDeps } = setup()
+    makeSimpleRepo(repo, 'main')
+    const paths = fakeSandboxPaths(realHome)
+    const ensureResult = await ensure(gitService, { root: repo, workspaceRoots: [repo] }, paths, 'myslug', 'main')
+    expect(ensureResult.ok).toBe(true)
+    precreateRemainingMountSources(realHome, repo, 'myslug', false)
+    const manager = createSandboxManager(makeDeps())
+    expect(await manager.getEligibility('myslug')).toMatchObject({ ok: true, baseBranch: 'main' })
+    expect(fs.existsSync(paths.claudeMd)).toBe(false)
+    expect(fs.existsSync(settingsOverlayPath(paths, 'myslug'))).toBe(false)
   })
 
   it('when $WT already exists, a symlinked .git/hooks makes the real planMounts call return unsafe-path (Fix 3.5 #3)', async () => {

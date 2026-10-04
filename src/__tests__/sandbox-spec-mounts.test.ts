@@ -9,6 +9,9 @@ import {
   hasMemoryMdMount,
   worktreePath,
   cardDir,
+  settingsOverlayPath,
+  sandboxClaudeJsonPath,
+  claudeShadowSource,
 } from '../main/services/sandbox-spec'
 import type {
   PlanMountsFacts,
@@ -64,6 +67,16 @@ function makeFixture(): Fixture {
 
   mkdir(paths.claudeDir)
   touch(paths.claudeJson, '{}')
+  touch(paths.claudeSettings, '{}')
+  touch(settingsOverlayPath(paths, slug), '{}')
+  touch(sandboxClaudeJsonPath(paths, slug), '{}')
+  touch(paths.claudeMd)
+  touch(paths.claudeSettingsLocal, '{}')
+  for (const d of paths.claudeRoDirs) mkdir(d)
+  for (const d of paths.claudeShadowDirs) {
+    mkdir(d)
+    mkdir(claudeShadowSource(paths, slug, d))
+  }
   mkdir(cardDir(paths, slug))
   mkdir(path.join(paths.claudeDir, 'channels'))
 
@@ -401,6 +414,121 @@ describe('planMounts — docs_root', () => {
     if (!result.ok) return
     const docsMount = result.mounts.find((m) => m.target === path.join(fixture.repo, rel))
     expect(docsMount?.provenance).toBe('app')
+  })
+})
+
+// ── planMounts: settings overlay (0030 §4.4) ────────────────────────────────
+
+describe('planMounts — settings overlay', () => {
+  it('layers the ro config mounts over ~/.claude in TRD order, with a per-sandbox rw claude.json', () => {
+    const { paths, slug, baseFacts } = makeFixture()
+    const result = planMounts(baseFacts)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const expected = [
+      [paths.claudeDir, paths.claudeDir, false],
+      [settingsOverlayPath(paths, slug), paths.claudeSettings, true],
+      ...paths.claudeRoDirs.map((d) => [d, d, true]),
+      [paths.claudeMd, paths.claudeMd, true],
+      [paths.claudeSettingsLocal, paths.claudeSettingsLocal, true],
+      ...paths.claudeShadowDirs.map((d) => [claudeShadowSource(paths, slug, d), d, false]),
+      [sandboxClaudeJsonPath(paths, slug), paths.claudeJson, false],
+      [cardDir(paths, slug), path.join(paths.claudeDir, 'channels'), false],
+    ]
+    const head = result.mounts.slice(0, expected.length).map((m) => [m.source, m.target, m.readonly])
+    expect(head).toEqual(expected)
+  })
+
+  it('mounts settings.local.json read-only at its own path, right after CLAUDE.md', () => {
+    const { paths, baseFacts } = makeFixture()
+    const result = planMounts(baseFacts)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const mdIndex = result.mounts.findIndex((m) => m.target === paths.claudeMd)
+    expect(result.mounts[mdIndex + 1]).toMatchObject({ source: paths.claudeSettingsLocal, target: paths.claudeSettingsLocal, readonly: true })
+  })
+
+  it('mounts the five shadow dirs read-write after CLAUDE.md and settings.local.json, sourced under <state root>/<slug>/claude-shadow', () => {
+    const { paths, slug, baseFacts } = makeFixture()
+    const result = planMounts(baseFacts)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const shadowTargets = ['shell-snapshots', 'session-env', 'backups', 'security', 'ide'].map((n) => path.join(paths.claudeDir, n))
+    expect(paths.claudeShadowDirs).toEqual(shadowTargets)
+    const mdIndex = result.mounts.findIndex((m) => m.target === paths.claudeSettingsLocal)
+    const shadows = result.mounts.slice(mdIndex + 1, mdIndex + 1 + shadowTargets.length)
+    expect(shadows.map((m) => m.target)).toEqual(shadowTargets)
+    for (const m of shadows) {
+      expect(m.readonly).toBe(false)
+      expect(m.source).toBe(path.join(paths.sandboxStateRoot, slug, 'claude-shadow', path.basename(m.target)))
+    }
+  })
+
+  it.each(['shell-snapshots', 'session-env', 'backups', 'security', 'ide'])('a missing %s shadow source fails the plan with unsafe-path', (name) => {
+    const { paths, slug, baseFacts } = makeFixture()
+    fs.rmSync(claudeShadowSource(paths, slug, path.join(paths.claudeDir, name)), { recursive: true, force: true })
+    expect(planMounts(baseFacts)).toEqual({ ok: false, reason: 'unsafe-path' })
+  })
+
+  it.each(['shell-snapshots', 'session-env', 'backups', 'security', 'ide'])('a missing %s shadow target fails the plan with unsafe-path', (name) => {
+    const { paths, baseFacts } = makeFixture()
+    fs.rmSync(path.join(paths.claudeDir, name), { recursive: true, force: true })
+    expect(planMounts(baseFacts)).toEqual({ ok: false, reason: 'unsafe-path' })
+  })
+
+  it('no longer uses the host ~/.claude.json as a mount source', () => {
+    const { paths, baseFacts } = makeFixture()
+    const result = planMounts(baseFacts)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.mounts.map((m) => m.source)).not.toContain(paths.claudeJson)
+    expect(result.mounts.filter((m) => m.target === paths.claudeJson)).toHaveLength(1)
+  })
+
+  it.each([
+    ['settings overlay', (p: ReturnType<typeof sandboxPaths>, slug: string) => settingsOverlayPath(p, slug)],
+    ['sandbox claude.json', (p: ReturnType<typeof sandboxPaths>, slug: string) => sandboxClaudeJsonPath(p, slug)],
+    ['CLAUDE.md', (p: ReturnType<typeof sandboxPaths>) => p.claudeMd],
+    ['settings.local.json', (p: ReturnType<typeof sandboxPaths>) => p.claudeSettingsLocal],
+    ['plugins dir', (p: ReturnType<typeof sandboxPaths>) => p.claudeRoDirs[0]],
+  ])('a missing %s source fails the plan with unsafe-path', (_label, pick) => {
+    const { paths, slug, baseFacts } = makeFixture()
+    fs.rmSync(pick(paths, slug), { recursive: true, force: true })
+    expect(planMounts(baseFacts)).toEqual({ ok: false, reason: 'unsafe-path' })
+  })
+
+  it('changes the specHash relative to the 0029 plan, and diffMountPlans reports ro entries, one rw claude.json, the rw shadow dirs and the removed host file', () => {
+    const { paths, slug, baseFacts } = makeFixture()
+    const result = planMounts(baseFacts)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    // The 0029 plan: no overlay mounts, and the host ~/.claude.json as the rw source.
+    const newSources = new Set([
+      settingsOverlayPath(paths, slug),
+      sandboxClaudeJsonPath(paths, slug),
+      paths.claudeMd,
+      paths.claudeSettingsLocal,
+      ...paths.claudeRoDirs,
+      ...paths.claudeShadowDirs.map((d) => claudeShadowSource(paths, slug, d)),
+    ])
+    const oldPlan: Mount[] = result.mounts.filter((m) => !newSources.has(m.source))
+    oldPlan.splice(1, 0, { source: paths.claudeJson, target: paths.claudeJson, readonly: false, provenance: 'app' })
+    const hashInput = (plan: readonly Mount[]): SpecHashInput => ({ plan, port: 20001, uid: 1000, gid: 1000, home: baseFacts.home, base: 'main', imageId: 'sha256:aaa' })
+    expect(specHash(hashInput(result.mounts))).not.toBe(specHash(hashInput(oldPlan)))
+
+    const diff = diffMountPlans(oldPlan.map(({ source, target, readonly }) => ({ source, target, readonly })), result.mounts)
+    const reported = new Map(diff.newHostMounts.map((n) => [n.path, n.readonly]))
+    expect(reported.get(settingsOverlayPath(paths, slug))).toBe(true)
+    expect(reported.get(paths.claudeMd)).toBe(true)
+    for (const d of paths.claudeRoDirs) expect(reported.get(d)).toBe(true)
+    expect(reported.get(sandboxClaudeJsonPath(paths, slug))).toBe(false)
+    for (const d of paths.claudeShadowDirs) expect(reported.get(claudeShadowSource(paths, slug, d))).toBe(false)
+    // One rw claude.json plus the five rw shadow dirs, all per-sandbox.
+    expect(diff.newHostMounts.filter((n) => !n.readonly && n.path.includes(path.join('sandbox', slug)))).toHaveLength(1 + paths.claudeShadowDirs.length)
+    expect(diff.removedHostMounts).toEqual([paths.claudeJson])
   })
 })
 

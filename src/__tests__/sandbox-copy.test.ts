@@ -16,6 +16,7 @@ import {
   STOP_UNCONFIRMED_CHIP,
   isSessionStopping,
   startFailureMessage,
+  recreateFailureMessage,
   describeRecreatePlan,
   READ_ONLY_PROTECTIONS_COPY,
   unmergedLine,
@@ -26,6 +27,7 @@ import {
 } from '../renderer/utils/sandbox-copy'
 import type { StartFailureCode, HandOffFailureCode, DeleteFailureCode, RecreateFailureCode } from '../renderer/utils/sandbox-copy'
 import type { EligibilityReason, EligibilityWarning, RecreatePlan, SandboxStatus } from '../main/types/sandbox'
+import { CLAUDE_CONFIG_LABELS, CLAUDE_CONFIG_PROBLEMS, claudeConfigDetail } from '../main/types/claude-config'
 
 // ---------------------------------------------------------------------------
 // sandbox-copy.ts — the failure-copy tables (TRD §3.15.3, UX-H2, §14.5). Each
@@ -37,6 +39,7 @@ import type { EligibilityReason, EligibilityWarning, RecreatePlan, SandboxStatus
 const ALL_REASONS: Record<EligibilityReason, true> = {
   'sandbox-disabled': true,
   'claude-home-missing': true,
+  'claude-config-invalid': true,
   'docker-not-installed': true,
   'docker-daemon-down': true,
   'docker-no-permission': true,
@@ -67,10 +70,11 @@ const ALL_START: Record<StartFailureCode, true> = {
   DOCKER_UNAVAILABLE: true,
   FIREWALL_FAILED: true,
   SPAWN_FAILED: true,
+  CLAUDE_CONFIG_INVALID: true,
 }
 const ALL_HANDOFF: Record<HandOffFailureCode, true> = { DIRTY: true, NOT_ON_BRANCH: true, NO_WORKTREE: true, LOCKED: true, SESSION_ENDING: true }
 const ALL_DELETE: Record<DeleteFailureCode, true> = { SESSION_RUNNING: true, DIRTY_NOT_ACKNOWLEDGED: true, FAILED: true }
-const ALL_RECREATE: Record<RecreateFailureCode, true> = { SESSION_RUNNING: true, PLAN_CHANGED: true, FAILED: true, DOCKER_UNAVAILABLE: true }
+const ALL_RECREATE: Record<RecreateFailureCode, true> = { SESSION_RUNNING: true, PLAN_CHANGED: true, FAILED: true, DOCKER_UNAVAILABLE: true, CLAUDE_CONFIG_INVALID: true }
 const ALL_CHANNEL: Record<SandboxStatus['channel'], true> = { connected: true, connecting: true, 'plugin-outdated': true, none: true, unavailable: true }
 const ALL_PLAN_REASONS: Record<RecreatePlan['reason'], true> = { image: true, 'mount-plan': true, port: true, 'new-container': true }
 
@@ -289,5 +293,59 @@ describe('isSessionStopping', () => {
     expect(isSessionStopping('stop-unconfirmed')).toBe(true)
     for (const state of ['idle', 'preparing', 'running', undefined] as const) expect(isSessionStopping(state)).toBe(false)
     expect(STOP_UNCONFIRMED_CHIP).toBe('Still stopping, retrying.')
+  })
+})
+
+describe('Claude config failure copy (#0030)', () => {
+  it('has start copy that says nothing was started, and no log hint', () => {
+    expect(START_FAILURE_COPY.CLAUDE_CONFIG_INVALID).toContain("Your Claude Code configuration couldn't be prepared for the sandbox, so nothing was started.")
+    expect(START_FAILURE_COPY.CLAUDE_CONFIG_INVALID).not.toContain(APP_LOG_HINT)
+  })
+
+  it('has recreate copy that says the existing sandbox is unchanged, and no log hint', () => {
+    const text = RECREATE_FAILURE_COPY.CLAUDE_CONFIG_INVALID
+    expect(text).toContain("Your Claude Code configuration couldn't be prepared for the sandbox, so it wasn't recreated. Your existing sandbox is unchanged.")
+    expect(text).not.toContain(APP_LOG_HINT)
+  })
+
+  it('ends every detail with a remedy', () => {
+    for (const label of CLAUDE_CONFIG_LABELS) {
+      for (const problem of CLAUDE_CONFIG_PROBLEMS) expect(claudeConfigDetail(label, problem).endsWith('then try again.')).toBe(true)
+    }
+  })
+
+  it('has eligibility copy for a bad ~/.claude entry that ends with a remedy', () => {
+    expect(ELIGIBILITY_COPY['claude-config-invalid']).toContain('Replace it with a real file or folder, then try again.')
+  })
+
+  it('has a distinct fixed detail for every label and problem, never a raw path', () => {
+    const details = CLAUDE_CONFIG_LABELS.flatMap((label) => CLAUDE_CONFIG_PROBLEMS.map((problem) => claudeConfigDetail(label, problem)))
+    expect(new Set(details).size).toBe(details.length)
+    for (const d of details) {
+      expect(d.length).toBeGreaterThan(0)
+      expect(d).not.toContain('/home')
+    }
+  })
+
+  it('words the documented examples', () => {
+    expect(claudeConfigDetail('commands', 'wrong-type')).toBe("~/.claude/commands exists but isn't a folder. Move or remove it, then try again.")
+    expect(claudeConfigDetail('settings.json', 'wrong-type')).toBe("~/.claude/settings.json exists but isn't a regular file. Move or remove it, then try again.")
+    expect(claudeConfigDetail('skills', 'symlink')).toBe("~/.claude/skills is a symbolic link, which sandboxes can't use. Replace it with a folder, then try again.")
+    expect(claudeConfigDetail('settings.json', 'too-large')).toBe('~/.claude/settings.json is too large to copy into the sandbox. Make it smaller, then try again.')
+    expect(claudeConfigDetail('settings.json', 'invalid-json')).toBe("~/.claude/settings.json isn't a valid settings file (it must be a JSON object). Fix it, then try again.")
+    expect(claudeConfigDetail('.claude.json', 'unreadable')).toBe("~/.claude.json couldn't be read. Check that it exists and that you can read it, then try again.")
+    expect(claudeConfigDetail('sandbox-state', 'write-failed')).toBe(
+      "The sandbox's state folder in ~/.corner-office/sandbox couldn't be created or written. Check the folder's permissions and free space, then try again.",
+    )
+  })
+
+  it('prefixes the detail for CLAUDE_CONFIG_INVALID only', () => {
+    const detail = claudeConfigDetail('commands', 'wrong-type')
+    expect(startFailureMessage('CLAUDE_CONFIG_INVALID', null, detail)).toBe(`${detail} ${START_FAILURE_COPY.CLAUDE_CONFIG_INVALID}`)
+    expect(startFailureMessage('CLAUDE_CONFIG_INVALID')).toBe(START_FAILURE_COPY.CLAUDE_CONFIG_INVALID)
+    expect(startFailureMessage('CONTAINER_FAILED', null, detail)).toBe(START_FAILURE_COPY.CONTAINER_FAILED)
+    expect(recreateFailureMessage('CLAUDE_CONFIG_INVALID', detail)).toBe(`${detail} ${RECREATE_FAILURE_COPY.CLAUDE_CONFIG_INVALID}`)
+    expect(recreateFailureMessage('CLAUDE_CONFIG_INVALID')).toBe(RECREATE_FAILURE_COPY.CLAUDE_CONFIG_INVALID)
+    expect(recreateFailureMessage('FAILED', detail)).toBe(RECREATE_FAILURE_COPY.FAILED)
   })
 })

@@ -194,6 +194,10 @@ describe('effectiveAllowlist', () => {
     }
   })
 
+  it('includes the OAuth token host so in-container login refresh works', () => {
+    expect(effectiveAllowlist({}, 'my-ws')).toContain('platform.claude.com')
+  })
+
   it('merges defaults, global additions and workspace additions', () => {
     const result = effectiveAllowlist(
       {

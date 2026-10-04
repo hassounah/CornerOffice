@@ -12,11 +12,13 @@ import type {
   SandboxManagerWorktreeDeps,
 } from '../main/services/sandbox-manager'
 import { ensure, resolveBase, type WorktreeStatus } from '../main/services/sandbox-worktree'
-import { cardDir, containerName, LABEL, CREATE_TIMEOUT_MS } from '../main/services/sandbox-spec'
+import { cardDir, containerName, LABEL, CREATE_TIMEOUT_MS, settingsOverlayPath, sandboxClaudeJsonPath, claudeShadowSource } from '../main/services/sandbox-spec'
 import type { SandboxImageService, ImageState } from '../main/services/sandbox-image'
 import type { SandboxConfig } from '../main/types/config'
 import type { SandboxNotice } from '../main/types/sandbox'
 import type { DockerRunner } from '../main/services/docker-runner'
+import { CLAUDE_JSON_SEED_CAP, SANDBOX_DENY_RULES } from '../main/services/sandbox-claude-config'
+import { claudeConfigDetail } from '../main/types/claude-config'
 import { FakeDockerRunner } from './helpers/fake-docker-runner'
 import { makeTmpDir, makeSimpleRepo, serviceEnvOverrides, initRepo, writeFile, commitAll } from './helpers/git-fixtures'
 import dockerVersionFixture from './fixtures/docker-version.json'
@@ -46,13 +48,15 @@ afterEach(() => {
   sandboxSettings.disabled = false // restore the committed default
 })
 
-function fakeSandboxPaths(realHome: string): { sandboxesRoot: string; sandboxStateRoot: string; claudeDir: string; claudeJson: string; eventsRoot: string; rwMountRoots: string[] } {
+function fakeSandboxPaths(realHome: string): { sandboxesRoot: string; sandboxStateRoot: string; claudeDir: string; claudeJson: string; claudeSettings: string; claudeMd: string; claudeSettingsLocal: string; claudeRoDirs: string[]; claudeShadowDirs: string[]; eventsRoot: string; rwMountRoots: string[] } {
   const sandboxesRoot = path.join(realHome, '.corner-office', 'sandboxes')
   const sandboxStateRoot = path.join(realHome, '.corner-office', 'sandbox')
   const claudeDir = path.join(realHome, '.claude')
   const claudeJson = path.join(realHome, '.claude.json')
   const eventsRoot = path.join(realHome, '.corner-office', 'events')
-  return { sandboxesRoot, sandboxStateRoot, claudeDir, claudeJson, eventsRoot, rwMountRoots: [claudeDir, sandboxesRoot, sandboxStateRoot, eventsRoot] }
+  const claudeRoDirs = ['plugins', 'commands', 'agents', 'skills', 'hooks'].map((d) => path.join(claudeDir, d))
+  const claudeShadowDirs = ['shell-snapshots', 'session-env', 'backups', 'security', 'ide'].map((d) => path.join(claudeDir, d))
+  return { sandboxesRoot, sandboxStateRoot, claudeDir, claudeJson, claudeSettings: path.join(claudeDir, 'settings.json'), claudeMd: path.join(claudeDir, 'CLAUDE.md'), claudeSettingsLocal: path.join(claudeDir, 'settings.local.json'), claudeRoDirs, claudeShadowDirs, eventsRoot, rwMountRoots: [claudeDir, sandboxesRoot, sandboxStateRoot, eventsRoot] }
 }
 
 function fakeImage(imageId: string = IMAGE_ID, state: ImageState['state'] = 'ready'): SandboxImageService {
@@ -934,5 +938,221 @@ describe('defensive fail-closed paths', () => {
     const result = await manager.ensureContainer('myslug')
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.code).toBe('RECREATE_REQUIRED')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #0030: read-only Claude config preparation
+// ---------------------------------------------------------------------------
+
+describe('0030 claude config preparation', () => {
+  const absentDocker = (): FakeDockerRunner => {
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], { error: NOT_FOUND_ERROR })
+    return docker
+  }
+  const mutating = (docker: FakeDockerRunner): string[] =>
+    docker.calls.map((c) => c.args[0]).filter((a) => a === 'create' || a === 'start' || a === 'rm')
+
+  it('create: writes the sanitized settings copy and a byte-identical claude.json seed, then creates', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const paths = fakeSandboxPaths(h.realHome)
+    fs.writeFileSync(path.join(h.realHome, '.claude', 'settings.json'), JSON.stringify({ permissions: { ask: ['a'], deny: ['d'] } }))
+    fs.writeFileSync(path.join(h.realHome, '.claude.json'), '{"seed":true}')
+    const docker = absentDocker()
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+
+    expect(result.ok).toBe(true)
+    expect(JSON.parse(fs.readFileSync(settingsOverlayPath(paths, 'myslug'), 'utf8'))).toEqual({ permissions: { deny: ['d', ...SANDBOX_DENY_RULES] } })
+    expect(fs.readFileSync(sandboxClaudeJsonPath(paths, 'myslug'), 'utf8')).toBe('{"seed":true}')
+    const create = docker.calls.find((c) => c.args[0] === 'create')
+    expect(create?.args.join(' ')).toContain(`source=${sandboxClaudeJsonPath(paths, 'myslug')},target=${paths.claudeJson}`)
+    expect(create?.args.join(' ')).toContain(`source=${settingsOverlayPath(paths, 'myslug')},target=${paths.claudeSettings},readonly`)
+  })
+
+  it('create: creates the host shadow targets and per-slug shadow sources, and mounts each read-write', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const paths = fakeSandboxPaths(h.realHome)
+    const docker = absentDocker()
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+
+    expect(result.ok).toBe(true)
+    const create = docker.calls.find((c) => c.args[0] === 'create')
+    for (const d of paths.claudeShadowDirs) {
+      const source = claudeShadowSource(paths, 'myslug', d)
+      expect(fs.statSync(d).isDirectory()).toBe(true)
+      expect(fs.statSync(source).isDirectory()).toBe(true)
+      expect(create?.args.join(' ')).toContain(`source=${source},target=${d}`)
+      expect(create?.args.join(' ')).not.toContain(`source=${source},target=${d},readonly`)
+    }
+  })
+
+  it('create re-seeds claude.json from the host even when a stale copy exists', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const paths = fakeSandboxPaths(h.realHome)
+    await createSandboxManager(h.makeDeps({ docker: absentDocker() })).ensureContainer('myslug')
+    fs.writeFileSync(sandboxClaudeJsonPath(paths, 'myslug'), 'stale in-container state')
+
+    await createSandboxManager(h.makeDeps({ docker: absentDocker() })).ensureContainer('myslug')
+
+    expect(fs.readFileSync(sandboxClaudeJsonPath(paths, 'myslug'), 'utf8')).toBe('{}')
+  })
+
+  it('reuse: rewrites the settings copy but leaves claude.json untouched', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    h.sandboxConfig.workspaces.myslug = { channelPort: 25001, allowlist: [] }
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const paths = fakeSandboxPaths(h.realHome)
+    const createHash = await createAndCaptureSpecHash(h, 25001)
+    fs.writeFileSync(sandboxClaudeJsonPath(paths, 'myslug'), 'in-container state')
+    fs.writeFileSync(path.join(h.realHome, '.claude', 'settings.json'), '{"model":"edited"}')
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], { result: { stdout: inspectJson({ specLabel: createHash, port: 25001 }), stderr: '', exitCode: 0 } })
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+
+    expect(result.ok).toBe(true)
+    expect(mutating(docker)).toEqual([])
+    expect(JSON.parse(fs.readFileSync(settingsOverlayPath(paths, 'myslug'), 'utf8'))).toEqual({ model: 'edited', permissions: { deny: [...SANDBOX_DENY_RULES] } })
+    expect(fs.readFileSync(sandboxClaudeJsonPath(paths, 'myslug'), 'utf8')).toBe('in-container state')
+  })
+
+  it('a 0029-era container (host ~/.claude.json mount, no overlay) is RECREATE_REQUIRED mount-plan and nothing is removed', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    h.sandboxConfig.workspaces.myslug = { channelPort: 25001, allowlist: [] }
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const paths = fakeSandboxPaths(h.realHome)
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], {
+      result: { stdout: inspectJson({ specLabel: 'a'.repeat(64), port: 25001, mounts: [{ source: paths.claudeJson, target: paths.claudeJson, readonly: false }] }), stderr: '', exitCode: 0 },
+    })
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+
+    expect(result.ok).toBe(false)
+    if (result.ok || result.code !== 'RECREATE_REQUIRED') throw new Error('expected RECREATE_REQUIRED')
+    expect(result.plan.reason).toBe('mount-plan')
+    expect(result.plan.removedHostMounts).toContain(paths.claudeJson)
+    expect(result.plan.newHostMounts.find((m) => m.path === paths.claudeMd)?.readonly).toBe(true)
+    expect(mutating(docker)).toEqual([])
+  })
+
+  it('recreate re-seeds claude.json before rm/create', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const paths = fakeSandboxPaths(h.realHome)
+    const confirmedSpecHash = await createAndCaptureSpecHash(h)
+    fs.writeFileSync(sandboxClaudeJsonPath(paths, 'myslug'), 'stale')
+
+    expect(await createSandboxManager(h.makeDeps({ docker: absentDocker() })).recreate('myslug', false, confirmedSpecHash)).toEqual({ ok: true })
+
+    expect(fs.readFileSync(sandboxClaudeJsonPath(paths, 'myslug'), 'utf8')).toBe('{}')
+  })
+
+  it('invalid settings.json: ensureContainer returns CLAUDE_CONFIG_INVALID with fixed detail and docker sees no create/start/rm', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    fs.writeFileSync(path.join(h.realHome, '.claude', 'settings.json'), '{ not json SECRET')
+    const docker = absentDocker()
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+
+    expect(result).toEqual({ ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: claudeConfigDetail('settings.json', 'invalid-json') })
+    expect(mutating(docker)).toEqual([])
+  })
+
+  it('invalid config in recreate: CLAUDE_CONFIG_INVALID before any rm/create', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    fs.writeFileSync(path.join(h.realHome, '.claude', 'plugins'), 'a file where a folder belongs')
+    const docker = absentDocker()
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).recreate('myslug', false, 'x'.repeat(64))
+
+    expect(result).toEqual({ ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: claudeConfigDetail('plugins', 'wrong-type') })
+    expect(mutating(docker)).toEqual([])
+  })
+
+  it('a failing claude.json seed (host file over the cap) stops create before docker create', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const paths = fakeSandboxPaths(h.realHome)
+    const docker = absentDocker()
+    // The first create seeds fine; growing the host file afterwards makes only the forced re-seed fail.
+    const manager = createSandboxManager(h.makeDeps({ docker }))
+    await manager.ensureContainer('myslug')
+    docker.calls.length = 0
+    fs.truncateSync(paths.claudeJson, CLAUDE_JSON_SEED_CAP + 1)
+
+    const result = await manager.ensureContainer('myslug')
+
+    expect(result).toEqual({ ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: claudeConfigDetail('.claude.json', 'too-large') })
+    expect(mutating(docker)).toEqual([])
+  })
+
+  it('a failing claude.json seed during recreate (host file over the cap) returns CLAUDE_CONFIG_INVALID with no rm/create', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const paths = fakeSandboxPaths(h.realHome)
+    const confirmedSpecHash = await createAndCaptureSpecHash(h)
+    fs.truncateSync(paths.claudeJson, CLAUDE_JSON_SEED_CAP + 1)
+    const docker = absentDocker()
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).recreate('myslug', false, confirmedSpecHash)
+
+    expect(result).toEqual({ ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: claudeConfigDetail('.claude.json', 'too-large') })
+    expect(mutating(docker)).toEqual([])
+  })
+
+  it('delete removes both per-slug claude config files and the claude-shadow dir', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const paths = fakeSandboxPaths(h.realHome)
+    await createSandboxManager(h.makeDeps({ docker: absentDocker() })).ensureContainer('myslug')
+    expect(fs.existsSync(settingsOverlayPath(paths, 'myslug'))).toBe(true)
+    const shadowRoot = path.dirname(claudeShadowSource(paths, 'myslug', paths.claudeShadowDirs[0]))
+    fs.writeFileSync(path.join(claudeShadowSource(paths, 'myslug', paths.claudeShadowDirs[0]), 'state'), 'in-container')
+    expect(fs.existsSync(shadowRoot)).toBe(true)
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['rm'], { result: { stdout: '', stderr: '', exitCode: 0 } })
+
+    expect(await createSandboxManager(h.makeDeps({ docker })).delete('myslug', false)).toEqual({ ok: true })
+
+    expect(fs.existsSync(settingsOverlayPath(paths, 'myslug'))).toBe(false)
+    expect(fs.existsSync(sandboxClaudeJsonPath(paths, 'myslug'))).toBe(false)
+    expect(fs.existsSync(shadowRoot)).toBe(false)
+    // The host-side shadow targets belong to the user and stay.
+    for (const d of paths.claudeShadowDirs) expect(fs.existsSync(d)).toBe(true)
   })
 })

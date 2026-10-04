@@ -30,6 +30,18 @@ export const worktreePath = (paths: SandboxPaths, slug: string): string => path.
 /** SEC-M2: see `worktreePath`. */
 export const cardDir = (paths: SandboxPaths, slug: string): string => path.join(paths.sandboxStateRoot, slug, 'channels')
 
+/** SEC-M2: see `worktreePath`. Sanitized per-sandbox copy of settings.json, mounted read-only (0030 D3). */
+export const settingsOverlayPath = (paths: SandboxPaths, slug: string): string =>
+  path.join(paths.sandboxStateRoot, slug, 'claude-settings.json')
+
+/** SEC-M2: see `worktreePath`. Per-sandbox seeded `~/.claude.json`, mounted read-write (0030 D3). */
+export const sandboxClaudeJsonPath = (paths: SandboxPaths, slug: string): string =>
+  path.join(paths.sandboxStateRoot, slug, 'claude.json')
+
+/** SEC-M2: see `worktreePath`. Per-sandbox read-write dir shadowing one of `paths.claudeShadowDirs` (0030 C1). */
+export const claudeShadowSource = (paths: SandboxPaths, slug: string, hostDir: string): string =>
+  path.join(paths.sandboxStateRoot, slug, 'claude-shadow', path.basename(hostDir))
+
 /** Below Linux's default ephemeral range (32768+). */
 export const CHANNEL_PORT_RANGE = [20000, 32767] as const
 
@@ -347,7 +359,12 @@ export function planMounts(facts: PlanMountsFacts): PlanMountsResult {
   }
 
   add(paths.claudeDir, paths.claudeDir, false)
-  add(paths.claudeJson, paths.claudeJson, false)
+  add(settingsOverlayPath(paths, slug), paths.claudeSettings, true) // 0030: sanitized settings copy
+  for (const d of paths.claudeRoDirs) add(d, d, true) // 0030: plugins, commands, agents, skills, hooks
+  add(paths.claudeMd, paths.claudeMd, true) // 0030
+  add(paths.claudeSettingsLocal, paths.claudeSettingsLocal, true) // 0030 L4
+  for (const d of paths.claudeShadowDirs) add(claudeShadowSource(paths, slug, d), d, false) // 0030 C1: host-executed state, per-sandbox
+  add(sandboxClaudeJsonPath(paths, slug), paths.claudeJson, false) // 0030: per-sandbox source, never the host file
   add(cardDir(paths, slug), path.join(paths.claudeDir, 'channels'), false)
 
   add(gitDir, gitDir, false)

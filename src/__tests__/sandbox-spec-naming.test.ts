@@ -13,6 +13,8 @@ import {
   containerName,
   worktreePath,
   cardDir,
+  settingsOverlayPath,
+  sandboxClaudeJsonPath,
   assertMountSafe,
   validateEnvValue,
   validateBuildIds,
@@ -61,6 +63,8 @@ describe('naming', () => {
   it('worktreePath and cardDir derive from the sandboxPaths(realHome) object (SEC-M2)', () => {
     expect(worktreePath(paths, 'my-workspace')).toBe(path.join(paths.sandboxesRoot, 'my-workspace'))
     expect(cardDir(paths, 'my-workspace')).toBe(path.join(paths.sandboxStateRoot, 'my-workspace', 'channels'))
+    expect(settingsOverlayPath(paths, 'my-workspace')).toBe(path.join(paths.sandboxStateRoot, 'my-workspace', 'claude-settings.json'))
+    expect(sandboxClaudeJsonPath(paths, 'my-workspace')).toBe(path.join(paths.sandboxStateRoot, 'my-workspace', 'claude.json'))
   })
 })
 
