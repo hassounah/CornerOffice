@@ -70,9 +70,24 @@ export function PluginStatus(): React.ReactElement {
     }
   }, [])
 
+  // Initial load: state is only set from promise callbacks, and only while mounted.
   useEffect(() => {
-    void fetchStatus()
-  }, [fetchStatus])
+    let active = true
+    window.cornerOffice.plugin
+      .getStatus()
+      .then((response) => {
+        if (active) setStatus(unwrapIpc(response))
+      })
+      .catch((e: unknown) => {
+        if (active) setError(e instanceof Error ? e.message : String(e))
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   const handleInstallHooks = useCallback(async () => {
     setHooksLoading(true)

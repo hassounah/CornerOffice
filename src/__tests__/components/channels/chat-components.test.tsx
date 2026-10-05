@@ -333,3 +333,103 @@ describe('ChatPanel — sandbox provenance', () => {
     expect(screen.queryByText(/needs a newer corner-office plugin/)).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// ChatPanel — new-messages pill (derived from a per-session "seen" count)
+// ---------------------------------------------------------------------------
+
+describe('ChatPanel — new-messages pill', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(useWorkspaceStore).mockImplementation((selector) =>
+      selector({ workspaces: [{ slug: 'my-ws', path: '/home/user/project' }] } as Parameters<typeof selector>[0]),
+    )
+  })
+
+  const PILL = 'New messages ↓'
+  const msgs = (sessionId: string, n: number) =>
+    Array.from({ length: n }, (_, i) => makeMessage({ id: `${sessionId}-${i}`, sessionId, text: `m${i}` }))
+
+  function setStore(activeSessionId: string, messages: Record<string, ChatMessageType[]>) {
+    vi.mocked(useChannelsStore).mockImplementation((selector) =>
+      selector(
+        makeChannelsState({
+          sessions: [makeSession({ shortId: 'sess-1' }), makeSession({ shortId: 'sess-2' })],
+          messages,
+          activeSessionId,
+        }) as Parameters<typeof selector>[0],
+      ),
+    )
+  }
+
+  function scrollLog(atBottom: boolean) {
+    const log = document.querySelector('[role="log"]') as HTMLElement
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 1000 })
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 400 })
+    Object.defineProperty(log, 'scrollTop', { configurable: true, writable: true, value: atBottom ? 600 : 0 })
+    fireEvent.scroll(log)
+  }
+
+  it('shows the pill when a message arrives while scrolled up', () => {
+    setStore('sess-1', { 'sess-1': msgs('sess-1', 2) })
+    const { rerender } = render(<ChatPanel workspaceSlug="my-ws" />)
+    scrollLog(false)
+    setStore('sess-1', { 'sess-1': msgs('sess-1', 3) })
+    rerender(<ChatPanel workspaceSlug="my-ws" />)
+    expect(screen.getByText(PILL)).toBeInTheDocument()
+  })
+
+  it('hides the pill when scrolled back to the bottom', () => {
+    setStore('sess-1', { 'sess-1': msgs('sess-1', 2) })
+    const { rerender } = render(<ChatPanel workspaceSlug="my-ws" />)
+    scrollLog(false)
+    setStore('sess-1', { 'sess-1': msgs('sess-1', 3) })
+    rerender(<ChatPanel workspaceSlug="my-ws" />)
+    scrollLog(true)
+    expect(screen.queryByText(PILL)).toBeNull()
+  })
+
+  it('hides the pill when the jump-to-latest button is clicked', () => {
+    setStore('sess-1', { 'sess-1': msgs('sess-1', 2) })
+    const { rerender } = render(<ChatPanel workspaceSlug="my-ws" />)
+    scrollLog(false)
+    setStore('sess-1', { 'sess-1': msgs('sess-1', 3) })
+    rerender(<ChatPanel workspaceSlug="my-ws" />)
+    fireEvent.click(screen.getByText(PILL))
+    scrollLog(true)
+    expect(screen.queryByText(PILL)).toBeNull()
+  })
+
+  it('shows no stale pill after switching session while scrolled up', () => {
+    setStore('sess-1', { 'sess-1': msgs('sess-1', 2), 'sess-2': msgs('sess-2', 5) })
+    const { rerender } = render(<ChatPanel workspaceSlug="my-ws" />)
+    scrollLog(false)
+    setStore('sess-1', { 'sess-1': msgs('sess-1', 3), 'sess-2': msgs('sess-2', 5) })
+    rerender(<ChatPanel workspaceSlug="my-ws" />)
+    expect(screen.getByText(PILL)).toBeInTheDocument()
+    setStore('sess-2', { 'sess-1': msgs('sess-1', 3), 'sess-2': msgs('sess-2', 5) })
+    rerender(<ChatPanel workspaceSlug="my-ws" />)
+    expect(screen.queryByText(PILL)).toBeNull()
+  })
+
+  it('shows the pill again after a session switch, bottom, scroll up and a new message', () => {
+    setStore('sess-1', { 'sess-1': msgs('sess-1', 2), 'sess-2': msgs('sess-2', 5) })
+    const { rerender } = render(<ChatPanel workspaceSlug="my-ws" />)
+    setStore('sess-2', { 'sess-1': msgs('sess-1', 2), 'sess-2': msgs('sess-2', 5) })
+    rerender(<ChatPanel workspaceSlug="my-ws" />)
+    scrollLog(true)
+    scrollLog(false)
+    setStore('sess-2', { 'sess-1': msgs('sess-1', 2), 'sess-2': msgs('sess-2', 6) })
+    rerender(<ChatPanel workspaceSlug="my-ws" />)
+    expect(screen.getByText(PILL)).toBeInTheDocument()
+  })
+
+  it('shows the pill when scrolling up on mount with no prior at-bottom scroll event', () => {
+    setStore('sess-1', { 'sess-1': msgs('sess-1', 2) })
+    const { rerender } = render(<ChatPanel workspaceSlug="my-ws" />)
+    scrollLog(false)
+    setStore('sess-1', { 'sess-1': msgs('sess-1', 3) })
+    rerender(<ChatPanel workspaceSlug="my-ws" />)
+    expect(screen.getByText(PILL)).toBeInTheDocument()
+  })
+})

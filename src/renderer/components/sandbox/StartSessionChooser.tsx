@@ -107,13 +107,13 @@ function Segmented<T extends string>({
   wrap?: (choice: Choice<T>, render: (props: React.HTMLAttributes<HTMLButtonElement> | null) => React.ReactElement) => React.ReactElement
 }): React.ReactElement {
   const groupId = useId()
-  const refs = useRef<(HTMLButtonElement | null)[]>([])
 
   function onKeyDown(e: React.KeyboardEvent, index: number): void {
     const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
     if (step === 0) return
     e.preventDefault()
-    refs.current[(index + step + choices.length) % choices.length]?.focus()
+    const radios = (e.currentTarget as HTMLElement).closest('[role="radiogroup"]')?.querySelectorAll<HTMLButtonElement>('[role="radio"]')
+    radios?.[(index + step + choices.length) % choices.length]?.focus()
   }
 
   return (
@@ -127,9 +127,6 @@ function Segmented<T extends string>({
           const render = (props: React.HTMLAttributes<HTMLButtonElement> | null): React.ReactElement => (
             <button
               key={choice.value}
-              ref={(el) => {
-                refs.current[i] = el
-              }}
               type="button"
               role="radio"
               aria-checked={selected}
@@ -201,7 +198,8 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
   const [buildError, setBuildError] = useState(false)
   const [readyAcknowledged, setReadyAcknowledged] = useState(false)
   const [checking, setChecking] = useState(false)
-  const [statusChecked, setStatusChecked] = useState(false)
+  const [checkedSlug, setCheckedSlug] = useState<string | null>(null)
+  const statusChecked = checkedSlug === slug
   const [restoredFor, setRestoredFor] = useState<unknown>(null)
   const titleId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
@@ -235,9 +233,8 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
   // The store keeps the last status when a fetch fails, so "still no status once the fetch settled" means it failed.
   useEffect(() => {
     let current = true
-    setStatusChecked(false)
     const settle = (): void => {
-      if (current) setStatusChecked(true)
+      if (current) setCheckedSlug(slug)
     }
     void Promise.all([fetchStatus(slug), fetchEnvironment(false)]).then(settle)
     // A fetch that never settles must not leave "Checking…" with no way out.

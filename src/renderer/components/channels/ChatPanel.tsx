@@ -126,7 +126,18 @@ export function ChatPanel({ workspaceSlug, className = '' }: ChatPanelProps): Re
   // ─── Auto-scroll state ───────────────────────────────────────────────────
   const scrollRef = useRef<HTMLDivElement>(null)
   const [atBottom, setAtBottom] = useState(true)
-  const [hasNewMessages, setHasNewMessages] = useState(false)
+  const sessionKey = activeSession?.shortId ?? null
+  // Message count the user has "seen" (was at the bottom for), keyed by session so
+  // nothing carries over when the active session changes.
+  const [seen, setSeen] = useState<{ sessionId: string | null; count: number }>(() => ({
+    sessionId: sessionKey,
+    count: currentMessages.length,
+  }))
+  if (seen.sessionId !== sessionKey) {
+    setSeen({ sessionId: sessionKey, count: currentMessages.length })
+  }
+  const hasNewMessages =
+    !atBottom && seen.sessionId === sessionKey && currentMessages.length > seen.count
   const prevMessageCount = useRef(currentMessages.length)
 
   /** Check if scroll is near the bottom. */
@@ -153,13 +164,8 @@ export function ChatPanel({ workspaceSlug, className = '' }: ChatPanelProps): Re
   // Scroll to bottom on new messages when already at bottom
   useEffect(() => {
     const newCount = currentMessages.length
-    if (newCount > prevMessageCount.current) {
-      if (atBottom) {
-        scrollToBottom()
-        setHasNewMessages(false)
-      } else {
-        setHasNewMessages(true)
-      }
+    if (newCount > prevMessageCount.current && atBottom) {
+      scrollToBottom()
     }
     prevMessageCount.current = newCount
   }, [currentMessages.length, atBottom, scrollToBottom])
@@ -167,8 +173,8 @@ export function ChatPanel({ workspaceSlug, className = '' }: ChatPanelProps): Re
   const handleScroll = useCallback(() => {
     const isAtBottom = checkAtBottom()
     setAtBottom(isAtBottom)
-    if (isAtBottom) setHasNewMessages(false)
-  }, [checkAtBottom])
+    if (isAtBottom) setSeen({ sessionId: sessionKey, count: currentMessages.length })
+  }, [checkAtBottom, sessionKey, currentMessages.length])
 
   // ─── Input state ─────────────────────────────────────────────────────────
   const [inputText, setInputText] = useState('')
@@ -309,7 +315,7 @@ export function ChatPanel({ workspaceSlug, className = '' }: ChatPanelProps): Re
                 type="button"
                 onClick={() => {
                   scrollToBottom()
-                  setHasNewMessages(false)
+                  setSeen({ sessionId: sessionKey, count: currentMessages.length })
                 }}
                 className="
                   absolute bottom-3 left-1/2 -translate-x-1/2
