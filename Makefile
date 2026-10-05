@@ -1,22 +1,27 @@
 NODE_BIN := node_modules/.bin
-REQUIRED_NODE_MAJOR := 20
 
 # ARCH=x64 or ARCH=arm64 builds a single arch; empty builds every arch in electron-builder.yml
 ARCH ?=
 ARCH_FLAG := $(if $(ARCH),--$(ARCH))
 
-.PHONY: setup dev build package-deb package-rpm package-appimage dist clean install test test-watch lint help
+# Same range as engines.node in package.json
+NODE_CHECK = const [a,b,c]=process.versions.node.split(".").map(Number); \
+  const ok=(a===22&&(b>22||(b===22&&c>=2)))||(a===24&&b>=15)||a>=26; \
+  if(!ok){console.error("Error: Node.js ^22.22.2, ^24.15.0 or >=26 required (found v"+process.versions.node+"). Run: nvm install && nvm use");process.exit(1)}
+
+.PHONY: setup check-node dev build package-deb package-rpm package-appimage dist clean install test test-watch lint help
 .DEFAULT_GOAL := help
+
+# ──────────────────────────────────────────────────────────────────────────────
+# check-node: verify the Node.js version against engines.node
+# ──────────────────────────────────────────────────────────────────────────────
+check-node:
+	@node -e '$(NODE_CHECK)'
 
 # ──────────────────────────────────────────────────────────────────────────────
 # setup: verify Node.js version, install dependencies, print ready message
 # ──────────────────────────────────────────────────────────────────────────────
-setup:
-	@NODE_MAJOR=$$(node -e "process.stdout.write(process.versions.node.split('.')[0])"); \
-	if [ "$$NODE_MAJOR" -lt "$(REQUIRED_NODE_MAJOR)" ]; then \
-		echo "Error: Node.js v$(REQUIRED_NODE_MAJOR)+ required (found v$$NODE_MAJOR)"; \
-		exit 1; \
-	fi
+setup: check-node
 	pnpm install --frozen-lockfile
 	@echo ""
 	@echo "Corner Office is ready. Run 'make dev' to start."
@@ -24,7 +29,7 @@ setup:
 # ──────────────────────────────────────────────────────────────────────────────
 # dev: start Electron in development mode with hot reload
 # ──────────────────────────────────────────────────────────────────────────────
-dev:
+dev: check-node
 	$(NODE_BIN)/electron-vite dev
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -87,7 +92,7 @@ lint:
 help:
 	@echo "Corner Office"
 	@echo ""
-	@echo "  make setup            Install dependencies and verify Node.js"
+	@echo "  make setup            Verify Node.js and install dependencies"
 	@echo "  make dev              Start Electron in dev mode with hot reload"
 	@echo "  make build            Compile all processes for production"
 	@echo "  make dist             Build deb + AppImage (+ rpm if rpmbuild available)"

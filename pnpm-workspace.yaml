@@ -1,3 +1,10 @@
 onlyBuiltDependencies:
-  - electron
+  - electron      # removed in B7 (Electron >=42 has no install script)
   - esbuild
+shamefullyHoist: true          # was .npmrc shamefully-hoist=true
+strictPeerDependencies: false  # was .npmrc strict-peer-dependencies=false
+overrides:                     # moved verbatim from package.json "pnpm" (removed in B4)
+  '@lezer/common': 1.5.2
+  '@lezer/css': 1.3.6
+  '@lezer/javascript': 1.5.4
+  '@lezer/rust': 1.0.2
