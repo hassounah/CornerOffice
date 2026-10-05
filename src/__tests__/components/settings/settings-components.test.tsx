@@ -370,6 +370,41 @@ describe('HookSettings', () => {
     expect(window.cornerOffice.plugin.getStatus).toHaveBeenCalledTimes(1)
   })
 
+  it('shows a checking spinner first, then the status once the initial load resolves', async () => {
+    render(<HookSettings />)
+    expect(screen.getByRole('button', { name: 'Checking…' })).toBeDisabled()
+    expect(await screen.findByLabelText('Plugin status: Not installed')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled()
+  })
+
+  it('shows the error when the initial load fails', async () => {
+    ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    render(<HookSettings />)
+    expect(await screen.findByText(/boom/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled()
+  })
+
+  it('does not update state when unmounted before the initial load resolves', async () => {
+    let resolveStatus: (v: unknown) => void = () => {}
+    ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise((resolve) => { resolveStatus = resolve }),
+    )
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { unmount } = render(<HookSettings />)
+    unmount()
+    resolveStatus({ data: { installed: false, meetsMinimumVersion: false, eventsEnabled: false }, error: null })
+    await Promise.resolve()
+    expect(errorSpy).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  it('Refresh fetches the status again', async () => {
+    render(<HookSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh' }))
+    expect(await screen.findByRole('button', { name: 'Refresh' })).toBeEnabled()
+    expect(window.cornerOffice.plugin.getStatus).toHaveBeenCalledTimes(2)
+  })
+
   it('shows Install Hooks button when plugin installed, meets version, and events disabled', async () => {
     ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: false }, error: null,

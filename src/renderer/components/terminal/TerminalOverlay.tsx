@@ -134,7 +134,8 @@ export function TerminalOverlay({
   const isResizingRef = useRef(false)
   const resizeEdgeRef = useRef<ResizeEdge | null>(null)
   const dragStartRef = useRef({ mouseX: 0, mouseY: 0, x: 0, y: 0, w: 0, h: 0 })
-  const [isInteracting, setIsInteracting] = useState(false)
+  const [interaction, setInteraction] = useState<'drag' | 'resize' | null>(null)
+  const isInteracting = interaction !== null
 
   // ── Parent size tracking ──────────────────────────────────────────────────
 
@@ -149,11 +150,6 @@ export function TerminalOverlay({
     if (w <= 0 || h <= 0) return
     setBounds((prev) => clampBounds(prev, w, h))
   }, [getParentSize])
-
-  useEffect(() => {
-    clampCurrentBounds()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   useEffect(() => {
     const parent = parentRef.current
@@ -276,7 +272,7 @@ export function TerminalOverlay({
     if (w <= 0 || h <= 0) return
 
     isDraggingRef.current = true
-    setIsInteracting(true)
+    setInteraction('drag')
 
     const pxX = (bounds.x / 100) * w
     const pxY = (bounds.y / 100) * h
@@ -293,7 +289,7 @@ export function TerminalOverlay({
 
     isResizingRef.current = true
     resizeEdgeRef.current = edge
-    setIsInteracting(true)
+    setInteraction('resize')
 
     dragStartRef.current = {
       mouseX: e.clientX,
@@ -366,7 +362,7 @@ export function TerminalOverlay({
       isDraggingRef.current = false
       isResizingRef.current = false
       resizeEdgeRef.current = null
-      setIsInteracting(false)
+      setInteraction(null)
 
       setBounds((current) => {
         onBoundsChange?.(current)
@@ -549,7 +545,7 @@ export function TerminalOverlay({
               display: 'flex',
               alignItems: 'center',
               gap: '8px',
-              cursor: isInteracting && isDraggingRef.current ? 'grabbing' : 'grab',
+              cursor: interaction === 'drag' ? 'grabbing' : 'grab',
               flex: 1,
               minWidth: 0,
               padding: '2px 4px',

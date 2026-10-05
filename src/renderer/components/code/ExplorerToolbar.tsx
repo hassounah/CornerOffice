@@ -81,12 +81,6 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([])
   const [focusedIndex, setFocusedIndex] = useState(0)
 
-  function refForIndex(index: number) {
-    return (el: HTMLButtonElement | null) => {
-      buttonRefs.current[index] = el
-    }
-  }
-
   function focusIndex(index: number): void {
     setFocusedIndex(index)
     buttonRefs.current[index]?.focus()
@@ -138,7 +132,9 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
     <div role="toolbar" aria-label="Explorer" onKeyDown={handleToolbarKeyDown} className="flex items-center justify-between gap-4">
       <div className="flex items-center gap-3">
         <button
-          ref={refForIndex(0)}
+          ref={(el) => {
+            buttonRefs.current[0] = el
+          }}
           type="button"
           tabIndex={focusedIndex === 0 ? 0 : -1}
           onFocus={() => setFocusedIndex(0)}
@@ -157,7 +153,9 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
       <div className="flex items-center gap-3">
         <span>Compare:</span>
         <button
-          ref={refForIndex(1)}
+          ref={(el) => {
+            buttonRefs.current[1] = el
+          }}
           type="button"
           tabIndex={focusedIndex === 1 ? 0 : -1}
           onFocus={() => setFocusedIndex(1)}
@@ -171,7 +169,9 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
           Uncommitted
         </button>
         <button
-          ref={refForIndex(2)}
+          ref={(el) => {
+            buttonRefs.current[2] = el
+          }}
           type="button"
           tabIndex={focusedIndex === 2 ? 0 : -1}
           onFocus={() => setFocusedIndex(2)}
@@ -186,7 +186,9 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
         </button>
 
         <button
-          ref={refForIndex(3)}
+          ref={(el) => {
+            buttonRefs.current[3] = el
+          }}
           type="button"
           tabIndex={focusedIndex === 3 ? 0 : -1}
           onFocus={() => setFocusedIndex(3)}
@@ -201,7 +203,9 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
         </button>
 
         <button
-          ref={refForIndex(4)}
+          ref={(el) => {
+            buttonRefs.current[4] = el
+          }}
           type="button"
           tabIndex={focusedIndex === 4 ? 0 : -1}
           onFocus={() => setFocusedIndex(4)}
@@ -213,7 +217,9 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
         </button>
 
         <button
-          ref={refForIndex(5)}
+          ref={(el) => {
+            buttonRefs.current[5] = el
+          }}
           type="button"
           tabIndex={focusedIndex === 5 ? 0 : -1}
           onFocus={() => setFocusedIndex(5)}
@@ -228,7 +234,9 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
 
       <div>
         <button
-          ref={refForIndex(6)}
+          ref={(el) => {
+            buttonRefs.current[6] = el
+          }}
           type="button"
           tabIndex={focusedIndex === 6 ? 0 : -1}
           onFocus={() => setFocusedIndex(6)}
@@ -244,7 +252,9 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
           {(['workspace', 'sandbox'] as const).map((target, i) => (
             <button
               key={target}
-              ref={refForIndex(BASE_BUTTON_COUNT + i)}
+              ref={(el) => {
+                buttonRefs.current[BASE_BUTTON_COUNT + i] = el
+              }}
               type="button"
               tabIndex={focusedIndex === BASE_BUTTON_COUNT + i ? 0 : -1}
               onFocus={() => setFocusedIndex(BASE_BUTTON_COUNT + i)}

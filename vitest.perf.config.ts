@@ -15,6 +15,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
+    // unit tests only need the path string; never download Electron
+    env: { ELECTRON_OVERRIDE_DIST_PATH: process.env.ELECTRON_OVERRIDE_DIST_PATH ?? resolve(__dirname, 'node_modules/.cache/no-electron') },
     include: ['src/__tests__/perf/**/*.test.ts'],
     // No coverage here — this suite exists to assert timing budgets, not to
     // contribute to the project's statement-coverage gate.

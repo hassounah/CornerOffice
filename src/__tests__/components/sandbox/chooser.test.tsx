@@ -431,6 +431,27 @@ describe('StartSessionChooser — trust prompt, Unrestricted announcement and st
     }
   })
 
+  it('changing the workspace slug shows "Checking…" again until that workspace settles', async () => {
+    vi.useFakeTimers()
+    try {
+      useSandboxStore.setState({ status: {} })
+      api.getStatus.mockReturnValue(new Promise(() => {}))
+      const { rerender } = renderChooser()
+      await act(async () => { vi.advanceTimersByTime(STATUS_CHECK_TIMEOUT_MS) })
+      expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
+
+      rerender(<StartSessionChooser slug="other" onStartHost={vi.fn()} onClose={vi.fn()} />)
+      expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
+      fireEvent.focus(radio('Sandbox'))
+      expect(screen.getByRole('tooltip')).toHaveTextContent(CHECKING_COPY)
+
+      await act(async () => { vi.advanceTimersByTime(STATUS_CHECK_TIMEOUT_MS) })
+      expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('when the status fetch failed, Sandbox says so and offers Check again, which recovers', async () => {
     useSandboxStore.setState({ status: {} })
     api.getStatus.mockRejectedValue(new Error('main not ready'))

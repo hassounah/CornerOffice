@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react'
-import yaml from 'js-yaml'
+import { load, JSON_SCHEMA, YAMLException } from 'js-yaml'
 
 // ---------------------------------------------------------------------------
 // YamlContent — shared YAML rendering for the doc viewer and the code
@@ -65,13 +65,19 @@ function formatValue(value: unknown): string {
   return String(value)
 }
 
+/** js-yaml 5 throws on input with no document (empty, whitespace or comment-only). */
+function isEmptyYamlError(e: unknown): boolean {
+  return e instanceof YAMLException && e.reason === 'expected a document, but the input is empty'
+}
+
 export function YamlContent({ content }: YamlContentProps): React.ReactElement {
   const { parsed, entries, error } = useMemo(() => {
     try {
-      const parsed = yaml.load(content, { schema: yaml.JSON_SCHEMA })
+      const parsed = load(content, { schema: JSON_SCHEMA })
       const entries = flattenYaml(parsed)
       return { parsed, entries, error: null }
     } catch (e) {
+      if (isEmptyYamlError(e)) return { parsed: null, entries: [], error: null }
       return { parsed: null, entries: [], error: e instanceof Error ? e.message : 'Failed to parse YAML' }
     }
   }, [content])

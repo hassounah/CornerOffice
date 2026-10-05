@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 
 // ---------------------------------------------------------------------------
 // TerminalOverlay — the compact sandbox badge in the title bar (#0029 step
@@ -42,15 +42,74 @@ function renderOverlay() {
   return render(<TerminalOverlay workspaceSlug="ws" workspaceName="My Workspace" onHide={vi.fn()} />)
 }
 
+const PARENT_W = 1000
+const PARENT_H = 800
+
 beforeEach(() => {
-  // jsdom has no ResizeObserver; the overlay watches its parent's size.
+  // jsdom has no ResizeObserver and no layout; the overlay watches its parent's size.
+  // Like a browser, observe() delivers an initial observation.
   globalThis.ResizeObserver = class {
-    observe() {}
+    constructor(private readonly callback: ResizeObserverCallback) {}
+    observe(target: Element) {
+      this.callback([{ target } as ResizeObserverEntry], this as unknown as ResizeObserver)
+    }
     unobserve() {}
     disconnect() {}
   } as unknown as typeof ResizeObserver
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(PARENT_W)
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(PARENT_H)
   useTerminalStore.setState({ sessions: { ws: 'running' }, overlayVisible: { ws: true }, sessionKind: {} })
   useSandboxStore.setState({ status: { ws: runningStatus() }, environment: null, blocked: {}, dismissedExit: {} })
+})
+
+const floating = (): HTMLElement => document.querySelector<HTMLElement>('[data-terminal-overlay="ws"]') as HTMLElement
+const blocker = (): Element | null => document.querySelector('[style*="z-index: 20"]')
+
+describe('TerminalOverlay bounds', () => {
+  it('clamps an oversized persisted windowBounds after mount', () => {
+    render(
+      <TerminalOverlay
+        workspaceSlug="ws"
+        workspaceName="My Workspace"
+        windowBounds={{ x: 99, y: 99, width: 20, height: 20 }}
+        onHide={vi.fn()}
+      />,
+    )
+    // 800x600 minimum on a 1000x800 parent is 80% x 75%; the title bar stays on screen.
+    expect(floating().style.width).toBe('80%')
+    expect(floating().style.height).toBe('75%')
+    expect(floating().style.left).toBe('90%')
+    expect(parseFloat(floating().style.top)).toBeLessThan(95)
+  })
+})
+
+describe('TerminalOverlay drag and resize', () => {
+  const grip = (): HTMLElement => screen.getByText('My Workspace').parentElement as HTMLElement
+
+  it('shows the grabbing cursor and the pointer-events blocker during a drag, and neither after mouseup', () => {
+    renderOverlay()
+    expect(grip().style.cursor).toBe('grab')
+    expect(blocker()).toBeNull()
+
+    fireEvent.mouseDown(grip(), { clientX: 10, clientY: 10 })
+    expect(grip().style.cursor).toBe('grabbing')
+    expect(blocker()).not.toBeNull()
+
+    fireEvent.mouseUp(window)
+    expect(grip().style.cursor).toBe('grab')
+    expect(blocker()).toBeNull()
+  })
+
+  it('keeps the grab cursor but shows the blocker during a resize', () => {
+    renderOverlay()
+    const handle = floating().firstElementChild as HTMLElement
+    fireEvent.mouseDown(handle, { clientX: 10, clientY: 10 })
+    expect(grip().style.cursor).toBe('grab')
+    expect(blocker()).not.toBeNull()
+
+    fireEvent.mouseUp(window)
+    expect(blocker()).toBeNull()
+  })
 })
 
 describe('TerminalOverlay focus target', () => {
