@@ -23,11 +23,10 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "jsx": "react-jsx",
-    "baseUrl": ".",
     "paths": {
-      "@main/*": ["src/main/*"],
-      "@renderer/*": ["src/renderer/*"],
-      "@preload/*": ["src/preload/*"]
+      "@main/*": ["./src/main/*"],
+      "@renderer/*": ["./src/renderer/*"],
+      "@preload/*": ["./src/preload/*"]
     }
   },
   "include": ["src/**/*", "electron.vite.config.ts"],

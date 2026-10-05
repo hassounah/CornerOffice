@@ -19,6 +19,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
+    // unit tests only need the path string; never download Electron
+    env: { ELECTRON_OVERRIDE_DIST_PATH: process.env.ELECTRON_OVERRIDE_DIST_PATH ?? resolve(__dirname, 'node_modules/.cache/no-electron') },
     include: ['src/__tests__/docker/**/*.test.ts'],
     // Real docker build + network calls — the default 5s test timeout is
     // nowhere near enough for an image build or a firewall self-check.

@@ -147,8 +147,15 @@ vi.mock('node-pty', () => ({
 }))
 
 // Import the main module to trigger initialization (mocks are already hoisted)
+// Vitest 5 clears mock call history before each test, so capture the
+// startup-time calls once here instead of asserting on them inside the tests.
+let lockRequested = false
+let secondInstanceHandler: unknown
 beforeAll(async () => {
   await import('../main/index')
+  const { app } = await import('electron')
+  lockRequested = vi.mocked(app.requestSingleInstanceLock).mock.calls.length > 0
+  secondInstanceHandler = vi.mocked(app.on).mock.calls.find(([e]) => (e as string) === 'second-instance')?.[1]
 })
 
 describe('Main process security hardening', () => {
@@ -200,14 +207,12 @@ describe('Main process security hardening', () => {
     expect(capturedCSPHeaders.some((h) => h.includes("connect-src 'none'"))).toBe(true)
   })
 
-  it('requests single-instance lock', async () => {
-    const { app } = await import('electron')
-    expect(app.requestSingleInstanceLock).toHaveBeenCalled()
+  it('requests single-instance lock', () => {
+    expect(lockRequested).toBe(true)
   })
 
-  it('registers second-instance handler', async () => {
-    const { app } = await import('electron')
-    expect(app.on).toHaveBeenCalledWith('second-instance', expect.any(Function))
+  it('registers second-instance handler', () => {
+    expect(secondInstanceHandler).toBeTypeOf('function')
   })
 
   // Step 1.20, Addendum A1: every window.open() attempt is denied outright.

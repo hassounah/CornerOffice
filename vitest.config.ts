@@ -5,6 +5,8 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    // unit tests only need the path string; never download Electron
+    env: { ELECTRON_OVERRIDE_DIST_PATH: process.env.ELECTRON_OVERRIDE_DIST_PATH ?? resolve(__dirname, 'node_modules/.cache/no-electron') },
     setupFiles: ['src/__tests__/setup.ts'],
     include: ['src/__tests__/**/*.test.ts', 'src/__tests__/**/*.test.tsx'],
     // Step 4.1's performance harness builds a real 50k-file git repo and
@@ -20,7 +22,7 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'lcov'],
       include: ['src/main/**', 'src/preload/**', 'src/renderer/**'],
-      exclude: ['src/__tests__/**', 'src/renderer/main.tsx', 'src/preload/index.ts', 'src/main/types/**', 'src/**/*.d.ts', 'src/renderer/styles/**', 'src/**/index.ts', 'src/renderer/components/terminal/**'],
+      exclude: ['src/__tests__/**', 'src/renderer/main.tsx', 'src/preload/index.ts', 'src/main/types/**', 'src/**/*.d.ts', 'src/renderer/styles/**', 'src/**/index.ts', 'src/renderer/components/terminal/**', 'src/**/*.html'],
       thresholds: { statements: 85 },
     },
   },

@@ -1,4 +1,4 @@
-import '@testing-library/jest-dom'
+import '@testing-library/jest-dom/vitest'
 
 // jsdom has no modal <dialog> API. Minimal stand-in that toggles `open`, so a
 // dialog opened via showModal() is visible to queries. Suites that need to spy

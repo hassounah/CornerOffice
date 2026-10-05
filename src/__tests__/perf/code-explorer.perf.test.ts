@@ -17,8 +17,8 @@ import type { CodeTreeEntry } from '@main/types/code'
 // includes ONLY it. Building a real 50k-file git repo and exercising real
 // fs/git operations against it is much too slow to run on every PR, and
 // mixing it into the normal parallel suite is exactly what makes timing
-// assertions flake under load. Every case in the main `describe.sequential`
-// block below runs against ONE shared fixture repo built once in `beforeAll`
+// assertions flake under load. Every case in the main `describe`
+// block below (tests within one file run sequentially) runs against ONE shared fixture repo built once in `beforeAll`
 // — building 50k files is itself the expensive part, not any single
 // operation under test.
 //
@@ -55,7 +55,7 @@ function bulkWriteFiles(root: string, subdir: string, count: number): string[] {
   return paths
 }
 
-describe.sequential('Step 4.1 — performance harness (TRD §7.4, §9.1)', () => {
+describe('Step 4.1 — performance harness (TRD §7.4, §9.1)', () => {
   beforeAll(() => {
     root = makeTmpDir('co-perf-')
     initRepo(root)
