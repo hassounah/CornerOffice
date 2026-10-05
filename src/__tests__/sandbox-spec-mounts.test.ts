@@ -158,6 +158,16 @@ describe('planMounts — always-present overlays', () => {
     expect(result.mounts).toContainEqual({ source: hp, target: hp, readonly: true, provenance: 'app' })
   })
 
+  it('mounts .git/hooks once when hooksPathInsideGit is the default hooks dir (no core.hooksPath)', () => {
+    const fixture = makeFixture()
+    const hooks = path.join(fixture.repo, '.git', 'hooks')
+    const result = planMounts({ ...fixture.baseFacts, hooksPathInsideGit: hooks })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(targetsOf(result.mounts).filter((t) => t === hooks)).toHaveLength(1)
+    expect(new Set(targetsOf(result.mounts)).size).toBe(result.mounts.length)
+  })
+
   it('adds .git/worktrees (ro) and $GWT (rw) only when worktreesOverlay is true (G1)', () => {
     const fixture = makeFixture()
     const withoutOverlay = planMounts(fixture.baseFacts)

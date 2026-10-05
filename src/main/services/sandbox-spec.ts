@@ -373,7 +373,11 @@ export function planMounts(facts: PlanMountsFacts): PlanMountsResult {
   add(path.join(gitDir, 'modules'), path.join(gitDir, 'modules'), true) // M2: always
   add(path.join(gitDir, 'HEAD'), path.join(gitDir, 'HEAD'), true) // H3: always
   if (indexExists) add(path.join(gitDir, 'index'), path.join(gitDir, 'index'), true) // H3
-  if (hooksPathInsideGit) add(hooksPathInsideGit, hooksPathInsideGit, true) // D11
+  // D11. With no core.hooksPath the resolved path IS .git/hooks, already overlaid
+  // above; mounting it twice makes Docker fail with "Duplicate mount point".
+  if (hooksPathInsideGit && hooksPathInsideGit !== path.join(gitDir, 'hooks')) {
+    add(hooksPathInsideGit, hooksPathInsideGit, true)
+  }
 
   if (worktreesOverlay) {
     const worktreesDir = path.join(gitDir, 'worktrees')
