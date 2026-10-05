@@ -812,10 +812,11 @@ export function buildRealHandlers(
         return new Promise<{ action: string | null; text?: string }>((resolve) => {
           const template: Electron.MenuItemConstructorOptions[] = [
             { label: 'Copy', enabled: hasSelection, click: () => resolve({ action: 'copy' }) },
-            { label: 'Paste', click: () => {
-              const text = clipboard.readText()
-              resolve({ action: 'paste', text: text.length > 1_048_576 ? text.slice(0, 1_048_576) : text })
-            }},
+            // Electron 42+: clipboard.readText() is async. Resolve with the promise so a click
+            // and the popup's close callback in the same tick still deliver the pasted text.
+            { label: 'Paste', click: () => resolve(clipboard.readText()
+              .then((text) => ({ action: 'paste', text: text.length > 1_048_576 ? text.slice(0, 1_048_576) : text }))
+              .catch(() => ({ action: null }))) },
             { label: 'Select All', click: () => resolve({ action: 'selectAll' }) },
             { type: 'separator' as const },
             { label: 'Clear', click: () => resolve({ action: 'clear' }) },

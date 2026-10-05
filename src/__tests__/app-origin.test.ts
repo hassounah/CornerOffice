@@ -195,7 +195,7 @@ describe('onCrossDocumentMainFrameNavigation', () => {
     const cb = vi.fn()
     onCrossDocumentMainFrameNavigation(webContents as unknown as Electron.WebContents, cb)
 
-    webContents.emit('did-start-navigation', {}, 'file:///app/index.html', false, true)
+    webContents.emit('did-start-navigation', { url: 'file:///app/index.html', isSameDocument: false, isMainFrame: true })
     expect(cb).toHaveBeenCalledTimes(1)
   })
 
@@ -204,7 +204,7 @@ describe('onCrossDocumentMainFrameNavigation', () => {
     const cb = vi.fn()
     onCrossDocumentMainFrameNavigation(webContents as unknown as Electron.WebContents, cb)
 
-    webContents.emit('did-start-navigation', {}, 'file:///app/index.html#/x', true, true)
+    webContents.emit('did-start-navigation', { url: 'file:///app/index.html#/x', isSameDocument: true, isMainFrame: true })
     expect(cb).not.toHaveBeenCalled()
   })
 
@@ -213,7 +213,7 @@ describe('onCrossDocumentMainFrameNavigation', () => {
     const cb = vi.fn()
     onCrossDocumentMainFrameNavigation(webContents as unknown as Electron.WebContents, cb)
 
-    webContents.emit('did-start-navigation', {}, 'file:///app/frame.html', false, false)
+    webContents.emit('did-start-navigation', { url: 'file:///app/frame.html', isSameDocument: false, isMainFrame: false })
     expect(cb).not.toHaveBeenCalled()
   })
 })
