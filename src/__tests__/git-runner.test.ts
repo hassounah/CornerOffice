@@ -16,6 +16,7 @@ import {
   type RepoCtx,
   type WorktreePin,
 } from '../main/services/git-runner'
+import { hermeticEnv } from './helpers/git-fixtures'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -42,19 +43,13 @@ function makeExecutable(dir: string, name: string, contents = '#!/bin/sh\nexit 0
 
 function initRepo(dir: string): void {
   fs.mkdirSync(dir, { recursive: true })
-  const hermeticEnv = {
-    ...process.env,
-    GIT_AUTHOR_NAME: 'Test',
-    GIT_AUTHOR_EMAIL: 'test@test.invalid',
-    GIT_COMMITTER_NAME: 'Test',
-    GIT_COMMITTER_EMAIL: 'test@test.invalid',
-  }
-  execFileSync('git', ['init', '-q', '.'], { cwd: dir, env: hermeticEnv })
-  execFileSync('git', ['config', 'user.email', 'test@test.invalid'], { cwd: dir, env: hermeticEnv })
-  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir, env: hermeticEnv })
+  const env = hermeticEnv()
+  execFileSync('git', ['init', '-q', '.'], { cwd: dir, env })
+  execFileSync('git', ['config', 'user.email', 'test@test.invalid'], { cwd: dir, env })
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir, env })
   fs.writeFileSync(path.join(dir, 'readme.txt'), 'hello\n')
-  execFileSync('git', ['add', '-A'], { cwd: dir, env: hermeticEnv })
-  execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: dir, env: hermeticEnv })
+  execFileSync('git', ['add', '-A'], { cwd: dir, env })
+  execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: dir, env })
 }
 
 function ctxFor(root: string, workspaceRoots: readonly string[] = [], pin?: WorktreePin): RepoCtx {
@@ -525,11 +520,11 @@ describe('createGitService — runGit', () => {
   it('truncates at the last NUL on maxBuffer overflow and sets truncated: true', async () => {
     const repo = path.join(tmpDir, 'repo')
     fs.mkdirSync(repo, { recursive: true })
-    const hermeticEnv = { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t.invalid', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t.invalid' }
-    execFileSync('git', ['init', '-q', '.'], { cwd: repo, env: hermeticEnv })
+    const env = hermeticEnv()
+    execFileSync('git', ['init', '-q', '.'], { cwd: repo, env })
     for (let i = 0; i < 50; i++) fs.writeFileSync(path.join(repo, `file${i}.txt`), 'x')
-    execFileSync('git', ['add', '-A'], { cwd: repo, env: hermeticEnv })
-    execFileSync('git', ['commit', '-q', '-m', 'many files'], { cwd: repo, env: hermeticEnv })
+    execFileSync('git', ['add', '-A'], { cwd: repo, env })
+    execFileSync('git', ['commit', '-q', '-m', 'many files'], { cwd: repo, env })
 
     const service = createGitService()
     const result = await service.runGit(ctxFor(repo), ['ls-files', '-z'], { maxBuffer: 100 })
