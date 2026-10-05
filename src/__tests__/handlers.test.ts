@@ -347,6 +347,27 @@ describe('config:update', () => {
     )
   })
 
+  it('passes codeExplorer.treeWidth through to updateConfig', async () => {
+    vi.mocked(configManager.loadConfig).mockReturnValue(null)
+
+    const handler = getHandler('config:update')
+    const result = await handler(fakeEvent, { codeExplorer: { treeWidth: 320 } }) as IpcResponse<unknown>
+    expect(result.error).toBeNull()
+    expect(configManager.updateConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ codeExplorer: { treeWidth: 320 } }),
+    )
+  })
+
+  it('rejects an invalid codeExplorer.treeWidth without calling updateConfig', async () => {
+    vi.mocked(configManager.loadConfig).mockReturnValue(null)
+    vi.mocked(configManager.updateConfig).mockClear()
+
+    const handler = getHandler('config:update')
+    const result = await handler(fakeEvent, { codeExplorer: { treeWidth: -5 } }) as IpcResponse<unknown>
+    expect(result.error).not.toBeNull()
+    expect(configManager.updateConfig).not.toHaveBeenCalled()
+  })
+
   it('merges workspace updates into existing config', async () => {
     vi.mocked(configManager.loadConfig).mockReturnValue({
       workspaces: [{ slug: 'ws-1', path: '/ws1', displayName: 'WS1', pinned: false, archived: false }],

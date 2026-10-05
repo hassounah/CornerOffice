@@ -508,6 +508,9 @@ export function buildRealHandlers(
         if (otherUpdates.discoveryExclusions !== undefined) partial.discoveryExclusions = otherUpdates.discoveryExclusions
         if (otherUpdates.terminalEmulator !== undefined) partial.terminalEmulator = otherUpdates.terminalEmulator
         if (otherUpdates.realm !== undefined) partial.realm = otherUpdates.realm
+        if (otherUpdates.codeExplorer !== undefined) {
+          partial.codeExplorer = { ...current.codeExplorer, ...otherUpdates.codeExplorer }
+        }
         if (otherUpdates.terminal !== undefined) {
           // Deep-merge terminal config to prevent fontSize updates from clobbering windowBounds
           const currentTerminal = current.terminal ?? { fontSize: 14, windowBounds: {} }

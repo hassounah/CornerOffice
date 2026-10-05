@@ -93,6 +93,16 @@ describe('RealmCodeExplorer — focus on mount (Fix #142)', () => {
   })
 })
 
+describe('RealmCodeExplorer — tree/viewer divider (#0031)', () => {
+  it('renders the separator in the realm skin with --co-realm-border styling', () => {
+    seed()
+    render(<RealmCodeExplorer />)
+    const separator = screen.getByRole('separator', { name: 'Resize file tree' })
+    expect(separator.className).toContain('var(--co-realm-border)')
+    expect(separator.className).not.toContain('bg-co-border')
+  })
+})
+
 describe('RealmCodeExplorer — role/aria (3.1 review item b)', () => {
   // RealmCodeExplorer is a top-level RealmShell layer, the same tier as
   // TowerView/SettingsChamber (both role="dialog" + aria-modal="true"), NOT

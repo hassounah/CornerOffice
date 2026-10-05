@@ -1,5 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, within, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, within, fireEvent, act } from '@testing-library/react'
+import { useSettingsStore } from '../../../renderer/stores/settings-store'
+import type { AppConfig } from '@main/types/config'
 import { CodeExplorer } from '../../../renderer/components/code/CodeExplorer'
 import { useCodeExplorerStore } from '../../../renderer/stores/code-explorer-store'
 import { REPO_STATE_FIXTURES } from '../../helpers/repo-state-fixtures'
@@ -14,6 +16,7 @@ import { REPO_STATE_FIXTURES } from '../../helpers/repo-state-fixtures'
 Object.defineProperty(window, 'cornerOffice', {
   value: {
     code: { getStatus: vi.fn(), listDir: vi.fn(), watch: vi.fn(), unwatch: vi.fn(), getFileIndex: vi.fn(), readFile: vi.fn() },
+    config: { update: vi.fn() },
   },
   writable: true,
 })
@@ -168,5 +171,133 @@ describe('CodeExplorer — branch-mismatch banner (TRD §3.8.3)', () => {
     const banner = screen.getByRole('alert')
     expect(banner.textContent?.includes(rtlOverride)).toBe(false)
     expect(within(banner).getByTitle(/RIGHT-TO-LEFT OVERRIDE/)).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tree/viewer divider (#0031 §6.2) — the container reports 1200px, so the
+// tree may range from 180 to 1200 - 360 - 4 = 836.
+// ---------------------------------------------------------------------------
+
+describe('CodeExplorer — resizable tree/viewer split (#0031)', () => {
+  const originalRO = (global as unknown as { ResizeObserver: unknown }).ResizeObserver
+  const updateConfig = window.cornerOffice.config.update as ReturnType<typeof vi.fn>
+
+  class FixedWidthResizeObserver {
+    constructor(private readonly cb: (entries: Array<{ contentRect: { width: number; height: number } }>) => void) {}
+    observe(): void {
+      this.cb([{ contentRect: { width: 1200, height: 600 } }])
+    }
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+
+  function setPersisted(treeWidth?: number): void {
+    const config = (treeWidth === undefined ? {} : { codeExplorer: { treeWidth } }) as AppConfig
+    useSettingsStore.setState({ config })
+  }
+
+  function treeEl(): HTMLElement {
+    return document.getElementById('code-explorer-tree') as HTMLElement
+  }
+
+  beforeEach(() => {
+    ;(global as unknown as { ResizeObserver: unknown }).ResizeObserver = FixedWidthResizeObserver
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    HTMLElement.prototype.releasePointerCapture = vi.fn()
+    updateConfig.mockReset()
+    updateConfig.mockResolvedValue({ data: {}, error: null })
+    setPersisted(undefined)
+  })
+
+  afterEach(() => {
+    ;(global as unknown as { ResizeObserver: unknown }).ResizeObserver = originalRO
+    vi.useRealTimers()
+  })
+
+  it('exposes an accessible separator wired to the tree', () => {
+    seed()
+    render(<CodeExplorer skin="office" onBack={vi.fn()} />)
+    const sep = screen.getByRole('separator', { name: 'Resize file tree' })
+    expect(sep).toHaveAttribute('aria-orientation', 'vertical')
+    expect(sep).toHaveAttribute('aria-controls', 'code-explorer-tree')
+    expect(sep).toHaveAttribute('aria-valuemin', '180')
+    expect(sep).toHaveAttribute('aria-valuemax', '836')
+    expect(sep).toHaveAttribute('aria-valuenow', '288')
+    expect(sep).toHaveAttribute('aria-valuetext', 'File tree 24% of width')
+    expect(sep).toHaveAttribute('tabindex', '0')
+    expect(treeEl()).not.toBeNull()
+  })
+
+  it('the tree inline width equals aria-valuenow', () => {
+    seed()
+    render(<CodeExplorer skin="office" onBack={vi.fn()} />)
+    expect(treeEl().style.width).toBe('288px')
+  })
+
+  it('uses the persisted config width on mount', () => {
+    setPersisted(400)
+    seed()
+    render(<CodeExplorer skin="office" onBack={vi.fn()} />)
+    expect(treeEl().style.width).toBe('400px')
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '400')
+  })
+
+  it('ArrowRight grows by 16, End goes to the max, Home to the min', () => {
+    seed()
+    render(<CodeExplorer skin="office" onBack={vi.fn()} />)
+    const sep = screen.getByRole('separator')
+    fireEvent.keyDown(sep, { key: 'ArrowRight' })
+    expect(treeEl().style.width).toBe('304px')
+    fireEvent.keyDown(sep, { key: 'End' })
+    expect(treeEl().style.width).toBe('836px')
+    fireEvent.keyDown(sep, { key: 'Home' })
+    expect(treeEl().style.width).toBe('180px')
+  })
+
+  it('double-click resets to 288', () => {
+    setPersisted(500)
+    seed()
+    render(<CodeExplorer skin="office" onBack={vi.fn()} />)
+    fireEvent.doubleClick(screen.getByRole('separator'))
+    expect(treeEl().style.width).toBe('288px')
+  })
+
+  it('pointer drag resizes live, clamps, and persists once ~300ms after release', () => {
+    vi.useFakeTimers()
+    seed()
+    render(<CodeExplorer skin="office" onBack={vi.fn()} />)
+    const sep = screen.getByRole('separator')
+
+    fireEvent.pointerDown(sep, { button: 0, clientX: 300, pointerId: 1 })
+    expect(sep.className).toContain('bg-co-accent')
+    fireEvent.pointerMove(sep, { clientX: 360, pointerId: 1 })
+    expect(treeEl().style.width).toBe('348px')
+    fireEvent.pointerMove(sep, { clientX: 9999, pointerId: 1 })
+    expect(treeEl().style.width).toBe('836px')
+    fireEvent.pointerMove(sep, { clientX: 400, pointerId: 1 })
+    fireEvent.pointerUp(sep, { pointerId: 1 })
+    expect(updateConfig).not.toHaveBeenCalled()
+
+    act(() => vi.advanceTimersByTime(300))
+    expect(updateConfig).toHaveBeenCalledTimes(1)
+    expect(updateConfig).toHaveBeenCalledWith({ codeExplorer: { treeWidth: 388 } })
+  })
+
+  it('switching the selected file does not change the tree width', () => {
+    seed({ selected: 'a.ts' })
+    render(<CodeExplorer skin="office" onBack={vi.fn()} />)
+    fireEvent.keyDown(screen.getByRole('separator'), { key: 'ArrowRight' })
+    expect(treeEl().style.width).toBe('304px')
+    act(() => useCodeExplorerStore.setState({ selected: 'b.ts' }))
+    expect(treeEl().style.width).toBe('304px')
+    act(() => useCodeExplorerStore.setState({ selected: null }))
+    expect(treeEl().style.width).toBe('304px')
+  })
+
+  it('uses the office divider tokens in the office skin', () => {
+    seed()
+    render(<CodeExplorer skin="office" onBack={vi.fn()} />)
+    expect(screen.getByRole('separator').className).toContain('bg-co-border')
   })
 })

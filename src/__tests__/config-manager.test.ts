@@ -316,6 +316,49 @@ describe('ConfigManager', () => {
     })
   })
 
+  describe('codeExplorer config', () => {
+    beforeEach(() => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      mockFs.openSync = vi.fn().mockReturnValue(7)
+      mockFs.fsyncSync = vi.fn()
+      mockFs.closeSync = vi.fn()
+      mockFs.copyFileSync = vi.fn()
+    })
+
+    it('round-trips codeExplorer.treeWidth through updateConfig save and load', async () => {
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(manager.getDefaultConfig()))
+      const result = await manager.updateConfig({ codeExplorer: { treeWidth: 300 } })
+      expect(result.codeExplorer).toEqual({ treeWidth: 300 })
+
+      const written = mockFs.writeFileSync.mock.calls[0][1] as string
+      mockFs.readFileSync = vi.fn().mockReturnValue(written)
+      expect(manager.loadConfig()!.codeExplorer).toEqual({ treeWidth: 300 })
+    })
+
+    it('a config without the key loads unchanged', () => {
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(manager.getDefaultConfig()))
+      const result = manager.loadConfig()
+      expect(result).toEqual(manager.getDefaultConfig())
+      expect(result!.codeExplorer).toBeUndefined()
+    })
+
+    it.each([
+      ['a string width', { treeWidth: 'x' }],
+      ['a negative width', { treeWidth: -1 }],
+      ['a fractional width', { treeWidth: 10.5 }],
+      ['a width above 10000', { treeWidth: 10001 }],
+      ['a non-object value', 'wide'],
+    ])('drops %s from disk and keeps the rest of the config intact, without .bak recovery', (_label, bad) => {
+      const cfg = { ...manager.getDefaultConfig(), companyName: 'Acme', codeExplorer: bad }
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
+      const result = manager.loadConfig()
+      expect(result).not.toBeNull()
+      expect(result!.codeExplorer).toBeUndefined()
+      expect(result!.companyName).toBe('Acme')
+      expect(mockFs.readFileSync).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe('sandbox validation', () => {
     it('absent sandbox section loads fine — defaults apply via getSandboxConfig', () => {
       mockFs.existsSync = vi.fn().mockReturnValue(true)
