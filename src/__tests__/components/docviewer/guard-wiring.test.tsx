@@ -100,10 +100,9 @@ vi.mock('gray-matter', () => ({
   default: (content: string) => ({ data: {}, content }),
 }))
 vi.mock('js-yaml', () => ({
-  default: {
-    load: () => ({ key: 'value' }),
-    JSON_SCHEMA: {},
-  },
+  load: () => ({ key: 'value' }),
+  JSON_SCHEMA: {},
+  YAMLException: class YAMLException extends Error {},
 }))
 
 // Mock dialog API (jsdom lacks showModal)

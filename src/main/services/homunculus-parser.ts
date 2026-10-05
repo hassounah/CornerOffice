@@ -1,7 +1,7 @@
 import log from 'electron-log/main'
 import fs from 'fs'
 import path from 'path'
-import yaml from 'js-yaml'
+import { load, YAMLException } from 'js-yaml'
 import { z } from 'zod'
 import { readRegularFileCappedSync } from './safe-fs'
 import type {
@@ -33,10 +33,21 @@ const ObservationSchema = z.object({
 // Frontmatter parser (replaces gray-matter to avoid js-yaml version conflict)
 // ---------------------------------------------------------------------------
 
+/** js-yaml 5 throws on input with no document (empty, whitespace or comment-only). */
+function isEmptyYamlError(e: unknown): boolean {
+  return e instanceof YAMLException && e.reason === 'expected a document, but the input is empty'
+}
+
 function parseFrontmatter(raw: string): { data: Record<string, unknown>; content: string } {
   const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
   if (!match) return { data: {}, content: raw }
-  const data = (yaml.load(match[1]) as Record<string, unknown>) ?? {}
+  let data: Record<string, unknown>
+  try {
+    data = (load(match[1]) as Record<string, unknown>) ?? {}
+  } catch (e) {
+    if (!isEmptyYamlError(e)) throw e
+    data = {}
+  }
   return { data, content: match[2] }
 }
 

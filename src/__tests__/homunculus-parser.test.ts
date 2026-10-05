@@ -157,6 +157,42 @@ Content here.`)
       expect(instincts[0].id).toBe('good')
     })
 
+    it.each([
+      ['empty frontmatter', '---\n\n---\nbody text'],
+      ['comment-only frontmatter', '---\n# just a comment\n---\nbody text'],
+    ])('parses %s with defaults', (_name, raw) => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      mockFs.readdirSync = vi.fn().mockImplementation((dir: string) => {
+        if (dir.includes('personal')) return ['bare.yaml']
+        return []
+      })
+      mockRegularFile(raw)
+
+      const instincts = parser.parseInstincts('/home/test/.claude/homunculus')
+      expect(instincts).toHaveLength(1)
+      expect(instincts[0]).toMatchObject({
+        id: 'bare',
+        trigger: '',
+        confidence: 0.5,
+        domain: 'general',
+        source: 'unknown',
+        content: 'body text',
+      })
+    })
+
+    it('lists an instinct whose frontmatter has a YAML date value', () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      mockFs.readdirSync = vi.fn().mockImplementation((dir: string) => {
+        if (dir.includes('personal')) return ['dated.yaml']
+        return []
+      })
+      mockRegularFile('---\nid: dated\ncreated: 2026-01-02\n---\nbody')
+
+      const instincts = parser.parseInstincts('/home/test/.claude/homunculus')
+      expect(instincts).toHaveLength(1)
+      expect(instincts[0].id).toBe('dated')
+    })
+
     it('skips a symlinked instinct file (never followed, H2)', () => {
       mockFs.existsSync = vi.fn().mockReturnValue(true)
       mockFs.readdirSync = vi.fn().mockImplementation((dir: string) => {

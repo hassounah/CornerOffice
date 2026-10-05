@@ -76,6 +76,21 @@ describe('YamlContent — empty document', () => {
     render(<YamlContent content="null" />)
     expect(screen.getByText('Empty document')).toBeDefined()
   })
+
+  it('shows "Empty document" for comment-only input', () => {
+    render(<YamlContent content={'# just a comment\n# another'} />)
+    expect(screen.getByText('Empty document')).toBeDefined()
+  })
+
+  it('shows "Empty document" for whitespace-only input', () => {
+    render(<YamlContent content={'  \n\t\n  '} />)
+    expect(screen.getByText('Empty document')).toBeDefined()
+  })
+
+  it('still shows the parse-error panel for unterminated flow syntax', () => {
+    render(<YamlContent content="a: [1" />)
+    expect(screen.getByText('YAML parse error — showing raw content')).toBeDefined()
+  })
 })
 
 describe('YamlContent — no links, no Back button (pure component)', () => {
