@@ -1,7 +1,7 @@
 import log from 'electron-log/main'
 import path from 'path'
 import os from 'os'
-import fg from 'fast-glob'
+import { glob, escapePath } from 'tinyglobby'
 import type { WorkspaceDiscoveryResult } from '../types/workspace'
 import { resolveRealHome, sandboxPaths } from './sandbox-paths'
 
@@ -63,18 +63,26 @@ export class WorkspaceDiscoveryService {
 
     const allExclusions = [...DEFAULT_EXCLUSIONS, ...safeUserExclusions]
 
-    // Build ignore patterns for fast-glob (glob syntax)
+    // Build ignore patterns for tinyglobby (glob syntax)
     const ignorePatterns = allExclusions.map((exc) => `**/${exc}/**`)
 
     // Explicit SANDBOXES_ROOT exclusion (TRD §3.11), path-anchored rather
     // than a bare-name pattern like the ones above — a `**/sandboxes/**`
     // pattern could also hide an unrelated, legitimately named workspace.
-    // Defense in depth on top of fast-glob's dot:false default (SANDBOXES_ROOT
-    // sits under the dot directory ~/.corner-office, so it's already skipped
-    // today) — this exclusion still applies if `dot` is ever forced true.
+    // tinyglobby matches ignore patterns relative to its cwd, so the pattern
+    // is the sandboxes root relative to the real home. Defense in depth on top
+    // of the dot:false default (SANDBOXES_ROOT sits under the dot directory
+    // ~/.corner-office, so it's already skipped today) — this exclusion still
+    // applies if `dot` is ever forced true.
     try {
-      const { sandboxesRoot } = sandboxPaths(resolveRealHome())
-      ignorePatterns.push(`${fg.escapePath(sandboxesRoot)}/**`)
+      const realHome = resolveRealHome()
+      const { sandboxesRoot } = sandboxPaths(realHome)
+      const rel = path.relative(realHome, sandboxesRoot)
+      if (path.isAbsolute(rel) || rel.startsWith('..')) {
+        log.warn(`[WorkspaceDiscovery] Sandboxes root is outside the home directory; not adding an exclusion: ${sandboxesRoot}`)
+      } else {
+        ignorePatterns.push(`${escapePath(rel)}/**`)
+      }
     } catch (err) {
       log.warn('[WorkspaceDiscovery] Could not resolve the sandboxes root for exclusion:', err)
     }
@@ -113,20 +121,20 @@ export class WorkspaceDiscoveryService {
   }
 
   /**
-   * `dot` defaults to fast-glob's own default (false) in production; a test
-   * can force it true to prove the SANDBOXES_ROOT ignore pattern above
-   * excludes it on its own, independent of the dot:false default (§3.11).
+   * `dot` is false in production; a test can force it true to prove the
+   * SANDBOXES_ROOT ignore pattern above excludes it on its own, independent
+   * of the dot:false default (§3.11). Results are absolute paths.
    */
   private async _runGlob(home: string, ignorePatterns: string[], dot = false): Promise<string[]> {
     // Search for .rix directories; followSymbolicLinks: false per spec
-    const pattern = `${fg.escapePath(home)}/**/.rix`
-    return fg(pattern, {
+    return glob('**/.rix', {
+      cwd: home,
       onlyDirectories: true,
       followSymbolicLinks: false,
       ignore: ignorePatterns,
-      suppressErrors: true,
       absolute: true,
       dot,
+      expandDirectories: false,
     })
   }
 }
