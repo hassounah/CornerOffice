@@ -7,6 +7,7 @@ import { createGitService } from '../../main/services/git-runner'
 import type { GitService, WorktreeRepoCtx } from '../../main/services/git-runner'
 import { ensure } from '../../main/services/sandbox-worktree'
 import { sandboxPaths } from '../../main/services/sandbox-paths'
+import { prepareClaudeConfig } from '../../main/services/sandbox-claude-config'
 import type { SandboxPaths } from '../../main/services/sandbox-paths'
 import type { DockerRunner } from '../../main/services/docker-runner'
 import {
@@ -281,6 +282,9 @@ export async function createSandboxRig(d: DockerRunner, identity: TestIdentity, 
   fs.mkdirSync(path.join(repo, '.git', 'modules'), { recursive: true })
   fs.mkdirSync(eventsDir, { recursive: true })
   fs.mkdirSync(path.join(paths.claudeDir, 'channels'), { recursive: true, mode: 0o700 })
+  // #0030: the read-only Claude config sources, the settings copy and the first `claude.json` seed, as the manager does.
+  const claudeConfig = prepareClaudeConfig(paths, slug)
+  if (!claudeConfig.ok) throw new Error(`rig Claude config setup failed: ${claudeConfig.label} ${claudeConfig.problem}`)
 
   const planned = planMounts({
     home,
