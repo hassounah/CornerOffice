@@ -5,6 +5,7 @@ import {
   TerminalResizeSchema,
   TerminalKillSchema,
   TerminalGetScrollbackSchema,
+  ConfigUpdateSchema,
 } from '../main/ipc/schemas'
 
 // ---------------------------------------------------------------------------
@@ -73,5 +74,32 @@ describe('terminalSessionKey (used by Write/Resize/Kill/GetScrollback schemas)',
   it('TerminalGetScrollbackSchema accepts shell:office_shell', () => {
     const result = TerminalGetScrollbackSchema.safeParse({ workspaceSlug: 'shell:office_shell' })
     expect(result.success).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ConfigUpdateSchema — codeExplorer.treeWidth (#0031)
+// ---------------------------------------------------------------------------
+
+describe('ConfigUpdateSchema codeExplorer', () => {
+  it('accepts an integer treeWidth within bounds', () => {
+    for (const treeWidth of [0, 288, 10000]) {
+      expect(ConfigUpdateSchema.safeParse({ codeExplorer: { treeWidth } }).success).toBe(true)
+    }
+  })
+
+  it('accepts an update without codeExplorer', () => {
+    expect(ConfigUpdateSchema.safeParse({ companyName: 'Acme' }).success).toBe(true)
+  })
+
+  it('rejects non-integer, negative, oversized and non-numeric widths', () => {
+    for (const treeWidth of [1.5, -1, 10001, '300', null, Number.NaN]) {
+      const result = ConfigUpdateSchema.safeParse({ codeExplorer: { treeWidth } })
+      expect(result.success, `Expected failure for treeWidth=${String(treeWidth)}`).toBe(false)
+    }
+  })
+
+  it('rejects a codeExplorer object without treeWidth', () => {
+    expect(ConfigUpdateSchema.safeParse({ codeExplorer: {} }).success).toBe(false)
   })
 })

@@ -36,7 +36,7 @@ function gotoLineHint(): string {
 
 export function StatusBar({ line, col, encoding, eol }: StatusBarProps): React.ReactElement {
   return (
-    <div className="flex items-center gap-3 border-t border-white/[0.06] px-3 py-1 text-xs text-co-text-muted">
+    <div className="flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap border-t border-white/[0.06] px-3 py-1 text-xs text-co-text-muted">
       <span>
         Ln {line}, Col {col}
       </span>

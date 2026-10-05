@@ -123,13 +123,13 @@ export function FileHeader({ skin = 'office' }: FileHeaderProps = {}): React.Rea
   return (
     <div className="flex flex-col border-b border-white/[0.06]">
       <div className="flex items-center justify-between gap-3 px-3 py-1.5">
-        <div className="flex min-w-0 items-center gap-1 text-xs text-co-text-secondary">
+        <div className="flex min-w-0 items-center gap-1 overflow-hidden text-xs text-co-text-secondary">
           {segments.map((seg, i) => {
             const isLast = i === segments.length - 1
             return (
               <React.Fragment key={i}>
                 {i > 0 && (
-                  <span className="opacity-50" aria-hidden="true">
+                  <span className="shrink-0 opacity-50" aria-hidden="true">
                     ›
                   </span>
                 )}
@@ -143,21 +143,23 @@ export function FileHeader({ skin = 'office' }: FileHeaderProps = {}): React.Rea
                   // triggered it, so making every ancestor segment its own
                   // identical button was N tab stops doing one real action,
                   // with a misleading per-level affordance.
+                  // #0031: the filename never shrinks; in a narrow viewer the
+                  // ancestor segments truncate first (each keeps its own title).
                   <button
                     type="button"
-                    className="bg-transparent p-0 hover:underline"
+                    className="shrink-0 bg-transparent p-0 hover:underline"
                     onClick={() => revealInTree(selected)}
                     title="Reveal in tree"
                   >
                     <ReviewSafeName name={seg} />
                   </button>
                 ) : (
-                  <ReviewSafeName name={seg} />
+                  <ReviewSafeName name={seg} className="min-w-0 truncate" />
                 )}
               </React.Fragment>
             )
           })}
-          {dirty && <span aria-label="Unsaved changes" title="Unsaved changes" className="text-co-accent">●</span>}
+          {dirty && <span aria-label="Unsaved changes" title="Unsaved changes" className="shrink-0 text-co-accent">●</span>}
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
@@ -209,7 +211,7 @@ export function FileHeader({ skin = 'office' }: FileHeaderProps = {}): React.Rea
         </div>
       </div>
 
-      <div className="flex items-center gap-4 px-3 pb-1.5 text-xs">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 pb-1.5 text-xs">
         <div className="flex items-center gap-2" role="group" aria-label="View">
           <span className="text-co-text-muted">View:</span>
           {/* §3.9.1's deleted-change row: Source and Preview aren't options

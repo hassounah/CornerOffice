@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import { useCodeExplorerStore } from '../../stores/code-explorer-store'
 import { ExplorerToolbar } from './ExplorerToolbar'
 import { GitStateBanner } from './GitStateBanner'
@@ -8,6 +8,8 @@ import { FileTree } from './FileTree'
 import { FileHeader } from './FileHeader'
 import { CodePane } from './CodePane'
 import { QuickOpen } from './QuickOpen'
+import { SplitDivider } from './SplitDivider'
+import { useExplorerSplit } from './explorer-split'
 import { LIVE_UPDATES_REASON } from './notice-copy'
 
 // ---------------------------------------------------------------------------
@@ -17,8 +19,9 @@ import { LIVE_UPDATES_REASON } from './notice-copy'
 // and the file header (2.13). Route-agnostic and skin-aware so both
 // CodeExplorerPage (Office, 2.13) and RealmCodeExplorer (Realm, 3.2) can
 // mount the same shell. `skin` only ever reaches CodePane (2.17, the
-// realmTheme code pane) and ExplorerToolbar (2.12/3.2, the two themed
-// navigation labels) — TRD §3.8.2's "Copy decision" ("plain security and
+// realmTheme code pane), ExplorerToolbar (2.12/3.2, the two themed
+// navigation labels) and SplitDivider (#0031, the tree/viewer drag handle's
+// colors) — TRD §3.8.2's "Copy decision" ("plain security and
 // degraded-state copy... clarity beats immersion there") means nothing
 // ELSE here (GitStateBanner, the branch-mismatch notice, FileHeader,
 // FileTree) should ever need to branch on skin at all — a "clean code
@@ -28,6 +31,8 @@ import { LIVE_UPDATES_REASON } from './notice-copy'
 // component never imports the router directly — RealmCodeExplorer's "back"
 // is closing the overlay, not a route change.
 // ---------------------------------------------------------------------------
+
+const TREE_ID = 'code-explorer-tree'
 
 export interface CodeExplorerProps {
   skin: 'office' | 'realm'
@@ -42,6 +47,8 @@ export function CodeExplorer({ skin, onBack }: CodeExplorerProps): React.ReactEl
   const openFile = useCodeExplorerStore((s) => s.openFile)
 
   const [quickOpenOpen, setQuickOpenOpen] = useState(false)
+  const splitContainerRef = useRef<HTMLDivElement | null>(null)
+  const split = useExplorerSplit(splitContainerRef)
 
   const branchName = repo?.branch ?? repo?.headShort ?? null
   const branchMismatch = !!expectedBranch && !!repo && expectedBranch !== branchName
@@ -73,10 +80,15 @@ export function CodeExplorer({ skin, onBack }: CodeExplorerProps): React.ReactEl
         />
       )}
 
-      <div className="flex flex-1 min-h-0">
-        <FileTree className="w-72 shrink-0 border-r border-white/[0.06]" />
+      <div
+        ref={splitContainerRef}
+        className={`flex flex-1 min-h-0 min-w-0 ${split.dragging ? 'select-none cursor-col-resize' : ''}`}
+      >
+        <FileTree id={TREE_ID} className="flex-none" style={{ width: split.treeWidth }} />
 
-        <div className="flex flex-1 min-h-0 flex-col">
+        <SplitDivider skin={skin} controlsId={TREE_ID} split={split} />
+
+        <div className="flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden">
           {selected ? (
             <>
               <FileHeader skin={skin} />

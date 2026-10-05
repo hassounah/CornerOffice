@@ -85,10 +85,12 @@ function Row({
 }
 
 export interface FileTreeProps {
+  id?: string
   className?: string
+  style?: React.CSSProperties
 }
 
-export function FileTree({ className }: FileTreeProps): React.ReactElement {
+export function FileTree({ id, className, style }: FileTreeProps): React.ReactElement {
   const dirs = useCodeExplorerStore((s) => s.dirs)
   const expanded = useCodeExplorerStore((s) => s.expanded)
   const showIgnored = useCodeExplorerStore((s) => s.showIgnored)
@@ -229,7 +231,7 @@ export function FileTree({ className }: FileTreeProps): React.ReactElement {
   const changesByPath = status?.byPath ?? {}
 
   return (
-    <div className={['flex-1 min-h-0 flex flex-col', className].filter(Boolean).join(' ')}>
+    <div id={id} style={style} className={['min-h-0 flex flex-col', className].filter(Boolean).join(' ')}>
       {/* TRD §3.6.2 "Changed-only (FR-9)", FR-20 — outside containerRef so
        *  the ResizeObserver below measures only the space left for the
        *  virtualized list, not this row's own height. Withheld until status

@@ -107,6 +107,11 @@ const SandboxConfigSchema = z.object({
   workspaces: z.record(z.string().regex(SANDBOX_SLUG_RE), SandboxWorkspaceConfigSchema),
 })
 
+// Code Explorer layout (#0031): tree width in px
+const CodeExplorerConfigSchema = z.object({
+  treeWidth: z.number().int().min(0).max(10000),
+})
+
 const AppConfigSchema = z.object({
   version: z.number().int().positive(),
   companyName: z.string(),
@@ -139,6 +144,7 @@ const AppConfigSchema = z.object({
   }),
   realm: RealmConfigSchema,
   terminal: TerminalConfigSchema,
+  codeExplorer: CodeExplorerConfigSchema.optional(),
   sandbox: SandboxConfigSchema.optional(),
   discoveryExclusions: z.array(z.string()),
   firstLaunchComplete: z.boolean(),
@@ -359,6 +365,14 @@ export class ConfigManager {
       } catch {
         migrated = { ...migrated, sandbox: this._defaultSandbox() }
       }
+    }
+
+    // Defensive: a malformed codeExplorer value is dropped (absent means
+    // defaults) — it must never invalidate the whole config or trigger .bak recovery.
+    if ('codeExplorer' in migrated && !CodeExplorerConfigSchema.safeParse(migrated.codeExplorer).success) {
+      log.warn('[ConfigManager] Invalid codeExplorer config, dropping it')
+      migrated = { ...migrated }
+      delete migrated.codeExplorer
     }
 
     const result = AppConfigSchema.safeParse(migrated)

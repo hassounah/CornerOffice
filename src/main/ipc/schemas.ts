@@ -138,6 +138,7 @@ export const ConfigUpdateSchema = z.object({
   terminalEmulator: z.string().min(1).max(500).nullable().optional(),
   realm: RealmConfigUpdateSchema.optional(),
   terminal: TerminalConfigUpdateSchema.optional(),
+  codeExplorer: z.object({ treeWidth: z.number().int().min(0).max(10000) }).optional(),
   // Per-workspace display overrides (path is NOT updatable)
   workspaces: z.array(WorkspaceDisplayUpdateSchema).optional(),
 })

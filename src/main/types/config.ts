@@ -55,6 +55,11 @@ export interface SandboxConfig {
 // AppConfig — persisted to ~/.corner-office/config.json
 // ---------------------------------------------------------------------------
 
+// Code Explorer layout (#0031) — file tree width in px, shared by Office and Realm views
+export interface CodeExplorerConfig {
+  treeWidth: number;
+}
+
 export interface TerminalWindowBounds {
   x: number;       // percentage 0-100
   y: number;       // percentage 0-100
@@ -79,6 +84,7 @@ export interface AppConfig {
   hooks: HookConfig;
   realm: RealmConfig;
   terminal: TerminalConfig;
+  codeExplorer?: CodeExplorerConfig; // Absent means defaults — no version bump, no migration
   sandbox?: SandboxConfig;         // Absent means defaults (getSandboxConfig()) — no version bump, no migration
   discoveryExclusions: string[];   // Additional directory-name exclusion patterns
   firstLaunchComplete: boolean;

@@ -103,6 +103,16 @@ describe('FileTree — rendering', () => {
     expect(screen.getAllByRole('treeitem')).toHaveLength(2)
   })
 
+  it('forwards id and style to the root and does not flex-grow it', () => {
+    seedRoot([mkEntry('a.txt')])
+    const { container } = render(<FileTree id="code-explorer-tree" className="flex-none" style={{ width: 288 }} />)
+    const root = container.firstElementChild as HTMLElement
+    expect(root.id).toBe('code-explorer-tree')
+    expect(root.style.width).toBe('288px')
+    expect(root.className).toContain('flex-none')
+    expect(root.className).not.toContain('flex-1')
+  })
+
   it('shows a loading placeholder for a directory not yet listed', () => {
     useCodeExplorerStore.setState({ open: true, workspaceSlug: 'test-ws', dirs: {} })
     render(<FileTree />)
