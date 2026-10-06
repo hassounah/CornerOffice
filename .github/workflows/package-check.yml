@@ -57,15 +57,22 @@ jobs:
       - name: Package
         run: make package-deb ARCH=${{ matrix.arch }}
 
-      - name: Assert pty.node matches the target architecture
+      # node-pty ships prebuilds only for win32/darwin; on Linux electron-builder
+      # compiles it into build/Release/pty.node, which node-pty loads first.
+      # Check that exact file, and that it is a Linux ELF for the target arch.
+      - name: Assert the Linux pty.node matches the target architecture
         env:
           ELF: ${{ matrix.elf }}
         run: |
-          pty=$(find release -path '*app.asar.unpacked/node_modules/node-pty/*' -name pty.node | head -n 1)
+          find release -path '*app.asar.unpacked/node_modules/node-pty/*' -name pty.node
+          pty=$(find release -path '*-unpacked/resources/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node' | head -n 1)
           if [ -z "$pty" ]; then
-            echo "::error::pty.node not found under app.asar.unpacked/node_modules/node-pty/"
+            echo "::error::Linux pty.node not found at app.asar.unpacked/node_modules/node-pty/build/Release/"
             exit 1
           fi
-          echo "$pty"
-          file "$pty"
-          file "$pty" | grep -q "$ELF"
+          info=$(file -b "$pty")
+          echo "$pty: $info"
+          case "$info" in
+            ELF*"$ELF"*) ;;
+            *) echo "::error::$pty is not an ELF $ELF binary"; exit 1 ;;
+          esac
