@@ -25,15 +25,15 @@ Built for solo devs, indie hackers, and small team founders who run Claude Code 
 
 | Layer | Technology |
 |-------|-----------|
-| Framework | Electron 41 |
-| Frontend | React 19, React Router 7, Zustand 5 |
+| Framework | Electron 44 |
+| Frontend | React 19, React Router 8, Zustand 5 |
 | Styling | Tailwind CSS 4, Outfit font |
 | Terminal | xterm.js 6, node-pty 1.1 |
 | Markdown | react-markdown 10, remark-gfm |
 | Charts | Recharts 3 |
 | Build | electron-vite 5, Vite 7 |
-| Testing | Vitest 4, Testing Library, Playwright |
-| Linting | ESLint 10 (flat config), TypeScript 5.9 |
+| Testing | Vitest 5, Testing Library, Playwright |
+| Linting | ESLint 10 (flat config), TypeScript 6.0 |
 | IPC validation | Zod 4 |
 
 ## Install
@@ -52,18 +52,29 @@ Each release also includes a `SHA256SUMS` file (`sha256sum -c SHA256SUMS --ignor
 
 ## Requirements
 
-- Node.js 20+
-- pnpm
+- Node.js ^22.22.2 or ≥24.15 (24 recommended; `nvm install && nvm use`)
+- pnpm 10.34.6, pinned via `packageManager`: run `corepack enable` once; don't use another pnpm major
+- python3, make and g++ (node-pty is built from source on Linux)
 
 ## Getting Started
 
 ```bash
-# Install dependencies
+# Check Node, install dependencies, download Electron and build node-pty
 make setup
 
-# Start in development mode (hot reload)
+# Check Node, rebuild native modules, then start in development mode (hot reload)
 make dev
 ```
+
+Unit tests (`pnpm test`) never download Electron.
+
+### Setup troubleshooting
+
+- `ERR_PNPM_BAD_PM_VERSION`, a verify-deps failure, or "Multiple versions of pnpm specified": run `corepack enable`, then rerun.
+- `Error: python3 not found` (or make/g++) from `make rebuild-native`: install the build tools, for example `sudo apt-get install build-essential python3` or `sudo dnf install gcc-c++ make python3`.
+- `Failed to load native module: pty.node`: run `make rebuild-native`.
+- `make rebuild-native` fails while downloading the Electron headers: check your connection to electronjs.org and run it again.
+- Dependency versions follow a manual guideline of preferring releases at least ~7 days old. An urgent security fix (for example Electron) may take the newest release directly.
 
 ## Building
 
