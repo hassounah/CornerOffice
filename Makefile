@@ -9,7 +9,7 @@ NODE_CHECK = const [a,b,c]=process.versions.node.split(".").map(Number); \
   const ok=(a===22&&(b>22||(b===22&&c>=2)))||(a===24&&b>=15)||a>=26; \
   if(!ok){console.error("Error: Node.js ^22.22.2, ^24.15.0 or >=26 required (found v"+process.versions.node+"). Run: nvm install && nvm use");process.exit(1)}
 
-.PHONY: setup check-node dev build package-deb package-rpm package-appimage dist clean install test test-watch lint help
+.PHONY: setup check-node rebuild-native dev build package-deb package-rpm package-appimage dist clean install test test-watch lint help
 .DEFAULT_GOAL := help
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -19,17 +19,29 @@ check-node:
 	@node -e '$(NODE_CHECK)'
 
 # ──────────────────────────────────────────────────────────────────────────────
-# setup: verify Node.js version, install dependencies, print ready message
+# setup: verify Node.js version, install dependencies, download Electron, build native modules
 # ──────────────────────────────────────────────────────────────────────────────
 setup: check-node
 	pnpm install --frozen-lockfile
+	@# Electron >=42 has no postinstall; download it once, in the foreground
+	pnpm exec install-electron
+	$(MAKE) rebuild-native
 	@echo ""
 	@echo "Corner Office is ready. Run 'make dev' to start."
 
 # ──────────────────────────────────────────────────────────────────────────────
+# rebuild-native: build node-pty against the installed Electron's headers
+# ──────────────────────────────────────────────────────────────────────────────
+rebuild-native:
+	@for t in python3 make g++; do command -v $$t >/dev/null 2>&1 || { \
+	  echo "Error: $$t not found. node-pty is built from source on Linux; install python3, make and g++ (e.g. sudo apt-get install build-essential python3)."; exit 1; }; done
+	$(NODE_BIN)/electron-builder install-app-deps || { \
+	  echo "Error: building native modules failed. This step downloads the Electron headers; if the log above shows a timeout or network error, check your connection to electronjs.org and run 'make rebuild-native' again."; exit 1; }
+
+# ──────────────────────────────────────────────────────────────────────────────
 # dev: start Electron in development mode with hot reload
 # ──────────────────────────────────────────────────────────────────────────────
-dev: check-node
+dev: check-node rebuild-native
 	$(NODE_BIN)/electron-vite dev
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -92,7 +104,8 @@ lint:
 help:
 	@echo "Corner Office"
 	@echo ""
-	@echo "  make setup            Verify Node.js and install dependencies"
+	@echo "  make setup            Verify Node.js, install deps, download Electron, build native modules"
+	@echo "  make rebuild-native   Rebuild node-pty for the installed Electron"
 	@echo "  make dev              Start Electron in dev mode with hot reload"
 	@echo "  make build            Compile all processes for production"
 	@echo "  make dist             Build deb + AppImage (+ rpm if rpmbuild available)"

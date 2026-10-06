@@ -85,7 +85,7 @@ export function installNavigationLockdown(webContents: WebContents, isAppOrigin:
  * escape attempt that got as far as `will-navigate`).
  */
 export function onCrossDocumentMainFrameNavigation(webContents: WebContents, cb: () => void): void {
-  webContents.on('did-start-navigation', (_event, _url, isSameDocument, isMainFrame) => {
-    if (isMainFrame && !isSameDocument) cb()
+  webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) cb()
   })
 }

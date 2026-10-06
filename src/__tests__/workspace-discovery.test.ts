@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import fg from 'fast-glob'
+import { escapePath } from 'tinyglobby'
 
 const mockLog = vi.hoisted(() => ({
   info: vi.fn(),
@@ -97,9 +97,9 @@ describe('WorkspaceDiscoveryService', () => {
     mkdir(path.join(paths.sandboxesRoot, 'some-workspace', '.rix'))
     mkdir(path.join(tmpDir, 'real-project', '.rix'))
 
-    const ignorePatterns = [`${fg.escapePath(paths.sandboxesRoot)}/**`]
+    const ignorePatterns = [`${escapePath(path.relative(tmpDir, paths.sandboxesRoot))}/**`]
     // dot:true is forced here so the result depends only on the explicit
-    // SANDBOXES_ROOT pattern above, not on fast-glob's dot:false default
+    // SANDBOXES_ROOT pattern above, not on the dot:false default
     // (SANDBOXES_ROOT sits under the dot directory ~/.corner-office).
     const results = await svc['_runGlob'](tmpDir, ignorePatterns, true)
 
@@ -129,6 +129,83 @@ describe('WorkspaceDiscoveryService', () => {
       expect(resultPaths.some((p) => p.startsWith(paths.sandboxesRoot))).toBe(false)
     } finally {
       homedirSpy.mockRestore()
+    }
+  })
+
+  /** Runs discover() (with os.homedir already mocked) in a fresh module; returns the ignore patterns it computed, plus the service. */
+  async function captureIgnorePatterns(): Promise<{ captured: string[]; freshSvc: WorkspaceDiscoveryService }> {
+    vi.resetModules()
+    const { WorkspaceDiscoveryService: FreshService } = await import('@main/services/workspace-discovery')
+    const freshSvc = new FreshService()
+    const runGlob = vi.spyOn(freshSvc as unknown as { _runGlob: (h: string, i: string[], d?: boolean) => Promise<string[]> }, '_runGlob')
+    await freshSvc.discover()
+    return { captured: runGlob.mock.calls[0][1], freshSvc }
+  }
+
+  it('excludes the sandboxes root computed by discover() when dot:true is forced on the glob', async () => {
+    const homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpDir)
+    try {
+      const { captured, freshSvc } = await captureIgnorePatterns()
+
+      const paths = sandboxPaths(fs.realpathSync(tmpDir))
+      mkdir(path.join(paths.sandboxesRoot, 'some-workspace', '.rix'))
+      mkdir(path.join(tmpDir, 'real-project', '.rix'))
+
+      const results = await freshSvc['_runGlob'](tmpDir, captured, true)
+
+      expect(results.some((p) => p.includes('real-project'))).toBe(true)
+      expect(results.some((p) => p.startsWith(paths.sandboxesRoot))).toBe(false)
+    } finally {
+      homedirSpy.mockRestore()
+    }
+  })
+
+  it('anchors the sandboxes exclusion to the real home when the home directory is a symlink (SEC-L3)', async () => {
+    const realDir = path.join(tmpDir, 'real')
+    const link = path.join(tmpDir, 'link')
+    mkdir(realDir)
+    fs.symlinkSync(realDir, link)
+    const homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(link)
+    try {
+      const { captured, freshSvc } = await captureIgnorePatterns()
+
+      const realHome = fs.realpathSync(link)
+      const paths = sandboxPaths(realHome)
+      expect(captured).toContain(`${escapePath(path.relative(realHome, paths.sandboxesRoot))}/**`)
+      expect(captured).toContain('.corner-office/sandboxes/**')
+
+      mkdir(path.join(paths.sandboxesRoot, 'some-workspace', '.rix'))
+      mkdir(path.join(realHome, 'real-project', '.rix'))
+
+      const results = await freshSvc['_runGlob'](realHome, captured, true)
+
+      expect(results.some((p) => p.includes('real-project'))).toBe(true)
+      expect(results.some((p) => p.startsWith(paths.sandboxesRoot))).toBe(false)
+    } finally {
+      homedirSpy.mockRestore()
+    }
+  })
+
+  it('warns and skips the sandboxes exclusion when the sandboxes root is outside the home directory', async () => {
+    mockLog.warn.mockClear()
+    vi.resetModules()
+    vi.doMock('@main/services/sandbox-paths', () => ({
+      resolveRealHome: () => tmpDir,
+      sandboxPaths: () => ({ sandboxesRoot: path.join(os.tmpdir(), 'elsewhere-sandboxes') }),
+    }))
+    const homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpDir)
+    try {
+      const { WorkspaceDiscoveryService: FreshService } = await import('@main/services/workspace-discovery')
+      const freshSvc = new FreshService()
+      mkdir(path.join(tmpDir, 'real-project', '.rix'))
+
+      const result = await freshSvc.discover()
+
+      expect(result.workspaces.map((w) => w.path)).toContain(path.join(tmpDir, 'real-project'))
+      expect(mockLog.warn).toHaveBeenCalledWith(expect.stringContaining('outside the home directory'))
+    } finally {
+      homedirSpy.mockRestore()
+      vi.doUnmock('@main/services/sandbox-paths')
     }
   })
 

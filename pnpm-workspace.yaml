@@ -1,5 +1,4 @@
 onlyBuiltDependencies:
-  - electron      # removed in B7 (Electron >=42 has no install script)
   - esbuild
 shamefullyHoist: true          # was .npmrc shamefully-hoist=true
 strictPeerDependencies: false  # was .npmrc strict-peer-dependencies=false

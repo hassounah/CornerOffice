@@ -3,7 +3,9 @@ import type { IpcResponse } from '../main/types/ipc'
 import type { AppState } from '../main/ipc/handlers'
 import type { Workspace, ActivityFeedItem, NotificationItem, GamificationState, HomunculusState } from '../main/types'
 import type { ChannelSession, PluginStatus } from '../main/types/channels'
+import { clipboard } from 'electron'
 import { buildRealHandlers } from '../main/ipc/handlers'
+import { TERMINAL_IPC } from '../main/ipc/channels'
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -676,6 +678,11 @@ describe('workspace:readReadme', () => {
 // shell:openExternal handler
 // ---------------------------------------------------------------------------
 
+const menuCapture = vi.hoisted(() => ({
+  template: [] as Array<{ label?: string; click?: () => void }>,
+  popup: undefined as undefined | { window?: unknown; callback?: () => void },
+}))
+
 vi.mock('electron', async (importOriginal) => {
   const actual = await importOriginal<typeof import('electron')>()
   return {
@@ -683,6 +690,13 @@ vi.mock('electron', async (importOriginal) => {
     shell: {
       openExternal: vi.fn().mockResolvedValue(undefined),
     },
+    Menu: {
+      buildFromTemplate: vi.fn((template: typeof menuCapture.template) => {
+        menuCapture.template = template
+        return { popup: vi.fn((opts: typeof menuCapture.popup) => { menuCapture.popup = opts }) }
+      }),
+    },
+    clipboard: { readText: vi.fn() },
   }
 })
 
@@ -776,5 +790,69 @@ describe('shell:openExternal', () => {
     const result = await handler(fakeEvent, { url: 'https://example.com' }) as IpcResponse<unknown>
     expect(result.error).not.toBeNull()
     expect(result.error!.code).toBe('VALIDATION_ERROR')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// terminal:showContextMenu handler (async clipboard paste, Electron 42+)
+// ---------------------------------------------------------------------------
+
+describe('terminal:showContextMenu', () => {
+  const sessionKey = 'shell:office_shell'
+
+  beforeEach(() => {
+    menuCapture.template = []
+    menuCapture.popup = undefined
+    appState.terminalManager = { hasSession: vi.fn().mockReturnValue(true) } as unknown as AppState['terminalManager']
+    handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
+  })
+
+  /** Start the handler, then hand back the pending result plus the captured menu pieces. */
+  async function openMenu(): Promise<{ result: Promise<unknown>; clickPaste: () => void; close: () => void }> {
+    const handler = getHandler(TERMINAL_IPC.SHOW_CONTEXT_MENU)
+    const result = handler(fakeEvent, { hasSelection: false, sessionKey }) as Promise<unknown>
+    // wrapHandler is async: let it reach menu.popup before the test clicks
+    await vi.waitFor(() => expect(menuCapture.popup).toBeDefined())
+    const paste = menuCapture.template.find((item) => item.label === 'Paste')
+    return {
+      result,
+      clickPaste: () => paste?.click?.(),
+      close: () => menuCapture.popup?.callback?.(),
+    }
+  }
+
+  it('delivers the pasted text when click and close fire in the same tick', async () => {
+    vi.mocked(clipboard.readText).mockResolvedValue('hello')
+    const { result, clickPaste, close } = await openMenu()
+    clickPaste()
+    close()
+    const res = await result as IpcResponse<{ action: string | null; text?: string }>
+    expect(res.data).toEqual({ action: 'paste', text: 'hello' })
+  })
+
+  it('resolves with no action when the clipboard read rejects', async () => {
+    vi.mocked(clipboard.readText).mockRejectedValue(new Error('denied'))
+    const { result, clickPaste, close } = await openMenu()
+    clickPaste()
+    close()
+    const res = await result as IpcResponse<{ action: string | null }>
+    expect(res.data).toEqual({ action: null })
+  })
+
+  it('caps the pasted text at 1 MiB', async () => {
+    vi.mocked(clipboard.readText).mockResolvedValue('x'.repeat(1_048_576 + 100))
+    const { result, clickPaste, close } = await openMenu()
+    clickPaste()
+    close()
+    const res = await result as IpcResponse<{ action: string | null; text: string }>
+    expect(res.data?.action).toBe('paste')
+    expect(res.data?.text).toHaveLength(1_048_576)
+  })
+
+  it('resolves with no action when the menu is dismissed without a click', async () => {
+    const { result, close } = await openMenu()
+    close()
+    const res = await result as IpcResponse<{ action: string | null }>
+    expect(res.data).toEqual({ action: null })
   })
 })
