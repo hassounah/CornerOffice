@@ -15,8 +15,8 @@ import { TeamLevelBadge } from '../components/gamification/TeamLevelBadge'
 import { PipelineTrack } from '../components/workspace/PipelineTrack'
 import { ParkedPipelines } from '../components/workspace/ParkedPipelines'
 import { FeatureBoard } from '../components/workspace/FeatureBoard'
-import { MemoryPanel } from '../components/workspace/MemoryPanel'
-import { ReadmePanel } from '../components/workspace/ReadmePanel'
+import { WorkspaceTabs } from '../components/workspace/WorkspaceTabs'
+import { DocViewerOverlay } from '../components/docviewer'
 import { HistoryTimeline } from '../components/workspace/HistoryTimeline'
 import { ChatPanel } from '../components/channels/ChatPanel'
 import { PermissionButton } from '../components/channels/PermissionButton'
@@ -229,8 +229,34 @@ export default function WorkspaceDetail(): React.ReactElement {
 
         <TeamLevelBadge level={workspace.level} />
 
-        {/* Session controls (A15, A6, A9) */}
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => openFolder(workspace.docsRoot, workspace.slug)}
+            disabled={!workspace.docsRootExists}
+            title={workspace.docsRootExists ? undefined : 'Docs directory not found — try refreshing'}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors ${!workspace.docsRootExists ? 'opacity-40 cursor-not-allowed' : ''}`}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M1 3.5C1 2.94772 1.44772 2.5 2 2.5H4.5L5.5 3.5H10C10.5523 3.5 11 3.94772 11 4.5V9C11 9.55228 10.5523 10 10 10H2C1.44772 10 1 9.55228 1 9V3.5Z" stroke="currentColor" strokeWidth="1" strokeLinejoin="round"/>
+            </svg>
+            Browse Docs
+          </button>
+          <button
+            data-return-focus={`browse-code:${workspace.slug}`}
+            onClick={() => openCodeExplorer(workspace.slug, { entry: 'browse' })}
+            disabled={workspace.repoRootStatus !== 'ok'}
+            title={browseCodeTooltip(workspace.repoRootStatus)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors ${workspace.repoRootStatus !== 'ok' ? 'opacity-40 cursor-not-allowed' : ''}`}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M4 3L1.5 6L4 9M8 3L10.5 6L8 9" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            Browse Code
+          </button>
+        </div>
+
+        {/* Session controls (A15, A6, A9) */}
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <PermissionButton workspaceSlug={workspace.slug} />
           {/* Renders only for a workspace that has a sandbox; both hide themselves otherwise. */}
           <SandboxBadge slug={workspace.slug} skin="office" />
@@ -359,48 +385,20 @@ export default function WorkspaceDetail(): React.ReactElement {
             </div>
           )}
 
-          {/* Feature board */}
-          <FeatureBoard
-            features={workspace.features}
-            ideationItems={workspace.ideationItems}
-            workspaceSlug={workspace.slug}
-            onReview={handleFeatureReview}
+          {/* Board | Memory | README. Keyed by slug so the tab and expanded columns reset per workspace. */}
+          <WorkspaceTabs
+            key={workspace.slug}
+            board={
+              <FeatureBoard
+                features={workspace.features}
+                ideationItems={workspace.ideationItems}
+                workspaceSlug={workspace.slug}
+                onReview={handleFeatureReview}
+              />
+            }
+            memory={workspace.projectContext || null}
+            readme={workspace.readmeContent}
           />
-
-          {/* Memory panel */}
-          {workspace.projectContext && (
-            <MemoryPanel content={workspace.projectContext} />
-          )}
-
-          {/* README panel + Browse Docs button */}
-          <div className="flex flex-row gap-3 items-start">
-            <div className="flex-1">
-              <ReadmePanel content={workspace.readmeContent} />
-            </div>
-            <button
-              onClick={() => openFolder(workspace.docsRoot, workspace.slug)}
-              disabled={!workspace.docsRootExists}
-              title={workspace.docsRootExists ? undefined : 'Docs directory not found — try refreshing'}
-              className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest rounded text-co-text-muted border border-white/[0.06] bg-transparent hover:bg-white/[0.04] transition-colors ${!workspace.docsRootExists ? 'opacity-40 cursor-not-allowed' : ''}`}
-            >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M1 3.5C1 2.94772 1.44772 2.5 2 2.5H4.5L5.5 3.5H10C10.5523 3.5 11 3.94772 11 4.5V9C11 9.55228 10.5523 10 10 10H2C1.44772 10 1 9.55228 1 9V3.5Z" stroke="currentColor" strokeWidth="1" strokeLinejoin="round"/>
-              </svg>
-              Browse Docs
-            </button>
-            <button
-              data-return-focus={`browse-code:${workspace.slug}`}
-              onClick={() => openCodeExplorer(workspace.slug, { entry: 'browse' })}
-              disabled={workspace.repoRootStatus !== 'ok'}
-              title={browseCodeTooltip(workspace.repoRootStatus)}
-              className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest rounded text-co-text-muted border border-white/[0.06] bg-transparent hover:bg-white/[0.04] transition-colors ${workspace.repoRootStatus !== 'ok' ? 'opacity-40 cursor-not-allowed' : ''}`}
-            >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M4 3L1.5 6L4 9M8 3L10.5 6L8 9" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-              Browse Code
-            </button>
-          </div>
 
           {/* History timeline */}
           {workspace.shippedFeatures.length > 0 && (
@@ -443,6 +441,9 @@ export default function WorkspaceDetail(): React.ReactElement {
           />
         )}
       </div>
+
+      {/* Single doc viewer mount: serves the header Browse Docs button and feature card clicks on any tab. */}
+      <DocViewerOverlay />
     </div>
   )
 }

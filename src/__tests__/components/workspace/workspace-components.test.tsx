@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, within } from '@testing-library/react'
+import { useParams } from 'react-router'
 import type { Pipeline, Feature, IdeationItem, ShippedFeature, Workspace, TeamLevel } from '@main/types/workspace'
 
 // ---------------------------------------------------------------------------
@@ -97,6 +98,8 @@ import { FeatureCard } from '../../../renderer/components/workspace/FeatureCard'
 import { IdeationCard } from '../../../renderer/components/workspace/IdeationCard'
 import { FeatureBoard } from '../../../renderer/components/workspace/FeatureBoard'
 import { MemoryPanel } from '../../../renderer/components/workspace/MemoryPanel'
+import { ReadmePanel } from '../../../renderer/components/workspace/ReadmePanel'
+import { WorkspaceTabs } from '../../../renderer/components/workspace/WorkspaceTabs'
 import { HistoryTimeline } from '../../../renderer/components/workspace/HistoryTimeline'
 import WorkspaceDetail from '../../../renderer/pages/WorkspaceDetail'
 import { setPendingReturnFocus } from '../../../renderer/utils/code-explorer-return-focus'
@@ -553,6 +556,59 @@ describe('FeatureBoard', () => {
     )
     expect(screen.queryByRole('button', { name: /review changes/i })).not.toBeInTheDocument()
   })
+
+  // --- Column cap + Done ordering ------------------------------------------
+
+  function makeMany(count: number, status: Feature['status'], prefix: string): Feature[] {
+    return Array.from({ length: count }, (_, i) => {
+      const id = String(i + 1).padStart(4, '0')
+      return makeFeature({ id, slug: `${id}-${prefix}`, name: `${prefix} ${id}`, status })
+    })
+  }
+
+  it('caps a column at 8 cards, newest first for Done, and expands/collapses', () => {
+    render(<FeatureBoard features={makeMany(10, 'done', 'done')} ideationItems={[]} />)
+    expect(screen.getAllByLabelText(/feature: done 00/i)).toHaveLength(8)
+    expect(screen.getByLabelText(/done 0010/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/done 0003/i)).toBeInTheDocument()
+    expect(screen.queryByLabelText(/done 0002/i)).not.toBeInTheDocument()
+
+    const button = screen.getByRole('button', { name: 'Show 2 more' })
+    expect(button).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(button)
+    expect(screen.getAllByLabelText(/feature: done 00/i)).toHaveLength(10)
+    const less = screen.getByRole('button', { name: 'Show less' })
+    expect(less).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(less)
+    expect(screen.getAllByLabelText(/feature: done 00/i)).toHaveLength(8)
+  })
+
+  it('orders Done newest first without mutating the input', () => {
+    const features = [
+      makeFeature({ id: '0001', slug: '0001-a', name: 'Old', status: 'done' }),
+      makeFeature({ id: '0032', slug: '0032-b', name: 'New', status: 'done' }),
+    ]
+    render(<FeatureBoard features={features} ideationItems={[]} />)
+    const cards = screen.getAllByLabelText(/feature: (old|new)/i)
+    expect(cards[0]).toHaveAccessibleName(/new/i)
+    expect(features[0].id).toBe('0001')
+  })
+
+  it('shows no toggle for exactly 8 cards', () => {
+    render(<FeatureBoard features={makeMany(8, 'todo', 'todo')} ideationItems={[]} />)
+    expect(screen.queryByRole('button', { name: /show/i })).not.toBeInTheDocument()
+  })
+
+  it('expands columns independently and keeps the total count badge', () => {
+    const features = [...makeMany(9, 'todo', 'todo'), ...makeMany(9, 'done', 'done')]
+    render(<FeatureBoard features={features} ideationItems={[]} />)
+    expect(screen.getAllByText('9')).toHaveLength(2)
+    const buttons = screen.getAllByRole('button', { name: 'Show 1 more' })
+    expect(buttons).toHaveLength(2)
+    fireEvent.click(buttons[0])
+    expect(screen.getAllByLabelText(/feature: todo 00/i)).toHaveLength(9)
+    expect(screen.getAllByLabelText(/feature: done 00/i)).toHaveLength(8)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -560,30 +616,116 @@ describe('FeatureBoard', () => {
 // ---------------------------------------------------------------------------
 
 describe('MemoryPanel', () => {
-  it('is collapsed by default', () => {
-    render(<MemoryPanel content="# Memory" />)
-    expect(screen.queryByTestId('markdown')).not.toBeInTheDocument()
-  })
-
-  it('expands on toggle click', () => {
+  it('renders the markdown immediately, with no toggle', () => {
     render(<MemoryPanel content="# Memory content" />)
-    fireEvent.click(screen.getByRole('button', { name: /memory/i }))
-    expect(screen.getByTestId('markdown')).toBeInTheDocument()
-  })
-
-  it('aria-expanded reflects state', () => {
-    render(<MemoryPanel content="# Memory" />)
-    const btn = screen.getByRole('button', { name: /memory/i })
-    expect(btn).toHaveAttribute('aria-expanded', 'false')
-    fireEvent.click(btn)
-    expect(btn).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByTestId('markdown')).toHaveTextContent('# Memory content')
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
   it('does NOT render raw HTML (XSS test)', () => {
     render(<MemoryPanel content={'<script>alert(1)</script>\n<img onerror="alert(2)" src="x">'} />)
-    fireEvent.click(screen.getByRole('button', { name: /memory/i }))
     // The mock just renders content as text — no script or img elements created
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ReadmePanel
+// ---------------------------------------------------------------------------
+
+describe('ReadmePanel', () => {
+  it('renders the markdown immediately, with no toggle', () => {
+    render(<ReadmePanel content="# Readme content" />)
+    expect(screen.getByTestId('markdown')).toHaveTextContent('# Readme content')
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('does NOT render raw HTML (XSS test)', () => {
+    render(<ReadmePanel content={'<script>alert(1)</script>\n<img onerror="alert(2)" src="x">'} />)
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// WorkspaceTabs
+// ---------------------------------------------------------------------------
+
+describe('WorkspaceTabs', () => {
+  function renderTabs(memory: string | null = 'Memory text', readme: string | null = 'Readme text') {
+    return render(<WorkspaceTabs board={<div>board body</div>} memory={memory} readme={readme} />)
+  }
+
+  it('selects Board by default and hides the other panels', () => {
+    renderTabs()
+    expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Memory' })).toHaveAttribute('aria-selected', 'false')
+    expect(screen.getByText('board body')).toBeVisible()
+    expect(screen.getByText('Memory text')).not.toBeVisible()
+    expect(screen.getByText('Readme text')).not.toBeVisible()
+  })
+
+  it('switches panels on click', () => {
+    renderTabs()
+    fireEvent.click(screen.getByRole('tab', { name: 'Memory' }))
+    expect(screen.getByText('Memory text')).toBeVisible()
+    expect(screen.getByText('board body')).not.toBeVisible()
+    fireEvent.click(screen.getByRole('tab', { name: 'README' }))
+    expect(screen.getByText('Readme text')).toBeVisible()
+  })
+
+  it('keeps exactly one tab in the tab order', () => {
+    renderTabs()
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs.filter((t) => t.tabIndex === 0)).toHaveLength(1)
+    fireEvent.click(screen.getByRole('tab', { name: 'README' }))
+    expect(screen.getByRole('tab', { name: 'README' }).tabIndex).toBe(0)
+    expect(tabs.filter((t) => t.tabIndex === 0)).toHaveLength(1)
+  })
+
+  it('pairs each tab with its panel through aria-controls and aria-labelledby', () => {
+    renderTabs()
+    for (const tab of screen.getAllByRole('tab')) {
+      const panel = document.getElementById(tab.getAttribute('aria-controls') ?? '')
+      expect(panel).not.toBeNull()
+      expect(panel).toHaveAttribute('role', 'tabpanel')
+      expect(panel).toHaveAttribute('aria-labelledby', tab.id)
+    }
+  })
+
+  it('moves selection and focus with the arrow keys, wrapping at both ends', () => {
+    renderTabs()
+    const board = screen.getByRole('tab', { name: 'Board' })
+    fireEvent.keyDown(board, { key: 'ArrowLeft' })
+    expect(screen.getByRole('tab', { name: 'README' })).toHaveAttribute('aria-selected', 'true')
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'README' }))
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'README' }), { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
+    expect(document.activeElement).toBe(board)
+    fireEvent.keyDown(board, { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Memory' }))
+  })
+
+  it('jumps to the ends with Home and End', () => {
+    renderTabs()
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Board' }), { key: 'End' })
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'README' }))
+    expect(screen.getByRole('tab', { name: 'README' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'README' }), { key: 'Home' })
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Board' }))
+    expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('ignores other keys', () => {
+    renderTabs()
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Board' }), { key: 'a' })
+    expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('shows empty-state copy when memory and README are missing', () => {
+    renderTabs(null, null)
+    expect(screen.getByText('No project memory yet.')).toBeInTheDocument()
+    expect(screen.getByText('No README found.')).toBeInTheDocument()
+    expect(screen.queryByTestId('markdown')).not.toBeInTheDocument()
   })
 })
 
@@ -728,16 +870,39 @@ describe('WorkspaceDetail', () => {
       makeWorkspace({ activePipelines: [], shippedFeatures: [], projectContext: 'My project context' }),
     ]
     render(<WorkspaceDetail />)
-    expect(screen.getByText('My project context')).toBeInTheDocument()
+    // Shown in the empty state and again in the (hidden) Memory tab panel.
+    expect(screen.getAllByText('My project context')).toHaveLength(2)
   })
 
-  it('renders MemoryPanel when projectContext present', () => {
+  it('renders the Memory tab when projectContext present', () => {
     mockWorkspaceStore.workspaces = [
       makeWorkspace({ activePipelines: [makePipeline()], projectContext: 'Project summary' }),
     ]
     render(<WorkspaceDetail />)
-    // MemoryPanel is present (collapsed by default but mounted)
-    expect(screen.getByText('Memory')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Memory' })).toBeInTheDocument()
+  })
+
+  it('puts the Browse Docs and Browse Code buttons in the header', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace()]
+    render(<WorkspaceDetail />)
+    const header = screen.getByRole('banner')
+    expect(within(header).getByRole('button', { name: /browse docs/i })).toBeInTheDocument()
+    expect(within(header).getByRole('button', { name: /browse code/i })).toBeInTheDocument()
+  })
+
+  it('resets to the Board tab when the slug changes', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace(), makeWorkspace({ slug: 'other-ws', displayName: 'Other' })]
+    const { rerender } = render(<WorkspaceDetail />)
+    fireEvent.click(screen.getByRole('tab', { name: 'README' }))
+    expect(screen.getByRole('tab', { name: 'README' })).toHaveAttribute('aria-selected', 'true')
+
+    vi.mocked(useParams).mockReturnValue({ slug: 'other-ws' })
+    try {
+      rerender(<WorkspaceDetail />)
+      expect(screen.getByRole('tab', { name: 'Board' })).toHaveAttribute('aria-selected', 'true')
+    } finally {
+      vi.mocked(useParams).mockReturnValue({ slug: 'test-ws' })
+    }
   })
 
   it('renders Browse Docs button', () => {

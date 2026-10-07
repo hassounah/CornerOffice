@@ -1,10 +1,12 @@
-import React from 'react'
+import React, { useId, useState } from 'react'
 import type { Feature, IdeationItem } from '@main/types/workspace'
 import { FeatureCard } from './FeatureCard'
 import { IdeationCard } from './IdeationCard'
 import { useSettingsStore } from '../../stores/settings-store'
 import { useDocViewerStore } from '../../stores/docviewer-store'
-import { DocViewerOverlay } from '../docviewer'
+import { newestFirst } from '../../utils/feature-order'
+
+const COLUMN_CAP = 8
 
 interface FeatureBoardProps {
   features: Feature[]
@@ -26,6 +28,8 @@ interface Column {
 
 export function FeatureBoard({ features, ideationItems, workspaceSlug, onReview }: FeatureBoardProps): React.ReactElement {
   const compactView = useSettingsStore((s) => s.config?.appearance.compactView ?? false)
+  const uid = useId()
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const openFolder = useDocViewerStore((s) => s.openFolder)
   const openFile = useDocViewerStore((s) => s.openFile)
 
@@ -43,7 +47,7 @@ export function FeatureBoard({ features, ideationItems, workspaceSlug, onReview 
 
   const todoFeatures = features.filter((f) => f.status === 'todo')
   const inProgressFeatures = features.filter((f) => f.status === 'in_progress')
-  const doneFeatures = features.filter((f) => f.status === 'done')
+  const doneFeatures = newestFirst(features.filter((f) => f.status === 'done'))
 
   const columns: Column[] = [
     {
@@ -108,12 +112,27 @@ export function FeatureBoard({ features, ideationItems, workspaceSlug, onReview 
             {col.items.length === 0 ? (
               <div className={`${compactView ? 'h-8' : 'h-12'}`} />
             ) : (
-              <div className={compactView ? 'flex flex-col gap-1.5' : 'flex flex-col gap-2'}>{col.items}</div>
+              <div
+                id={`${uid}-${col.id}`}
+                className={compactView ? 'flex flex-col gap-1.5' : 'flex flex-col gap-2'}
+              >
+                {expanded[col.id] ? col.items : col.items.slice(0, COLUMN_CAP)}
+              </div>
+            )}
+            {col.items.length > COLUMN_CAP && (
+              <button
+                type="button"
+                aria-expanded={!!expanded[col.id]}
+                aria-controls={`${uid}-${col.id}`}
+                onClick={() => setExpanded((prev) => ({ ...prev, [col.id]: !prev[col.id] }))}
+                className="self-start text-[10px] font-medium text-co-text-muted uppercase tracking-widest hover:text-co-text"
+              >
+                {expanded[col.id] ? 'Show less' : `Show ${col.items.length - COLUMN_CAP} more`}
+              </button>
             )}
           </div>
         ))}
       </div>
-      <DocViewerOverlay />
     </section>
   )
 }
