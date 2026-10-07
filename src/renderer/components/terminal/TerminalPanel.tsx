@@ -73,10 +73,12 @@ export interface TerminalPanelProps {
   workspaceSlug: string
   fontSize?: number
   onReady?: () => void
+  /** False while the PTY does not exist yet (no resize IPC is sent). */
+  ptyReady?: boolean
 }
 
 export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>(
-  function TerminalPanel({ workspaceSlug, fontSize = 14, onReady }, ref) {
+  function TerminalPanel({ workspaceSlug, fontSize = 14, onReady, ptyReady = true }, ref) {
     const containerRef = useRef<HTMLDivElement>(null)
     const terminalRef = useRef<Terminal | null>(null)
     const searchAddonRef = useRef<SearchAddon | null>(null)
@@ -84,6 +86,10 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
     // Keep onReady in a ref so the effect closure never goes stale
     const onReadyRef = useRef(onReady)
     useEffect(() => { onReadyRef.current = onReady }, [onReady])
+    // Starts false: the ptyReady effect below sends the first size once the PTY exists
+    const ptyReadyRef = useRef(false)
+    const lastSentRef = useRef<{ cols: number; rows: number } | null>(null)
+    const syncSizeRef = useRef<(() => boolean) | null>(null)
 
     useImperativeHandle(ref, () => ({
       search(query: string): boolean {
@@ -175,7 +181,36 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
       terminal.loadAddon(webLinksAddon)
 
       // ── 5. Initial fit ────────────────────────────────────────────────────────
-      fitAddon.fit()
+      // sendSize is the single place PTY sizes are sent: skipped while the PTY
+      // does not exist yet and when the size is unchanged since the last send.
+      let hasFitted = false
+      let disposed = false
+      const cornerOffice = window.cornerOffice
+
+      function sendSize(cols: number, rows: number): void {
+        if (!ptyReadyRef.current) return
+        const last = lastSentRef.current
+        if (last && last.cols === cols && last.rows === rows) return
+        lastSentRef.current = { cols, rows }
+        void cornerOffice?.terminal.resize(workspaceSlug, cols, rows)
+      }
+
+      function syncSize(): boolean {
+        const ok = fitAddon.fit()
+        if (ok) {
+          hasFitted = true
+          sendSize(terminal.cols, terminal.rows)
+        }
+        return ok
+      }
+
+      syncSizeRef.current = syncSize
+      syncSize()
+
+      // Fonts can change cell metrics after the first fit
+      void document.fonts?.ready.then(() => {
+        if (!disposed) syncSize()
+      })
 
       // ── onReady gate (amendment A5) ──────────────────────────────────────────
       let readyFired = false
@@ -193,7 +228,6 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
       }
 
       // ── 5. Scrollback replay ─────────────────────────────────────────────────
-      const cornerOffice = window.cornerOffice
       if (cornerOffice) {
         void cornerOffice.terminal
           .getScrollback(workspaceSlug)
@@ -202,9 +236,8 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
             if (scrollback.length > 0) {
               // Write buffered output from PTY, then fit + signal ready
               terminal.write(scrollback, () => {
-                fitAddon.fit()
+                syncSize()
                 terminal.scrollToBottom()
-                void cornerOffice.terminal.resize(workspaceSlug, terminal.cols, terminal.rows)
                 fireReady()
               })
             } else {
@@ -236,21 +269,29 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
 
       // ── 8. Resize handling ───────────────────────────────────────────────────
       const onResizeDisposable = terminal.onResize(({ cols, rows }) => {
-        void cornerOffice?.terminal.resize(workspaceSlug, cols, rows)
+        sendSize(cols, rows)
       })
 
       let resizeTimer: ReturnType<typeof setTimeout> | null = null
       const resizeObserver = new ResizeObserver(() => {
+        // The first observation with a real size fits immediately; later ones are debounced
+        if (!hasFitted) {
+          syncSize()
+          return
+        }
         if (resizeTimer !== null) clearTimeout(resizeTimer)
         resizeTimer = setTimeout(() => {
           resizeTimer = null
-          fitAddon.fit()
+          syncSize()
         }, 200)
       })
       resizeObserver.observe(container)
 
       // ── Cleanup (P17) ────────────────────────────────────────────────────────
       return () => {
+        disposed = true
+        syncSizeRef.current = null
+        lastSentRef.current = null
         terminalRef.current = null
         searchAddonRef.current = null
         fitAddonRef.current = null
@@ -265,6 +306,14 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
       }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [workspaceSlug])
+
+    // ── PTY became ready: always send the fitted size once ────────────────────
+    useEffect(() => {
+      ptyReadyRef.current = ptyReady
+      if (!ptyReady) return
+      lastSentRef.current = null
+      syncSizeRef.current?.()
+    }, [ptyReady])
 
     // ── fontSize hot-reload (separate from terminal lifecycle) ────────────────
     useEffect(() => {
