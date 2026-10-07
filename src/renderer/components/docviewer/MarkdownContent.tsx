@@ -1,9 +1,9 @@
 import React, { useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import matter from 'gray-matter'
 import type { Components } from 'react-markdown'
 import { FrontmatterDisplay } from './FrontmatterDisplay'
+import { parseFrontmatter } from '../../utils/frontmatter'
 
 // ---------------------------------------------------------------------------
 // MarkdownContent — shared markdown rendering for the doc viewer and the code
@@ -40,18 +40,12 @@ function isExternalHref(href: string): boolean {
 export function MarkdownContent({ content, resolveLink }: MarkdownContentProps): React.ReactElement {
   const parsed = useMemo(() => {
     try {
-      // Sec M-4: engines: {} does NOT disable gray-matter's default javascript/js
-      // engines (it merges over its defaults) — they must be stubbed explicitly,
-      // or a "---js\n(globalThis.__pwn = 1)\n---" front matter block executes.
-      const { data, content: body } = matter(content, {
-        engines: {
-          javascript: { parse: () => ({}) },
-          js: { parse: () => ({}) },
-        },
-      })
+      // Sec M-4: parseFrontmatter only accepts a plain `---` YAML fence, so a
+      // "---js" block is never evaluated — it renders as ordinary markdown.
+      const { data, content: body } = parseFrontmatter(content)
       return { frontmatter: data, content: body }
     } catch {
-      // On gray-matter failure, render the entire input as markdown.
+      // On malformed front matter, render the entire input as markdown.
       return { frontmatter: {}, content }
     }
   }, [content])

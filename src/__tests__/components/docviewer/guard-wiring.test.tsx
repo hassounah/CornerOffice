@@ -96,9 +96,6 @@ vi.mock('react-markdown', () => ({
   default: ({ children }: { children: string }) => <div data-testid="markdown">{children}</div>,
 }))
 vi.mock('remark-gfm', () => ({ default: () => {} }))
-vi.mock('gray-matter', () => ({
-  default: (content: string) => ({ data: {}, content }),
-}))
 vi.mock('js-yaml', () => ({
   load: () => ({ key: 'value' }),
   JSON_SCHEMA: {},

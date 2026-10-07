@@ -5,9 +5,9 @@ import { MarkdownViewer } from '../../../renderer/components/docviewer/MarkdownV
 import { useDocViewerStore } from '../../../renderer/stores/docviewer-store'
 
 // ---------------------------------------------------------------------------
-// These tests run against the REAL react-markdown and gray-matter (no mocks),
+// These tests run against the REAL react-markdown and front matter parser (no mocks),
 // exercising MarkdownContent's own link classification, button-as-link
-// rendering (Addendum A1(2)) and the gray-matter engine stubs (Sec M-4).
+// rendering (Addendum A1(2)) and the front matter engine guard (Sec M-4).
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
@@ -128,7 +128,7 @@ describe('MarkdownContent — front matter engine stubs (Sec M-4)', () => {
     const { getByText } = render(
       <MarkdownContent content={'---\nfoo: "unterminated\n---\nbody text'} />
     )
-    // gray-matter/js-yaml throws on the unterminated quote; the catch branch
+    // js-yaml throws on the unterminated quote; the catch branch
     // renders the whole input (front-matter fence included) as plain markdown.
     expect(getByText(/body text/)).toBeDefined()
   })
@@ -148,7 +148,7 @@ describe('MarkdownContent — XSS sanitization (parity with the react-markdown b
 
 // ---------------------------------------------------------------------------
 // MarkdownViewer's resolveLink (§D-3) — the real docviewer store and the
-// real react-markdown/gray-matter (not the mocks used by the other docviewer
+// real react-markdown/front matter parser (not the mocks used by the other docviewer
 // test files, which never exercise this closure at all).
 // ---------------------------------------------------------------------------
 

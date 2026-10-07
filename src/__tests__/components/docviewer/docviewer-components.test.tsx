@@ -14,12 +14,6 @@ vi.mock('react-markdown', () => ({
 
 vi.mock('remark-gfm', () => ({ default: () => {} }))
 vi.mock('rehype-pretty-code', () => ({ default: () => {} }))
-vi.mock('gray-matter', () => ({
-  default: (content: string) => {
-    // Simple mock: no frontmatter extraction
-    return { data: {}, content }
-  },
-}))
 
 vi.mock('../../../renderer/components/docviewer/DocEditor', () => ({
   DocEditor: () => <textarea data-testid="doc-editor" />,
