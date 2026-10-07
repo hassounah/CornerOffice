@@ -13,6 +13,8 @@
  * Pin @xterm/xterm version. Verify on upgrade.
  *
  * API-compatible: activate(), dispose(), fit(), proposeDimensions().
+ * fit() additionally returns a boolean (true when it resized, false when it
+ * was a no-op), which callers that ignore the result are unaffected by.
  *
  * Ported from kangentic src/renderer/addons/fit-addon.ts.
  */
@@ -38,10 +40,11 @@ export class FitAddon implements ITerminalAddon {
     this._terminal = undefined
   }
 
-  public fit(): void {
+  /** Returns true when dimensions were available and terminal.resize() was called, false when fit was a no-op. */
+  public fit(): boolean {
     const dims = this.proposeDimensions()
     if (!dims || !this._terminal || isNaN(dims.cols) || isNaN(dims.rows)) {
-      return
+      return false
     }
     // Always call resize(). xterm.Terminal.resize() internally no-ops
     // when dimensions haven't changed, which is the correct behavior.
@@ -49,6 +52,7 @@ export class FitAddon implements ITerminalAddon {
     // resize() entirely, which forces callers to use perturbation tricks
     // to bypass it.
     this._terminal.resize(dims.cols, dims.rows)
+    return true
   }
 
   public proposeDimensions(): ITerminalDimensions | undefined {

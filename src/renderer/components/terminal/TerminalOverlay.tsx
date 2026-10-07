@@ -724,6 +724,7 @@ export function TerminalOverlay({
             ref={terminalRef}
             workspaceSlug={workspaceSlug}
             fontSize={fontSize}
+            ptyReady={sessionState === 'running'}
             onReady={() => setShimmerVisible(false)}
           />
           <ShimmerOverlay
