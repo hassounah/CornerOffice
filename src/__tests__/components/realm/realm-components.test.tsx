@@ -911,6 +911,20 @@ describe('WizardsStudy — FeatureBoard click handler (Step 2)', () => {
     )
   })
 
+  it('lists Completed Quests newest first', () => {
+    const done = (id: string, name: string) => ({
+      id, name, slug: `${id}-x`, status: 'done' as const, directory: `/d/${id}`,
+      pipelineType: null, gateProgress: 0, isParked: false, shippedDate: null,
+    })
+    mockWorkspaceStore.workspaces = [makeWorkspace('my-project', {
+      features: [done('0001', 'Oldest Quest'), done('0032', 'Newest Quest')],
+    })]
+    render(<WizardsStudy workspaceSlug="my-project" />)
+    const rows = screen.getAllByRole('button', { name: /Open (Oldest|Newest) Quest/i })
+    expect(rows[0]).toHaveAccessibleName(/Newest Quest/)
+    expect(rows[1]).toHaveAccessibleName(/Oldest Quest/)
+  })
+
   it('does not call openFolder when workspaceSlug is null', () => {
     mockWorkspaceStore.workspaces = [makeWorkspace('my-project', {
       features: [{ id: 'f1', name: 'My Feature', slug: 'f1-my-feature', status: 'in_progress', directory: '/some/dir', pipelineType: null, gateProgress: 0, isParked: false, shippedDate: null }],

@@ -20,6 +20,7 @@ import { SandboxActions } from '../../sandbox/SandboxActions'
 import { TerminalOverlay } from '../../terminal/TerminalOverlay'
 import { useOpenCodeExplorer, browseCodeTooltip } from '../../../utils/code-explorer-nav'
 import { STILL_STOPPING, isSessionStopping } from '../../../utils/sandbox-copy'
+import { newestFirst } from '../../../utils/feature-order'
 
 // ---------------------------------------------------------------------------
 // Asset imports
@@ -281,7 +282,7 @@ function FeatureBoard({ features, workspaceSlug, onReview }: {
 
   const inProgress = features.filter((f) => f.status === 'in_progress')
   const todo = features.filter((f) => f.status === 'todo')
-  const done = features.filter((f) => f.status === 'done')
+  const done = newestFirst(features.filter((f) => f.status === 'done'))
 
   function handleFeatureClick(f: Feature): void {
     if (workspaceSlug) openFolder(f.directory, workspaceSlug)
