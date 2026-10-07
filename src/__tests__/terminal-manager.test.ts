@@ -714,6 +714,42 @@ describe('TerminalManagerService', () => {
     })
   })
 
+  // ── sandbox tty size sync ──────────────────────────────────────────────────
+
+  describe('sandbox tty size sync', () => {
+    it('SIGWINCHes the docker client on every resize, even to the same size', () => {
+      svc.spawnSandbox('my-project', '/usr/bin/docker', ['exec'], 80, 24)
+      svc.resize('my-project', 120, 40)
+      svc.resize('my-project', 120, 40)
+      expect(mockPtyInstance.resize).toHaveBeenCalledTimes(2)
+      expect(mockPtyInstance.kill).toHaveBeenCalledTimes(2)
+      expect(mockPtyInstance.kill).toHaveBeenCalledWith('SIGWINCH')
+    })
+
+    it('SIGWINCHes once on the first output', () => {
+      svc.spawnSandbox('my-project', '/usr/bin/docker', ['exec'], 80, 24)
+      expect(mockPtyInstance.kill).not.toHaveBeenCalled()
+      mockPtyInstance._emitData('first')
+      mockPtyInstance._emitData('second')
+      expect(mockPtyInstance.kill).toHaveBeenCalledTimes(1)
+      expect(mockPtyInstance.kill).toHaveBeenCalledWith('SIGWINCH')
+    })
+
+    it('a failed SIGWINCH does not fail the resize', () => {
+      svc.spawnSandbox('my-project', '/usr/bin/docker', ['exec'], 80, 24)
+      mockPtyInstance.kill.mockImplementationOnce(() => { throw new Error('ESRCH') })
+      expect(() => svc.resize('my-project', 120, 40)).not.toThrow()
+      expect(mockPtyInstance.resize).toHaveBeenCalledWith(120, 40)
+    })
+
+    it('never signals a host session', () => {
+      svc.spawn({ workspaceSlug: 'my-project', cols: 80, rows: 24 })
+      mockPtyInstance._emitData('output')
+      svc.resize('my-project', 120, 40)
+      expect(mockPtyInstance.kill).not.toHaveBeenCalled()
+    })
+  })
+
   // ── spawn() refuses while a sandbox is busy (Appendix C item 8) ─────────────
 
   describe('spawn() vs. delegate.isBusy', () => {
