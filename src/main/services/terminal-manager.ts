@@ -275,6 +275,7 @@ export class TerminalManagerService {
   resize(workspaceSlug: string, cols: number, rows: number): void {
     const session = this._getSessionOrThrow(workspaceSlug)
     session.pty.resize(cols, rows)
+    if (session.kind === 'sandbox') this._syncSandboxTtySize(session)
   }
 
   /**
@@ -348,7 +349,7 @@ export class TerminalManagerService {
    * §3.12: sandbox sessions get `delegate.stopForQuit(slug)` in parallel
    * with the SIGTERM of host ptys — `docker stop` (run by the delegate)
    * makes the sandbox's `docker exec` pty exit on its own, so this file
-   * never signals a sandbox pty directly. Still bounded by the same 5 s
+   * never kills a sandbox pty directly. Still bounded by the same 5 s
    * race as host sessions; a sandbox that doesn't finish stopping in time is
    * the delegate's own problem to bound (the quit budget, TRD §14.5 #4).
    */
@@ -445,8 +446,16 @@ export class TerminalManagerService {
       exitPromise,
     }
 
+    // A resize sent while the docker client was still starting is lost, so
+    // resync the container's size once it is running (first output).
+    let sizeSynced = kind !== 'sandbox'
+
     // Wire data batching with scrollback truncation
     pty.onData((data: string) => {
+      if (!sizeSynced) {
+        sizeSynced = true
+        this._syncSandboxTtySize(session)
+      }
       session.pendingData += data
       session.scrollback += data
 
@@ -500,6 +509,21 @@ export class TerminalManagerService {
 
     this._sessions.set(key, session)
     return session
+  }
+
+  /**
+   * A sandbox pty runs the `docker exec` client, which copies its own pty size
+   * into the container only on SIGWINCH. The kernel sends that only when the
+   * size changes, so a resize to the current size (overlay hide/show) or one
+   * that landed before the client was listening never reaches the container.
+   * Signalling it directly makes it read the current size and apply it.
+   */
+  private _syncSandboxTtySize(session: TerminalSession): void {
+    try {
+      session.pty.kill('SIGWINCH')
+    } catch (err) {
+      log.warn(`[Terminal] SIGWINCH failed pid=${session.pty.pid} key=${session.workspaceSlug}:`, err)
+    }
   }
 
   private _getSessionOrThrow(workspaceSlug: string): TerminalSession {
