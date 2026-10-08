@@ -703,6 +703,17 @@ describe('getEligibility — happy path', () => {
     if (result.ok) expect(result.warnings).toContain('docs-root-missing')
   })
 
+  it('docs-root-missing warning when the docs_root is a file, not a directory (#0035)', async () => {
+    sandboxSettings.disabled = false
+    const { repo, makeDeps } = setup()
+    makeSimpleRepo(repo, 'main')
+    fs.writeFileSync(path.join(repo, 'docs'), 'not a directory')
+    const manager = createSandboxManager(makeDeps())
+    const result = await manager.getEligibility('myslug')
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.warnings).toContain('docs-root-missing')
+  })
+
   it('image-stale warning when the image service reports stale', async () => {
     sandboxSettings.disabled = false
     const { repo, makeDeps } = setup()
@@ -971,7 +982,7 @@ describe('getEligibility — additional coverage', () => {
     const { repo, realHome, gitService, makeDeps } = setup()
     makeSimpleRepo(repo, 'main')
     fs.mkdirSync(path.join(repo, 'docs'), { recursive: true })
-    fs.writeFileSync(path.join(repo, '.gitignore'), 'docs/\n') // gitignored: docs_root's mount source is REPO/docs itself, not $WT's copy
+    fs.writeFileSync(path.join(repo, '.gitignore'), 'docs/\n') // gitignored in-repo docs_root: mounted from the host at both REPO/docs and $WT/docs
     // A real worktree (not just an empty placeholder dir) — planMounts also
     // checks $GWT/gitdir and $GWT/commondir, which only exist after a real
     // `ensure()`, matching how sandbox-manager's own preparing flow (3.6)

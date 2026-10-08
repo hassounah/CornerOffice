@@ -5,6 +5,7 @@ import os from 'os'
 import { execFileSync } from 'child_process'
 import {
   durableWrite,
+  assertNoSymlinkOnPath,
   MAX_FILE_SIZE,
   denied,
   openParentDir,
@@ -179,6 +180,23 @@ describe('durableWrite — stale-write guard', () => {
 // ---------------------------------------------------------------------------
 // Symlink guard
 // ---------------------------------------------------------------------------
+
+describe('assertNoSymlinkOnPath — `..`-prefixed names', () => {
+  it.skipIf(process.platform === 'win32')('still walks a segment like `..docs` (a normal name, not a parent step)', async () => {
+    const realDir = path.join(tmpDir, 'real-dir')
+    fs.mkdirSync(realDir)
+    try {
+      fs.symlinkSync(realDir, path.join(root, '..docs'))
+    } catch {
+      return // symlinks unsupported on this filesystem
+    }
+    await expect(assertNoSymlinkOnPath(root, path.join(root, '..docs', 'x'))).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+  })
+
+  it('returns early for a real parent step (the containment check owns that case)', async () => {
+    await expect(assertNoSymlinkOnPath(root, path.join(root, '..', 'elsewhere'))).resolves.toBeUndefined()
+  })
+})
 
 describe('durableWrite — symlink guard', () => {
   it.skipIf(process.platform === 'win32')(

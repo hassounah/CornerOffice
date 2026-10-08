@@ -259,6 +259,13 @@ describe('describeRecreatePlan', () => {
     ])
   })
 
+  it('raises the louder memory.md change warning only when an existing sandbox gains a read-write memory.md mount (#0035)', () => {
+    expect(describeRecreatePlan(plan({ newHostMounts: [mount('/rw/memory', false, 'memory.md')] })).memoryMdChanged).toBe(true)
+    expect(describeRecreatePlan(plan({ reason: 'new-container', newHostMounts: [mount('/rw/memory', false, 'memory.md')] })).memoryMdChanged).toBe(false)
+    expect(describeRecreatePlan(plan({ newHostMounts: [mount('/rw/settings', false, 'settings')] })).memoryMdChanged).toBe(false)
+    expect(describeRecreatePlan(plan({ newHostMounts: [mount('/ro/memory', true, 'memory.md')] })).memoryMdChanged).toBe(false)
+  })
+
   it('is neither read-only-only nor listing anything when there are no new mounts', () => {
     const d = describeRecreatePlan(plan({ removedHostMounts: ['/gone'] }))
     expect(d.readOnlyOnly).toBe(false)

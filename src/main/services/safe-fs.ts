@@ -63,7 +63,8 @@ export async function assertNoSymlinkOnPath(root: string, rawFilePath: string): 
   // Build the sequence of path components from root to the target.
   // path.relative handles both absolute and already-within-root paths.
   const rel = path.relative(root, rawFilePath)
-  if (!rel || rel.startsWith('..')) {
+  // Only a real parent step escapes root — a segment like `..docs` is a normal name.
+  if (!rel || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
     // Will be caught by containment check; bail early to avoid confusing lstat errors.
     return
   }

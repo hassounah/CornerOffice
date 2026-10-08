@@ -6,6 +6,7 @@ import { DisabledReason } from '../shared/DisabledReason'
 import {
   describeRecreatePlan,
   CACHES_RESET_COPY,
+  MEMORY_MD_CHANGED_COPY,
   MEMORY_MD_WARNING_COPY,
   READ_ONLY_PROTECTIONS_COPY,
   RECREATE_FAILURE_COPY,
@@ -158,6 +159,8 @@ export function RecreateDialog({ slug, plan: initialPlan, newPort = false, skin 
             )}
 
             <p>{description.reasonLine}</p>
+
+            {description.memoryMdChanged && <p className="font-semibold text-co-status-attention">{MEMORY_MD_CHANGED_COPY}</p>}
 
             {description.readOnlyOnly && <p>{READ_ONLY_PROTECTIONS_COPY}</p>}
 
