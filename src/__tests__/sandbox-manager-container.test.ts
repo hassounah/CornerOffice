@@ -12,7 +12,7 @@ import type {
   SandboxManagerWorktreeDeps,
 } from '../main/services/sandbox-manager'
 import { ensure, resolveBase, type WorktreeStatus } from '../main/services/sandbox-worktree'
-import { cardDir, containerName, LABEL, CREATE_TIMEOUT_MS, settingsOverlayPath, sandboxClaudeJsonPath, claudeShadowSource } from '../main/services/sandbox-spec'
+import { cardDir, worktreePath, containerName, LABEL, CREATE_TIMEOUT_MS, settingsOverlayPath, sandboxClaudeJsonPath, claudeShadowSource } from '../main/services/sandbox-spec'
 import type { SandboxImageService, ImageState } from '../main/services/sandbox-image'
 import type { SandboxConfig } from '../main/types/config'
 import type { SandboxNotice } from '../main/types/sandbox'
@@ -314,10 +314,42 @@ describe('ensureContainer', () => {
       expect(result.plan.removedHostMounts).toEqual([])
       expect(result.plan.newHostMounts.some((m) => m.source === 'memory.md')).toBe(true)
       expect(result.plan.newHostMounts.length).toBeGreaterThan(0)
+      // #0035: one source at two targets is listed once
+      expect(result.plan.newHostMounts.filter((m) => m.path === path.join(h.repo, 'my-docs'))).toHaveLength(1)
     } else {
       throw new Error(`expected RECREATE_REQUIRED, got ${JSON.stringify(result)}`)
     }
     expect(docker.calls.some((c) => c.args[0] === 'create')).toBe(false)
+    // #0035: the ignored docs_root's $WT target was pre-created before planMounts
+    expect(fs.statSync(path.join(worktreePath(fakeSandboxPaths(h.realHome), 'myslug'), 'my-docs')).isDirectory()).toBe(true)
+  })
+
+  it('a symlinked parent in $WT is not followed when pre-creating the docs_root target', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    fs.mkdirSync(path.join(h.repo, 'notes', 'docs'), { recursive: true })
+    fs.writeFileSync(path.join(h.repo, '.gitignore'), 'notes/\n')
+    await prepareWorktree(h)
+    setMemoryDocsRoot(h.repo, path.join(h.repo, 'notes', 'docs'))
+    const outside = path.join(h.realHome, 'outside')
+    fs.mkdirSync(outside, { recursive: true })
+    fs.symlinkSync(outside, path.join(worktreePath(fakeSandboxPaths(h.realHome), 'myslug'), 'notes'))
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], { error: NOT_FOUND_ERROR })
+    const manager = createSandboxManager(h.makeDeps({ docker }))
+
+    const result = await manager.ensureContainer('myslug')
+
+    expect(fs.readdirSync(outside)).toEqual([])
+    // Both docs mounts are dropped, so the container is created without either target.
+    expect(result.ok).toBe(true)
+    const createCall = docker.calls.find((c) => c.args[0] === 'create')
+    expect(createCall).toBeDefined()
+    const createArgs = createCall?.args.join('\n') ?? ''
+    expect(createArgs).not.toContain(path.join(h.repo, 'notes', 'docs'))
+    expect(createArgs).not.toContain(path.join(worktreePath(fakeSandboxPaths(h.realHome), 'myslug'), 'notes', 'docs'))
   })
 
   it('present, spec matches: ok, no rm/create recorded', async () => {

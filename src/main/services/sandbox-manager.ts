@@ -43,7 +43,8 @@ import {
   SANDBOX_KILL_TIMEOUT_MS,
   psArgv,
 } from './sandbox-spec'
-import { planMounts } from './sandbox-spec'
+import { planMounts, docsRootWtTarget } from './sandbox-spec'
+import { assertNoSymlinkOnPath } from './safe-fs'
 import { prepareClaudeConfig, seedClaudeJson, checkClaudeConfigSources } from './sandbox-claude-config'
 import type { ClaudeConfigResult } from './sandbox-claude-config'
 import { claudeConfigDetail } from '../types/claude-config'
@@ -561,23 +562,24 @@ function resolveDocsRootPath(repo: string, override: string | null, fromMemory: 
   return { path: path.join(repo, 'docs'), source: 'default' }
 }
 
-async function buildDocsRootFacts(git: GitService, ctx: RepoCtx, repo: string, resolved: { path: string; source: DocsRootFacts['source'] }): Promise<DocsRootFacts> {
+/** Like `existsSync`, never throws (ENOTDIR, EACCES → false). */
+function isDirectorySafe(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+function buildDocsRootFacts(repo: string, resolved: { path: string; source: DocsRootFacts['source'] }): DocsRootFacts {
   const { path: docsPath, source } = resolved
-  const exists = fs.existsSync(docsPath)
+  // #0035: a directory only — the mount is read-write on the host, so a docs_root naming a file
+  // (e.g. a memory.md-steered `{repo}/package.json`) must never be mounted.
+  const exists = isDirectorySafe(docsPath)
   const insideRepo = docsPath === repo || docsPath.startsWith(repo + path.sep)
   const inRepoRel = insideRepo ? path.relative(repo, docsPath) : null
 
-  let ignored = false
-  if (exists && inRepoRel !== null) {
-    try {
-      await git.runGit(ctx, ['check-ignore', '-q', '--', inRepoRel])
-      ignored = true // exit 0 => ignored
-    } catch {
-      ignored = false // exit 1 (or any other failure) => not ignored
-    }
-  }
-
-  return { path: docsPath, source, exists, inRepoRel, ignored }
+  return { path: docsPath, source, exists, inRepoRel }
 }
 
 /**
@@ -647,7 +649,7 @@ async function buildMountPlanContext(
 
   const docsOverride = config.getWorkspaceDocsRootOverride(slug)
   const docsResolved = resolveDocsRootPath(repo, docsOverride, readMemoryDocsRoot(repo))
-  const docsRootFacts = await buildDocsRootFacts(git, repoCtx, repo, docsResolved)
+  const docsRootFacts = buildDocsRootFacts(repo, docsResolved)
 
   const indexExists = fs.existsSync(path.join(repo, '.git', 'index'))
   const eventsEnabled = fs.existsSync(path.join(paths.eventsRoot, 'enabled'))
@@ -693,6 +695,24 @@ function precreateMountTargets(paths: SandboxPaths, repo: string, wt: string, sl
   fs.mkdirSync(path.join(paths.claudeDir, 'channels'), { recursive: true, mode: 0o700 }) // SEC-M3
   // #0030: the read-only Claude config sources, the settings copy and the first `claude.json` seed.
   return prepareClaudeConfig(paths, slug)
+}
+
+/**
+ * #0035: the `{wt}/<rel>` docs_root target nests on the `$WT` mount, like `$WT/.rix`. Best effort:
+ * on any failure the planner drops the mount with a warning. `{wt}` is agent-writable, so never
+ * mkdir through a planted symlink.
+ */
+async function precreateDocsRootTarget(facts: PlanMountsFacts): Promise<void> {
+  const target = docsRootWtTarget(facts.docsRoot, facts.wt)
+  if (!target) return
+  try {
+    await assertNoSymlinkOnPath(facts.wt, target)
+    fs.mkdirSync(target, { recursive: true })
+  } catch (err: unknown) {
+    // planMounts' assertMountSafe on the target then drops the docs mount (docs-root-unsafe)
+    const code = (err as NodeJS.ErrnoException | null)?.code ?? 'denied'
+    log.warn(`[sandbox-manager] docs_root target not pre-created (${code}): ${target}`)
+  }
 }
 
 /**
@@ -1127,6 +1147,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const base = baseResult.name
 
     const { facts } = await buildMountPlanContext(git, config, appState, realHome, repo, slug, wt)
+    await precreateDocsRootTarget(facts)
     const mountResult = planMounts(facts)
     if (!mountResult.ok) return { ok: false, code: 'CONTAINER_FAILED' }
 
@@ -1154,7 +1175,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
           plan: {
             reason: 'new-container',
             specHash: hash,
-            newHostMounts: mountResult.mounts.map((m) => ({ path: m.source, readonly: m.readonly, source: m.provenance })),
+            newHostMounts: diffMountPlans([], mountResult.mounts).newHostMounts,
             removedHostMounts: [],
           },
         }
@@ -1238,6 +1259,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const base = baseResult.name
 
     const { facts } = await buildMountPlanContext(git, config, appState, realHome, repo, slug, wt)
+    await precreateDocsRootTarget(facts)
     const mountResult = planMounts(facts)
     if (!mountResult.ok) return { ok: false, code: 'FAILED' }
 

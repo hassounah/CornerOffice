@@ -203,7 +203,7 @@ export async function pickChannelPort(deps: PickChannelPortDeps): Promise<number
   return null
 }
 
-// ── Mount planning (§3.5, §3.6.3, D11, D12, M2, C2, H1, H3) ─────────────────
+// ── Mount planning (§3.5, §3.6.3, D11, M2, C2, H1, H3; D12 superseded by #0035) ──
 
 export interface Mount {
   /** Host absolute path — the `--mount source=` value. */
@@ -222,8 +222,6 @@ export interface DocsRootFacts {
   exists: boolean
   /** Relative path within `REPO`, set only when `path` is inside `REPO`. */
   inRepoRel: string | null
-  /** `git check-ignore` result for `path`, meaningful only when inside `REPO`. */
-  ignored: boolean
 }
 
 export interface PlanMountsFacts {
@@ -262,17 +260,37 @@ function docsRootProvenance(source: DocsRootFacts['source']): Mount['provenance'
 }
 
 interface DocsRootOutcome {
-  mount: Mount | null
+  mounts: Mount[]
   warning: MountWarning | null
   hardFail: boolean
 }
 
+/** SEC-M1 backstop: a relative path that stays inside the repo. */
+function relIsSafe(rel: string): boolean {
+  return !(path.isAbsolute(rel) || rel === '..' || rel.startsWith('..' + path.sep))
+}
+
 /**
- * §3.6.3: the docs_root mount is decided separately from the fixed mounts
+ * `{wt}/<rel>` for an existing, in-repo docs_root whose rel passes the SEC-M1
+ * backstop and is not the repo itself or inside `.git`; `null` otherwise.
+ * Shared so the manager pre-creates exactly the path the planner checks.
+ */
+export function docsRootWtTarget(docsRoot: DocsRootFacts, wt: string): string | null {
+  const rel = docsRoot.inRepoRel
+  if (!docsRoot.exists || rel === null || rel === '' || !relIsSafe(rel)) return null
+  if (rel === '.git' || rel.startsWith('.git' + path.sep)) return null
+  return path.join(wt, rel)
+}
+
+/**
+ * §3.6.3: the docs_root mounts are decided separately from the fixed mounts
  * above, and — unlike them — an unsafe *value* for it never blocks the whole
  * plan. A *structural* problem (the repo itself, inside `.git`, or
  * overlapping another mount target) does: that's `docs-root-unsafe` as a
  * hard failure, matching the §3.11 eligibility reason of the same name.
+ *
+ * #0035 (supersedes D12): an in-repo docs_root, tracked or ignored, mounts the
+ * HOST directory at both `{repo}/<rel>` and `{wt}/<rel>`, all or nothing.
  */
 function planDocsRootMount(
   docsRoot: DocsRootFacts,
@@ -280,7 +298,7 @@ function planDocsRootMount(
 ): DocsRootOutcome {
   const { home, repo, wt, existingTargets } = ctx
 
-  if (!docsRoot.exists) return { mount: null, warning: 'docs-root-missing', hardFail: false }
+  if (!docsRoot.exists) return { mounts: [], warning: 'docs-root-missing', hardFail: false }
 
   const insideRepo = docsRoot.path === repo || docsRoot.path.startsWith(repo + path.sep)
 
@@ -289,18 +307,23 @@ function planDocsRootMount(
   // read-only overlay target like $WT/.git). Checked before assertMountSafe
   // in both branches — a structural collision is a hard failure regardless
   // of whether the path itself would otherwise pass the character/realpath
-  // checks.
-  const overlapsExisting = (target: string): boolean =>
-    existingTargets.some((t) => target === t || target.startsWith(t + path.sep) || t.startsWith(target + path.sep))
+  // checks. `nestableParent` is the one target a descendant may sit on.
+  const overlapsExisting = (target: string, nestableParent?: string): boolean =>
+    existingTargets.some(
+      (t) =>
+        target === t ||
+        t.startsWith(target + path.sep) ||
+        (target.startsWith(t + path.sep) && t !== nestableParent),
+    )
 
   if (!insideRepo) {
-    if (docsRoot.source === 'memory.md') return { mount: null, warning: 'docs-root-untrusted', hardFail: false }
+    if (docsRoot.source === 'memory.md') return { mounts: [], warning: 'docs-root-untrusted', hardFail: false }
     // Only the Settings override reaches here for an outside-REPO path —
     // 'default' ({repo}/docs) is always inside REPO.
-    if (overlapsExisting(docsRoot.path)) return { mount: null, warning: null, hardFail: true }
-    if (!assertMountSafe(docsRoot.path, { home })) return { mount: null, warning: 'docs-root-unsafe', hardFail: false }
+    if (overlapsExisting(docsRoot.path)) return { mounts: [], warning: null, hardFail: true }
+    if (!assertMountSafe(docsRoot.path, { home })) return { mounts: [], warning: 'docs-root-unsafe', hardFail: false }
     return {
-      mount: { source: docsRoot.path, target: docsRoot.path, readonly: false, provenance: 'settings' },
+      mounts: [{ source: docsRoot.path, target: docsRoot.path, readonly: false, provenance: 'settings' }],
       warning: null,
       hardFail: false,
     }
@@ -309,30 +332,34 @@ function planDocsRootMount(
   // Backstop (SEC-M1): the manager normalizes docs_root, but a crafted fact
   // whose inRepoRel escapes the repo must never reach path.join below.
   const rel = docsRoot.inRepoRel
-  if (rel !== null && (path.isAbsolute(rel) || rel === '..' || rel.startsWith('..' + path.sep))) {
-    return { mount: null, warning: null, hardFail: true }
-  }
+  if (rel !== null && !relIsSafe(rel)) return { mounts: [], warning: null, hardFail: true }
 
   const gitDir = path.join(repo, '.git')
   const isRepoItself = docsRoot.path === repo
   const insideGit = docsRoot.path === gitDir || docsRoot.path.startsWith(gitDir + path.sep)
-  const target = docsRoot.inRepoRel !== null ? path.join(repo, docsRoot.inRepoRel) : docsRoot.path
-  if (isRepoItself || insideGit || overlapsExisting(target)) return { mount: null, warning: null, hardFail: true }
+  // An in-repo path always has a rel; null can only come from a crafted fact.
+  if (rel === null) return { mounts: [], warning: null, hardFail: true }
+  const repoTarget = path.join(repo, rel)
+  if (isRepoItself || insideGit || overlapsExisting(repoTarget)) return { mounts: [], warning: null, hardFail: true }
 
+  // {wt}/<rel> may nest directly on the {wt} mount (like {wt}/.rix), nowhere else.
+  const wtTarget = path.join(wt, rel)
+  if (overlapsExisting(wtTarget, wt)) return { mounts: [], warning: null, hardFail: true }
+
+  // All or nothing: a half-shared docs_root would recreate the split (#0035).
+  // The source and the repo-side target are the same path.
+  if (!assertMountSafe(docsRoot.path, { home }) || !assertMountSafe(wtTarget, { home })) {
+    return { mounts: [], warning: 'docs-root-unsafe', hardFail: false }
+  }
   const provenance = docsRootProvenance(docsRoot.source)
-
-  if (docsRoot.ignored) {
-    if (!assertMountSafe(docsRoot.path, { home })) return { mount: null, warning: 'docs-root-unsafe', hardFail: false }
-    return { mount: { source: docsRoot.path, target: docsRoot.path, readonly: false, provenance }, warning: null, hardFail: false }
+  return {
+    mounts: [
+      { source: docsRoot.path, target: docsRoot.path, readonly: false, provenance },
+      { source: docsRoot.path, target: wtTarget, readonly: false, provenance },
+    ],
+    warning: null,
+    hardFail: false,
   }
-
-  // Tracked: the worktree's own copy is mounted at the repo's path, so Rix
-  // writes on its branch instead of into the host's working tree (D12).
-  const source = docsRoot.inRepoRel !== null ? path.join(wt, docsRoot.inRepoRel) : wt
-  if (!assertMountSafe(source, { home }) || !assertMountSafe(target, { home })) {
-    return { mount: null, warning: 'docs-root-unsafe', hardFail: false }
-  }
-  return { mount: { source, target, readonly: false, provenance }, warning: null, hardFail: false }
 }
 
 /**
@@ -397,7 +424,7 @@ export function planMounts(facts: PlanMountsFacts): PlanMountsResult {
   const docsOutcome = planDocsRootMount(docsRoot, { home, repo, wt, existingTargets: mounts.map((m) => m.target) })
   if (docsOutcome.hardFail) return { ok: false, reason: 'docs-root-unsafe' }
   if (docsOutcome.warning) warnings.push(docsOutcome.warning)
-  if (docsOutcome.mount) mounts.push(docsOutcome.mount)
+  mounts.push(...docsOutcome.mounts)
 
   add(path.join(paths.eventsRoot, slug), path.join(paths.eventsRoot, slug), false)
   if (eventsEnabled) add(path.join(paths.eventsRoot, 'enabled'), path.join(paths.eventsRoot, 'enabled'), true)
@@ -465,15 +492,19 @@ export function diffMountPlans(oldMounts: readonly OldMount[], newPlan: readonly
   const oldBySource = new Map(oldMounts.map((m) => [m.source, m]))
   const newSources = new Set(newPlan.map((m) => m.source))
 
-  const newHostMounts = newPlan
-    .filter((m) => {
-      const old = oldBySource.get(m.source)
-      if (!old) return true // genuinely new source
-      return old.readonly && !m.readonly // read-only -> read-write flip
-    })
-    .map((m) => ({ path: m.source, readonly: m.readonly, source: m.provenance }))
+  // One source can sit at several targets (docs_root, #0035); list each source once, read-write winning.
+  const newByPath = new Map<string, { path: string; readonly: boolean; source: Mount['provenance'] }>()
+  for (const m of newPlan) {
+    const old = oldBySource.get(m.source)
+    if (old && !(old.readonly && !m.readonly)) continue // already shared, no read-only -> read-write flip
+    const seen = newByPath.get(m.source)
+    if (!seen || (seen.readonly && !m.readonly)) {
+      newByPath.set(m.source, { path: m.source, readonly: m.readonly, source: m.provenance })
+    }
+  }
+  const newHostMounts = [...newByPath.values()]
 
-  const removedHostMounts = oldMounts.filter((m) => !newSources.has(m.source)).map((m) => m.source)
+  const removedHostMounts = [...new Set(oldMounts.filter((m) => !newSources.has(m.source)).map((m) => m.source))]
 
   return { newHostMounts, removedHostMounts }
 }

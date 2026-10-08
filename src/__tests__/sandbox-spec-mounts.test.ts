@@ -5,6 +5,7 @@ import path from 'path'
 import {
   planMounts,
   specHash,
+  docsRootWtTarget,
   diffMountPlans,
   hasMemoryMdMount,
   worktreePath,
@@ -106,7 +107,7 @@ function makeFixture(): Fixture {
     indexExists: false,
     hooksPathInsideGit: null,
     eventsEnabled: false,
-    docsRoot: { path: path.join(repo, 'docs'), source: 'default', exists: false, inRepoRel: 'docs', ignored: false },
+    docsRoot: { path: path.join(repo, 'docs'), source: 'default', exists: false, inRepoRel: 'docs' },
     worktreesOverlay: false,
   }
 
@@ -224,7 +225,7 @@ describe('planMounts — always-present overlays', () => {
   })
 })
 
-// ── planMounts: docs_root (§3.6.3, D12, H1) ─────────────────────────────────
+// ── planMounts: docs_root (§3.6.3, #0035, H1) ─────────────────────────────────
 
 describe('planMounts — docs_root', () => {
   it('missing: no mount, docs-root-missing warning', () => {
@@ -238,7 +239,7 @@ describe('planMounts — docs_root', () => {
   it('outside REPO from Settings: mounted at its own path', () => {
     const fixture = makeFixture()
     const outside = mkTmp('co-spec-mounts-docs-')
-    const docsRoot: DocsRootFacts = { path: outside, source: 'settings', exists: true, inRepoRel: null, ignored: false }
+    const docsRoot: DocsRootFacts = { path: outside, source: 'settings', exists: true, inRepoRel: null }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result.ok).toBe(true)
     if (!result.ok) return
@@ -250,7 +251,7 @@ describe('planMounts — docs_root', () => {
     const outsideParent = mkTmp('co-spec-mounts-docs-parent-')
     const outsideDirty = path.join(outsideParent, 'bad,name')
     mkdir(outsideDirty)
-    const docsRoot: DocsRootFacts = { path: outsideDirty, source: 'settings', exists: true, inRepoRel: null, ignored: false }
+    const docsRoot: DocsRootFacts = { path: outsideDirty, source: 'settings', exists: true, inRepoRel: null }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result.ok).toBe(true)
     if (!result.ok) return
@@ -260,7 +261,7 @@ describe('planMounts — docs_root', () => {
 
   it('outside REPO from Settings, equal to an existing mount target ($WT): ineligible (docs-root-unsafe)', () => {
     const fixture = makeFixture()
-    const docsRoot: DocsRootFacts = { path: fixture.wt, source: 'settings', exists: true, inRepoRel: null, ignored: false }
+    const docsRoot: DocsRootFacts = { path: fixture.wt, source: 'settings', exists: true, inRepoRel: null }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result).toEqual({ ok: false, reason: 'docs-root-unsafe' })
   })
@@ -272,7 +273,6 @@ describe('planMounts — docs_root', () => {
       source: 'settings',
       exists: true,
       inRepoRel: null,
-      ignored: false,
     }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result).toEqual({ ok: false, reason: 'docs-root-unsafe' })
@@ -281,7 +281,7 @@ describe('planMounts — docs_root', () => {
   it('outside REPO from Settings, a descendant of an existing mount target ($WT/<subdir>): ineligible (docs-root-unsafe)', () => {
     const fixture = makeFixture()
     const descendant = path.join(fixture.wt, 'some-subdir')
-    const docsRoot: DocsRootFacts = { path: descendant, source: 'settings', exists: true, inRepoRel: null, ignored: false }
+    const docsRoot: DocsRootFacts = { path: descendant, source: 'settings', exists: true, inRepoRel: null }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result).toEqual({ ok: false, reason: 'docs-root-unsafe' })
   })
@@ -289,7 +289,7 @@ describe('planMounts — docs_root', () => {
   it('outside REPO from memory.md: not mounted, docs-root-untrusted warning', () => {
     const fixture = makeFixture()
     const outside = mkTmp('co-spec-mounts-docs-')
-    const docsRoot: DocsRootFacts = { path: outside, source: 'memory.md', exists: true, inRepoRel: null, ignored: false }
+    const docsRoot: DocsRootFacts = { path: outside, source: 'memory.md', exists: true, inRepoRel: null }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result.ok).toBe(true)
     if (!result.ok) return
@@ -300,7 +300,7 @@ describe('planMounts — docs_root', () => {
   it('backstop: a crafted inRepoRel escaping the repo is docs-root-unsafe (SEC-M1)', () => {
     const fixture = makeFixture()
     for (const inRepoRel of ['..', path.join('..', 'other'), '/etc']) {
-      const docsRoot: DocsRootFacts = { path: fixture.repo, source: 'settings', exists: true, inRepoRel, ignored: false }
+      const docsRoot: DocsRootFacts = { path: fixture.repo, source: 'settings', exists: true, inRepoRel }
       const result = planMounts({ ...fixture.baseFacts, docsRoot })
       expect(result).toEqual({ ok: false, reason: 'docs-root-unsafe' })
     }
@@ -308,7 +308,7 @@ describe('planMounts — docs_root', () => {
 
   it('inside REPO, equal to REPO itself: ineligible (docs-root-unsafe)', () => {
     const fixture = makeFixture()
-    const docsRoot: DocsRootFacts = { path: fixture.repo, source: 'settings', exists: true, inRepoRel: '', ignored: false }
+    const docsRoot: DocsRootFacts = { path: fixture.repo, source: 'settings', exists: true, inRepoRel: '' }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result).toEqual({ ok: false, reason: 'docs-root-unsafe' })
   })
@@ -316,95 +316,103 @@ describe('planMounts — docs_root', () => {
   it('inside REPO, inside .git: ineligible (docs-root-unsafe)', () => {
     const fixture = makeFixture()
     const docsPath = path.join(fixture.repo, '.git', 'hooks')
-    const docsRoot: DocsRootFacts = { path: docsPath, source: 'settings', exists: true, inRepoRel: '.git/hooks', ignored: false }
+    const docsRoot: DocsRootFacts = { path: docsPath, source: 'settings', exists: true, inRepoRel: '.git/hooks' }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result).toEqual({ ok: false, reason: 'docs-root-unsafe' })
   })
 
-  it('inside REPO, gitignored: mounted at its own path (source === target)', () => {
+  it.each(['memory.md', 'settings'] as const)(
+    'in-repo docs_root (%s, tracked or ignored): two read-write mounts of the host dir, at $REPO/<rel> and $WT/<rel>',
+    (source) => {
+      const fixture = makeFixture()
+      const rel = 'my-docs'
+      const docsDir = path.join(fixture.repo, rel)
+      mkdir(docsDir)
+      mkdir(path.join(fixture.wt, rel))
+      const docsRoot: DocsRootFacts = { path: docsDir, source, exists: true, inRepoRel: rel }
+      const result = planMounts({ ...fixture.baseFacts, docsRoot })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      const docsMounts = result.mounts.filter((m) => m.source === docsDir)
+      expect(docsMounts).toEqual([
+        { source: docsDir, target: docsDir, readonly: false, provenance: source },
+        { source: docsDir, target: path.join(fixture.wt, rel), readonly: false, provenance: source },
+      ])
+      expect(result.warnings).not.toContain('docs-root-unsafe')
+    },
+  )
+
+  it('nested rel: targets are $REPO/notes/docs and $WT/notes/docs', () => {
     const fixture = makeFixture()
-    const docsDir = path.join(fixture.repo, 'ignored-docs')
+    const rel = path.join('notes', 'docs')
+    const docsDir = path.join(fixture.repo, rel)
     mkdir(docsDir)
-    const docsRoot: DocsRootFacts = { path: docsDir, source: 'default', exists: true, inRepoRel: 'ignored-docs', ignored: true }
+    mkdir(path.join(fixture.wt, rel))
+    const docsRoot: DocsRootFacts = { path: docsDir, source: 'settings', exists: true, inRepoRel: rel }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.mounts).toContainEqual({ source: docsDir, target: docsDir, readonly: false, provenance: 'app' })
+    expect(result.mounts.filter((m) => m.source === docsDir).map((m) => m.target)).toEqual([docsDir, path.join(fixture.wt, rel)])
   })
 
-  it('inside REPO, gitignored, but failing assertMountSafe: dropped with a docs-root-unsafe warning (not a hard failure)', () => {
+  it('in-repo, failing assertMountSafe on the source: no docs mounts, docs-root-unsafe warning (not a hard failure)', () => {
     const fixture = makeFixture()
-    const dirtyRel = 'bad,ignored-docs'
-    const docsDir = path.join(fixture.repo, dirtyRel)
+    const rel = 'bad,ignored-docs'
+    const docsDir = path.join(fixture.repo, rel)
     mkdir(docsDir)
-    const docsRoot: DocsRootFacts = { path: docsDir, source: 'default', exists: true, inRepoRel: dirtyRel, ignored: true }
+    mkdir(path.join(fixture.wt, rel))
+    const docsRoot: DocsRootFacts = { path: docsDir, source: 'default', exists: true, inRepoRel: rel }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.warnings).toContain('docs-root-unsafe')
     expect(targetsOf(result.mounts)).not.toContain(docsDir)
+    expect(targetsOf(result.mounts)).not.toContain(path.join(fixture.wt, rel))
   })
 
-  it('inside REPO, tracked: source=$WT/<rel>, target=$REPO/<rel>', () => {
+  it('in-repo, $WT/<rel> missing: no docs mounts at all (all or nothing), docs-root-unsafe warning', () => {
     const fixture = makeFixture()
-    const rel = 'tracked-docs'
-    mkdir(path.join(fixture.repo, rel))
-    mkdir(path.join(fixture.wt, rel))
-    const docsRoot: DocsRootFacts = {
-      path: path.join(fixture.repo, rel),
-      source: 'memory.md',
-      exists: true,
-      inRepoRel: rel,
-      ignored: false,
-    }
-    const result = planMounts({ ...fixture.baseFacts, docsRoot })
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    expect(result.mounts).toContainEqual({
-      source: path.join(fixture.wt, rel),
-      target: path.join(fixture.repo, rel),
-      readonly: false,
-      provenance: 'memory.md',
-    })
-  })
-
-  it('inside REPO, tracked, but the worktree copy is missing: dropped with a docs-root-unsafe warning (not a hard failure)', () => {
-    const fixture = makeFixture()
-    const rel = 'tracked-missing-docs'
-    mkdir(path.join(fixture.repo, rel)) // the repo's own copy exists...
-    // ...but the worktree's copy (the actual mount source) was never created.
-    const docsRoot: DocsRootFacts = {
-      path: path.join(fixture.repo, rel),
-      source: 'memory.md',
-      exists: true,
-      inRepoRel: rel,
-      ignored: false,
-    }
+    const rel = 'wt-missing-docs'
+    mkdir(path.join(fixture.repo, rel)) // the host dir exists, the worktree-side target was never created
+    const docsRoot: DocsRootFacts = { path: path.join(fixture.repo, rel), source: 'memory.md', exists: true, inRepoRel: rel }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.warnings).toContain('docs-root-unsafe')
     expect(targetsOf(result.mounts)).not.toContain(path.join(fixture.repo, rel))
+    expect(targetsOf(result.mounts)).not.toContain(path.join(fixture.wt, rel))
   })
 
-  it('inside REPO, tracked, where only the target ($REPO/<rel>) fails assertMountSafe (the worktree-side source is fine): dropped with a docs-root-unsafe warning', () => {
+  it('in-repo, $REPO/<rel> fails assertMountSafe (the host dir is gone): no docs mounts, docs-root-unsafe warning', () => {
     const fixture = makeFixture()
-    const rel = 'target-only-missing-docs'
-    // Deliberately do NOT create fixture.repo/rel (so the target fails Rule 1's
-    // realpath check) — only the worktree-side copy (the source) exists.
-    mkdir(path.join(fixture.wt, rel))
-    const docsRoot: DocsRootFacts = {
-      path: path.join(fixture.repo, rel),
-      source: 'memory.md',
-      exists: true,
-      inRepoRel: rel,
-      ignored: false,
-    }
+    const rel = 'repo-missing-docs'
+    mkdir(path.join(fixture.wt, rel)) // only the worktree-side target exists
+    const docsRoot: DocsRootFacts = { path: path.join(fixture.repo, rel), source: 'memory.md', exists: true, inRepoRel: rel }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.warnings).toContain('docs-root-unsafe')
     expect(targetsOf(result.mounts)).not.toContain(path.join(fixture.repo, rel))
+    expect(targetsOf(result.mounts)).not.toContain(path.join(fixture.wt, rel))
+  })
+
+  it.each(['.rix', path.join('.rix', 'docs')])('in-repo rel %s collides with $WT/.rix: ineligible (docs-root-unsafe)', (rel) => {
+    const fixture = makeFixture()
+    const docsDir = path.join(fixture.repo, rel)
+    mkdir(docsDir)
+    mkdir(path.join(fixture.wt, rel))
+    const docsRoot: DocsRootFacts = { path: docsDir, source: 'settings', exists: true, inRepoRel: rel }
+    const result = planMounts({ ...fixture.baseFacts, docsRoot })
+    expect(result).toEqual({ ok: false, reason: 'docs-root-unsafe' })
+  })
+
+  it('an in-repo fact with inRepoRel null is ineligible (docs-root-unsafe)', () => {
+    const fixture = makeFixture()
+    const docsDir = path.join(fixture.repo, 'docs')
+    mkdir(docsDir)
+    const docsRoot: DocsRootFacts = { path: docsDir, source: 'settings', exists: true, inRepoRel: null }
+    const result = planMounts({ ...fixture.baseFacts, docsRoot })
+    expect(result).toEqual({ ok: false, reason: 'docs-root-unsafe' })
   })
 
   it("a 'default'-sourced docs_root is reported with provenance 'app' (Appendix C item 7)", () => {
@@ -417,13 +425,58 @@ describe('planMounts — docs_root', () => {
       source: 'default',
       exists: true,
       inRepoRel: rel,
-      ignored: false,
     }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result.ok).toBe(true)
     if (!result.ok) return
     const docsMount = result.mounts.find((m) => m.target === path.join(fixture.repo, rel))
     expect(docsMount?.provenance).toBe('app')
+  })
+})
+
+describe('docsRootWtTarget', () => {
+  const repo = '/r'
+  const wt = '/w'
+  const facts = (inRepoRel: string | null, exists = true): DocsRootFacts => ({
+    path: inRepoRel === null ? '/elsewhere' : path.join(repo, inRepoRel),
+    source: 'settings',
+    exists,
+    inRepoRel,
+  })
+
+  it('returns $WT/<rel> for an existing in-repo docs_root', () => {
+    expect(docsRootWtTarget(facts('docs'), wt)).toBe('/w/docs')
+    expect(docsRootWtTarget(facts('notes/docs'), wt)).toBe('/w/notes/docs')
+  })
+
+  it.each([
+    ['missing', facts('docs', false)],
+    ['outside the repo', facts(null)],
+    ['the repo itself', facts('')],
+    ['escaping (..)', facts('..')],
+    ['escaping (../x)', facts('../x')],
+    ['absolute', facts('/etc')],
+    ['.git', facts('.git')],
+    ['inside .git', facts('.git/hooks')],
+  ])('returns null when %s', (_label, docsRoot) => {
+    expect(docsRootWtTarget(docsRoot, wt)).toBeNull()
+  })
+})
+
+describe('planMounts — docs_root spec hash', () => {
+  it('differs from the old single-mount plan once the second target is added', () => {
+    const fixture = makeFixture()
+    const rel = 'my-docs'
+    const docsDir = path.join(fixture.repo, rel)
+    mkdir(docsDir)
+    mkdir(path.join(fixture.wt, rel))
+    const docsRoot: DocsRootFacts = { path: docsDir, source: 'settings', exists: true, inRepoRel: rel }
+    const result = planMounts({ ...fixture.baseFacts, docsRoot })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const oldPlan = result.mounts.filter((m) => m.target !== path.join(fixture.wt, rel))
+    const hashInput = (plan: readonly Mount[]): SpecHashInput => ({ plan, port: 20001, uid: 1000, gid: 1000, home: fixture.baseFacts.home, base: 'main', imageId: 'sha256:aaa' })
+    expect(specHash(hashInput(result.mounts))).not.toBe(specHash(hashInput(oldPlan)))
   })
 })
 
@@ -560,7 +613,7 @@ describe('planMounts — unsafe-path', () => {
       indexExists: false,
       hooksPathInsideGit: null,
       eventsEnabled: false,
-      docsRoot: { path: path.join(parent, 'repo', 'docs'), source: 'default', exists: false, inRepoRel: 'docs', ignored: false },
+      docsRoot: { path: path.join(parent, 'repo', 'docs'), source: 'default', exists: false, inRepoRel: 'docs' },
       worktreesOverlay: false,
     }
 
@@ -627,6 +680,30 @@ describe('diffMountPlans', () => {
     const diff = diffMountPlans(oldMounts, newPlan)
     expect(diff.newHostMounts).toEqual([{ path: '/settings/docs', readonly: false, source: 'settings' }])
     expect(diff.removedHostMounts).toEqual([])
+  })
+
+  it('lists a source mounted at two targets once (docs_root, #0035)', () => {
+    const newPlan: Mount[] = [
+      { source: '/repo/docs', target: '/repo/docs', readonly: false, provenance: 'memory.md' },
+      { source: '/repo/docs', target: '/wt/docs', readonly: false, provenance: 'memory.md' },
+    ]
+    expect(diffMountPlans([], newPlan).newHostMounts).toEqual([{ path: '/repo/docs', readonly: false, source: 'memory.md' }])
+  })
+
+  it('keeps the read-write entry when duplicate sources differ in readonly', () => {
+    const newPlan: Mount[] = [
+      { source: '/repo/docs', target: '/a', readonly: true, provenance: 'app' },
+      { source: '/repo/docs', target: '/b', readonly: false, provenance: 'app' },
+    ]
+    expect(diffMountPlans([], newPlan).newHostMounts).toEqual([{ path: '/repo/docs', readonly: false, source: 'app' }])
+  })
+
+  it('lists a removed source once when the old container had it at two targets', () => {
+    const oldMounts: OldMount[] = [
+      { source: '/old/docs', target: '/repo/docs', readonly: false },
+      { source: '/old/docs', target: '/wt/docs', readonly: false },
+    ]
+    expect(diffMountPlans(oldMounts, []).removedHostMounts).toEqual(['/old/docs'])
   })
 
   it('reports a removed host mount', () => {

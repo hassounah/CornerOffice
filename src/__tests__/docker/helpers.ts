@@ -25,7 +25,7 @@ import {
 } from '../../main/services/sandbox-spec'
 import type { Mount } from '../../main/services/sandbox-spec'
 import { resolveBuildContext, createSandboxImageService } from '../../main/services/sandbox-image'
-import { makeTmpDir, makeSimpleRepo, serviceEnvOverrides } from '../helpers/git-fixtures'
+import { makeTmpDir, makeSimpleRepo, writeFile, commitAll, serviceEnvOverrides } from '../helpers/git-fixtures'
 
 // ---------------------------------------------------------------------------
 // src/__tests__/docker/helpers.ts — shared setup for the Docker-gated suite
@@ -240,6 +240,10 @@ export interface SandboxRig {
 export interface CreateSandboxRigOpts {
   /** Extra worktrees to create on the host BEFORE the container, for the other-worktree overlay check (H3). */
   otherWorktrees?: string[]
+  /** A real in-repo docs_root at `$REPO/<docsRel>`, mounted at both `$REPO/<docsRel>` and `$WT/<docsRel>` (#0035). */
+  docsRel?: string
+  /** With `docsRel`: commit `<docsRel>/seed.md` before the worktree exists, so `$WT/<docsRel>` is a real checkout copy (tracked docs_root). */
+  docsTracked?: boolean
 }
 
 export async function createSandboxRig(d: DockerRunner, identity: TestIdentity, opts: CreateSandboxRigOpts = {}): Promise<SandboxRig> {
@@ -254,6 +258,10 @@ export async function createSandboxRig(d: DockerRunner, identity: TestIdentity, 
   fs.writeFileSync(paths.claudeJson, '{}')
 
   makeSimpleRepo(repo, 'main')
+  if (opts.docsRel && opts.docsTracked) {
+    writeFile(repo, path.join(opts.docsRel, 'seed.md'), 'seed\n')
+    commitAll(repo, 'track docs')
+  }
   fs.mkdirSync(path.join(repo, '.rix'), { recursive: true })
   const modulesWasAbsent = !fs.existsSync(path.join(repo, '.git', 'modules'))
 
@@ -277,6 +285,10 @@ export async function createSandboxRig(d: DockerRunner, identity: TestIdentity, 
   const eventsDir = path.join(paths.eventsRoot, slug)
   const cardsDir = cardDir(paths, slug)
   fs.mkdirSync(path.join(wt, '.rix'), { recursive: true })
+  if (opts.docsRel) {
+    fs.mkdirSync(path.join(repo, opts.docsRel), { recursive: true })
+    fs.mkdirSync(path.join(wt, opts.docsRel), { recursive: true })
+  }
   fs.mkdirSync(cardsDir, { recursive: true, mode: 0o700 })
   fs.mkdirSync(path.join(repo, '.git', 'hooks'), { recursive: true })
   fs.mkdirSync(path.join(repo, '.git', 'modules'), { recursive: true })
@@ -295,7 +307,9 @@ export async function createSandboxRig(d: DockerRunner, identity: TestIdentity, 
     indexExists: fs.existsSync(path.join(repo, '.git', 'index')),
     hooksPathInsideGit: null,
     eventsEnabled: false,
-    docsRoot: { path: path.join(repo, 'docs'), source: 'default', exists: false, inRepoRel: 'docs', ignored: false },
+    docsRoot: opts.docsRel
+      ? { path: path.join(repo, opts.docsRel), source: 'settings', exists: true, inRepoRel: opts.docsRel }
+      : { path: path.join(repo, 'docs'), source: 'default', exists: false, inRepoRel: 'docs' },
     worktreesOverlay: true,
   })
   if (!planned.ok) throw new Error(`rig mount plan failed: ${planned.reason}`)
