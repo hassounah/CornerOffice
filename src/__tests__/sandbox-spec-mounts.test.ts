@@ -286,15 +286,30 @@ describe('planMounts — docs_root', () => {
     expect(result).toEqual({ ok: false, reason: 'docs-root-unsafe' })
   })
 
-  it('outside REPO from memory.md: not mounted, docs-root-untrusted warning', () => {
+  it('outside REPO from memory.md: mounted at its own absolute path with memory.md provenance (#0035)', () => {
     const fixture = makeFixture()
     const outside = mkTmp('co-spec-mounts-docs-')
     const docsRoot: DocsRootFacts = { path: outside, source: 'memory.md', exists: true, inRepoRel: null }
     const result = planMounts({ ...fixture.baseFacts, docsRoot })
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.warnings).toContain('docs-root-untrusted')
-    expect(targetsOf(result.mounts)).not.toContain(outside)
+    expect(result.warnings).toEqual([])
+    expect(result.mounts.filter((m) => m.source === outside)).toEqual([{ source: outside, target: outside, readonly: false, provenance: 'memory.md' }])
+  })
+
+  it.each([
+    ['~/.corner-office/sandboxes/<other>', ['.corner-office', 'sandboxes', 'other-ws']],
+    ['a stray dir under ~/.corner-office', ['.corner-office', 'stray']],
+  ])('outside REPO inside app state (%s): dropped with docs-root-unsafe (#0035)', (_label, segs) => {
+    const fixture = makeFixture()
+    const appDir = path.join(fixture.home, ...segs)
+    mkdir(appDir)
+    const docsRoot: DocsRootFacts = { path: appDir, source: 'memory.md', exists: true, inRepoRel: null }
+    const result = planMounts({ ...fixture.baseFacts, docsRoot })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.warnings).toContain('docs-root-unsafe')
+    expect(result.mounts.some((m) => m.source === appDir)).toBe(false)
   })
 
   it('backstop: a crafted inRepoRel escaping the repo is docs-root-unsafe (SEC-M1)', () => {

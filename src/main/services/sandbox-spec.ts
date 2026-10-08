@@ -249,7 +249,7 @@ export interface PlanMountsFacts {
  * lower-level pure function; reconciling this into the manager's eligibility
  * warnings is step 3.4's job.
  */
-export type MountWarning = 'docs-root-missing' | 'docs-root-untrusted' | 'docs-root-unsafe'
+export type MountWarning = 'docs-root-missing' | 'docs-root-unsafe'
 
 export type PlanMountsResult =
   | { ok: true; mounts: Mount[]; warnings: MountWarning[] }
@@ -263,6 +263,19 @@ interface DocsRootOutcome {
   mounts: Mount[]
   warning: MountWarning | null
   hardFail: boolean
+}
+
+/**
+ * #0035: Corner Office's and Claude Code's own state (`~/.corner-office`,
+ * `~/.claude`) is never a docs_root — assertMountSafe allows those hidden dirs
+ * only for the app's fixed mounts, and a read-write docs mount there would let
+ * the agent edit app config or another sandbox's worktree.
+ */
+function insideAppState(p: string, home: string): boolean {
+  return ['.corner-office', '.claude'].some((d) => {
+    const dir = path.join(home, d)
+    return p === dir || p.startsWith(dir + path.sep)
+  })
 }
 
 /** SEC-M1 backstop: a relative path that stays inside the repo. */
@@ -317,13 +330,17 @@ function planDocsRootMount(
     )
 
   if (!insideRepo) {
-    if (docsRoot.source === 'memory.md') return { mounts: [], warning: 'docs-root-untrusted', hardFail: false }
-    // Only the Settings override reaches here for an outside-REPO path —
+    // #0035: Rix onboarding lets the user pick any docs_root and records it in
+    // memory.md as an absolute path, so it is mounted at exactly that path
+    // whatever its source. A memory.md source is agent-editable: the
+    // confirm-first recreate dialog (new-container / mount-plan) is the gate.
     // 'default' ({repo}/docs) is always inside REPO.
     if (overlapsExisting(docsRoot.path)) return { mounts: [], warning: null, hardFail: true }
-    if (!assertMountSafe(docsRoot.path, { home })) return { mounts: [], warning: 'docs-root-unsafe', hardFail: false }
+    if (!assertMountSafe(docsRoot.path, { home }) || insideAppState(docsRoot.path, home)) {
+      return { mounts: [], warning: 'docs-root-unsafe', hardFail: false }
+    }
     return {
-      mounts: [{ source: docsRoot.path, target: docsRoot.path, readonly: false, provenance: 'settings' }],
+      mounts: [{ source: docsRoot.path, target: docsRoot.path, readonly: false, provenance: docsRootProvenance(docsRoot.source) }],
       warning: null,
       hardFail: false,
     }

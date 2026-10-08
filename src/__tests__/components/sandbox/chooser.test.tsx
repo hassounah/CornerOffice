@@ -849,6 +849,15 @@ describe('RecreateDialog', () => {
     expect(warnings).toHaveLength(1)
   })
 
+  it('a recreate that adds a memory.md folder shows the louder "changed since you approved" warning; a new container does not (#0035)', () => {
+    const changed = 'A folder set in .rix/memory.md has changed since you last approved this sandbox.'
+    const { unmount } = renderDialog(plan({ newHostMounts: [rw('/home/u/new-docs', 'memory.md')] }))
+    expect(screen.getByRole('alertdialog')).toHaveTextContent(changed)
+    unmount()
+    renderDialog(plan({ reason: 'new-container', newHostMounts: [rw('/home/u/docs', 'memory.md')] }))
+    expect(screen.getByRole('alertdialog')).not.toHaveTextContent(changed)
+  })
+
   it('renders an invisible-character path visibly (review-safe)', () => {
     renderDialog(plan({ newHostMounts: [rw('/home/u/evil‮docs')] }))
     expect(screen.getByRole('alertdialog').textContent).not.toContain('‮')

@@ -324,6 +324,27 @@ describe('ensureContainer', () => {
     expect(fs.statSync(path.join(worktreePath(fakeSandboxPaths(h.realHome), 'myslug'), 'my-docs')).isDirectory()).toBe(true)
   })
 
+  it('absent, a memory.md docs_root OUTSIDE the repo: confirm-first (new-container) with that absolute path, no create recorded (#0035)', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    const external = path.join(h.realHome, 'notes', 'project-docs')
+    fs.mkdirSync(external, { recursive: true })
+    await prepareWorktree(h)
+    setMemoryDocsRoot(h.repo, external)
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], { error: NOT_FOUND_ERROR })
+    const manager = createSandboxManager(h.makeDeps({ docker }))
+
+    const result = await manager.ensureContainer('myslug')
+
+    if (result.ok || result.code !== 'RECREATE_REQUIRED') throw new Error(`expected RECREATE_REQUIRED, got ${JSON.stringify(result)}`)
+    expect(result.plan.reason).toBe('new-container')
+    expect(result.plan.newHostMounts).toContainEqual({ path: external, readonly: false, source: 'memory.md' })
+    expect(docker.calls.some((c) => c.args[0] === 'create')).toBe(false)
+  })
+
   it('a symlinked parent in $WT is not followed when pre-creating the docs_root target', async () => {
     sandboxSettings.disabled = false
     const h = setup()

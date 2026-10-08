@@ -216,6 +216,9 @@ export const RECREATE_REASON_COPY: Record<RecreatePlan['reason'], string> = {
 export const READ_ONLY_PROTECTIONS_COPY = 'Only read-only protections were added.'
 export const MEMORY_MD_WARNING_COPY = 'This path came from .rix/memory.md, which the sandbox agent can edit. Only continue if you set it yourself.'
 export const CACHES_RESET_COPY = 'Container caches will be reset.'
+/** #0035: an existing sandbox gains a folder set in .rix/memory.md — the agent may have changed it since you last approved. */
+export const MEMORY_MD_CHANGED_COPY =
+  "A folder set in .rix/memory.md has changed since you last approved this sandbox. The sandbox agent can edit that file, so this may not be your change. Only continue if you changed it yourself."
 
 export interface RecreateDescription {
   reasonLine: string
@@ -226,6 +229,8 @@ export interface RecreateDescription {
   removedMounts: string[]
   /** A recreate resets the container's caches; a `new-container` plan removes nothing. */
   cachesReset: boolean
+  /** An existing sandbox gains a read-write memory.md mount: show the louder change warning (#0035). */
+  memoryMdChanged: boolean
 }
 
 export function describeRecreatePlan(plan: RecreatePlan): RecreateDescription {
@@ -236,6 +241,7 @@ export function describeRecreatePlan(plan: RecreatePlan): RecreateDescription {
     readWriteMounts: readWrite.map((m) => ({ path: m.path, source: m.source, memoryMdWarning: m.source === 'memory.md' })),
     removedMounts: plan.removedHostMounts,
     cachesReset: plan.reason !== 'new-container',
+    memoryMdChanged: plan.reason !== 'new-container' && readWrite.some((m) => m.source === 'memory.md'),
   }
 }
 
