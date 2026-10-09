@@ -75,6 +75,9 @@ interface FileIndexState {
 
 export type CodeRoot = 'workspace' | 'sandbox'
 
+/** Why a user-initiated status refresh is pending; background polls never set it. */
+export type StatusPendingReason = 'open' | 'refresh' | 'baseline' | 'root'
+
 export interface CodeExplorerState {
   open: boolean
   workspaceSlug: string | null
@@ -101,6 +104,7 @@ export interface CodeExplorerState {
   selected: string | null
 
   status: StatusState | null
+  statusPending: StatusPendingReason | null
   fileIndex: FileIndexState | null
 
   file: CodeFileResponse | null
@@ -135,7 +139,7 @@ export interface CodeExplorerState {
   setBaseline: (b: 'head' | 'branch') => void
   setChangedOnly: (v: boolean) => void
   setShowIgnored: (v: boolean) => void
-  refreshStatus: () => Promise<void>
+  refreshStatus: (reason?: StatusPendingReason) => Promise<void>
   openFile: (rel: string) => void
   reveal: () => void
   setView: (v: 'source' | 'preview' | 'changes') => void
@@ -195,6 +199,7 @@ const CLOSED_STATE = {
   selected: null as string | null,
 
   status: null as StatusState | null,
+  statusPending: null as StatusPendingReason | null,
   fileIndex: null as FileIndexState | null,
 
   file: null as CodeFileResponse | null,
@@ -280,6 +285,35 @@ let statusTrailingRequested = false
 let gitChangeDebounce: ReturnType<typeof setTimeout> | null = null
 let pollIntervalId: ReturnType<typeof setInterval> | null = null
 let focusListener: (() => void) | null = null
+
+// #0036: user-initiated pending feedback stays up at least this long, so a
+// fast local `git status` still visibly acknowledges the click.
+export const STATUS_PENDING_MIN_MS = 400
+let pendingSince = 0
+let pendingClearTimer: ReturnType<typeof setTimeout> | null = null
+
+function markPending(set: Set, reason: StatusPendingReason): void {
+  if (pendingClearTimer) {
+    clearTimeout(pendingClearTimer)
+    pendingClearTimer = null
+  }
+  pendingSince = Date.now()
+  set({ statusPending: reason })
+}
+
+function clearPendingAfterFloor(get: Get, set: Set): void {
+  if (get().statusPending === null) return
+  const remaining = STATUS_PENDING_MIN_MS - (Date.now() - pendingSince)
+  if (remaining <= 0) {
+    set({ statusPending: null })
+    return
+  }
+  pendingClearTimer = setTimeout(() => {
+    pendingClearTimer = null
+    // A loop started during the floor clears the flag itself when it ends.
+    if (!statusInFlight) set({ statusPending: null })
+  }, remaining)
+}
 
 function stopPoll(): void {
   if (pollIntervalId !== null) {
@@ -489,7 +523,7 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
     })
 
     fetchDir(get, set, slug, newGen, get().showIgnored, '')
-    void get().refreshStatus()
+    void get().refreshStatus('open')
 
     void (async () => {
       try {
@@ -512,6 +546,7 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
     // The old watch is replaced on the main side (same slug, different root, newer gen); a new gen drops every in-flight response.
     get().openExplorer(slug, { root, baseline })
     set({ returnFocus })
+    markPending(set, 'root')
   },
 
   closeExplorer: () => {
@@ -590,7 +625,7 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
     const state = get()
     if (state.baseline === b) return
     set({ baseline: b })
-    void get().refreshStatus()
+    void get().refreshStatus('baseline')
     if (state.view === 'changes' && state.file && state.workspaceSlug) {
       const relPath = state.file.relPath
       const oldPath = state.status?.byPath[relPath]?.oldPath
@@ -611,7 +646,8 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
     for (const rel of dirsToRefetch) fetchDir(get, set, state.workspaceSlug, state.gen, v, rel)
   },
 
-  refreshStatus: async () => {
+  refreshStatus: async (reason) => {
+    if (reason) markPending(set, reason)
     if (statusInFlight) {
       statusTrailingRequested = true
       return
@@ -663,6 +699,7 @@ export const useCodeExplorerStore = create<CodeExplorerState>((set, get) => ({
       } while (statusTrailingRequested)
     } finally {
       statusInFlight = false
+      clearPendingAfterFloor(get, set)
     }
   },
 

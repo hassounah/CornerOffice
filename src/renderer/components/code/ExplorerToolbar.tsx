@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react'
+import React, { useCallback, useId, useRef, useState } from 'react'
 import type { RepoInfo } from '@main/types/code'
 import { useCodeExplorerStore } from '../../stores/code-explorer-store'
 import { useSandboxStore } from '../../stores/sandbox-store'
@@ -6,6 +6,7 @@ import { guardAction } from '../../stores/dirty-registry'
 import { gitStateBannerCopy } from './notice-copy'
 import { RefName } from './RefName'
 import { tokenizeNameToText } from '../../utils/name-safety'
+import { FilterChip, SegmentedControl, Spinner, ToolbarButton } from './ToolbarControls'
 
 // ---------------------------------------------------------------------------
 // ExplorerToolbar — the §3.6.3 wireframe's toolbar (TRD §3.6.3, H-U2, U-L2,
@@ -19,6 +20,11 @@ import { tokenizeNameToText } from '../../utils/name-safety'
 // FileHeader's View = Changes control, must disable-with-reason every
 // git-dependent control for every RepoState — never hide it — with a
 // tooltip that repeats the GitStateBanner reason.
+//
+// Controls are the shared ToolbarControls primitives (#0036), so every
+// control looks clickable in both skins; a user-initiated refresh shows its
+// pending state (spinner on the control that caused it) via the store's
+// `statusPending`, which background polls never set.
 // ---------------------------------------------------------------------------
 
 export interface ExplorerToolbarProps {
@@ -67,6 +73,7 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
   const changedOnly = useCodeExplorerStore((s) => s.changedOnly)
   const showIgnored = useCodeExplorerStore((s) => s.showIgnored)
   const status = useCodeExplorerStore((s) => s.status)
+  const statusPending = useCodeExplorerStore((s) => s.statusPending)
   const setBaseline = useCodeExplorerStore((s) => s.setBaseline)
   const setChangedOnly = useCodeExplorerStore((s) => s.setChangedOnly)
   const setShowIgnored = useCodeExplorerStore((s) => s.setShowIgnored)
@@ -78,8 +85,15 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
   const hasSandbox = useSandboxStore((s) => (slug ? (s.summaries[slug]?.exists ?? false) : false))
   const buttonCount = BASE_BUTTON_COUNT + (hasSandbox ? ROOT_TOGGLE_COUNT : 0)
 
+  const compareId = useId()
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([])
   const [focusedIndex, setFocusedIndex] = useState(0)
+  const refFor = useCallback(
+    (i: number) => (el: HTMLButtonElement | null) => {
+      buttonRefs.current[i] = el
+    },
+    [],
+  )
 
   function focusIndex(index: number): void {
     setFocusedIndex(index)
@@ -128,146 +142,145 @@ export function ExplorerToolbar({ skin, onBack, onGoToFile }: ExplorerToolbarPro
       ? { prefix: '⎇ ', name: repo.branch } // U+2387 ALTERNATIVE KEY SYMBOL, stands in for the branch glyph
       : null
 
+  const rove = (i: number) => ({
+    tabIndex: focusedIndex === i ? 0 : -1,
+    onFocus: () => setFocusedIndex(i),
+  })
+
+  const refreshBusy = statusPending === 'refresh'
+
   return (
-    <div role="toolbar" aria-label="Explorer" onKeyDown={handleToolbarKeyDown} className="flex items-center justify-between gap-4">
-      <div className="flex items-center gap-3">
-        <button
-          ref={(el) => {
-            buttonRefs.current[0] = el
-          }}
-          type="button"
-          tabIndex={focusedIndex === 0 ? 0 : -1}
-          onFocus={() => setFocusedIndex(0)}
-          onClick={onBack}
-        >
+    <div
+      role="toolbar"
+      aria-label="Explorer"
+      data-skin={skin}
+      onKeyDown={handleToolbarKeyDown}
+      className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5"
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <ToolbarButton skin={skin} variant="ghost" ref={refFor(0)} {...rove(0)} onClick={onBack}>
+          {skin === 'realm' && <span aria-hidden="true">←</span>}
           {BACK_LABEL[skin]}
-        </button>
+        </ToolbarButton>
         {branchLabel && (
-          <span className="flex items-center gap-1">
+          // Truncates long names; the title carries the full name, tokenized so no raw bidi/invisible character reaches it.
+          <span className="co-tb co-tb-info" data-skin={skin} title={`${branchLabel.prefix}${tokenizeNameToText(branchLabel.name)}`}>
             {branchLabel.prefix}
             <RefName name={branchLabel.name} />
           </span>
         )}
       </div>
 
-      <div className="flex items-center gap-3">
-        <span>Compare:</span>
-        <button
-          ref={(el) => {
-            buttonRefs.current[1] = el
-          }}
-          type="button"
-          tabIndex={focusedIndex === 1 ? 0 : -1}
-          onFocus={() => setFocusedIndex(1)}
-          aria-pressed={baseline === 'head'}
-          aria-disabled={uncommittedDisabled}
-          title={uncommittedTitle}
-          onClick={() => {
-            if (!uncommittedDisabled) setBaseline('head')
-          }}
-        >
-          Uncommitted
-        </button>
-        <button
-          ref={(el) => {
-            buttonRefs.current[2] = el
-          }}
-          type="button"
-          tabIndex={focusedIndex === 2 ? 0 : -1}
-          onFocus={() => setFocusedIndex(2)}
-          aria-pressed={baseline === 'branch'}
-          aria-disabled={thisBranchDisabled}
-          title={thisBranchTitle}
-          onClick={() => {
-            if (!thisBranchDisabled) setBaseline('branch')
-          }}
-        >
-          This branch
-        </button>
+      <div className="flex flex-wrap items-center gap-3">
+        <span id={compareId} className="co-tb co-tb-label" data-skin={skin}>
+          Compare:
+        </span>
+        <SegmentedControl skin={skin} aria-labelledby={compareId}>
+          <ToolbarButton
+            skin={skin}
+            variant="segment"
+            ref={refFor(1)} {...rove(1)}
+            busy={statusPending === 'baseline' && baseline === 'head'}
+            aria-pressed={baseline === 'head'}
+            aria-disabled={uncommittedDisabled}
+            title={uncommittedTitle}
+            onClick={() => {
+              if (!uncommittedDisabled) setBaseline('head')
+            }}
+          >
+            {statusPending === 'baseline' && baseline === 'head' && <Spinner />}
+            <span>Uncommitted</span>
+          </ToolbarButton>
+          <ToolbarButton
+            skin={skin}
+            variant="segment"
+            ref={refFor(2)} {...rove(2)}
+            busy={statusPending === 'baseline' && baseline === 'branch'}
+            aria-pressed={baseline === 'branch'}
+            aria-disabled={thisBranchDisabled}
+            title={thisBranchTitle}
+            onClick={() => {
+              if (!thisBranchDisabled) setBaseline('branch')
+            }}
+          >
+            {statusPending === 'baseline' && baseline === 'branch' && <Spinner />}
+            <span>This branch</span>
+          </ToolbarButton>
+        </SegmentedControl>
 
-        <button
-          ref={(el) => {
-            buttonRefs.current[3] = el
-          }}
-          type="button"
-          tabIndex={focusedIndex === 3 ? 0 : -1}
-          onFocus={() => setFocusedIndex(3)}
-          aria-pressed={changedOnly}
+        <FilterChip
+          skin={skin}
+          ref={refFor(3)} {...rove(3)}
+          pressed={changedOnly}
+          count={changedFilesCount}
           aria-disabled={changedFilesDisabled}
           title={changedFilesTitle}
           onClick={() => {
             if (!changedFilesDisabled) setChangedOnly(!changedOnly)
           }}
         >
-          {changedOnly ? '✓ ' : ''}Changed files · {changedFilesCount}
-        </button>
+          Changed files
+        </FilterChip>
 
-        <button
-          ref={(el) => {
-            buttonRefs.current[4] = el
-          }}
-          type="button"
-          tabIndex={focusedIndex === 4 ? 0 : -1}
-          onFocus={() => setFocusedIndex(4)}
-          aria-pressed={showIgnored}
+        <FilterChip
+          skin={skin}
+          ref={refFor(4)}
+          {...rove(4)}
+          pressed={showIgnored}
           title={showIgnoredTitle}
           onClick={() => setShowIgnored(!showIgnored)}
         >
           {SHOW_IGNORED_LABEL[skin]}
-        </button>
+        </FilterChip>
 
-        <button
-          ref={(el) => {
-            buttonRefs.current[5] = el
-          }}
-          type="button"
-          tabIndex={focusedIndex === 5 ? 0 : -1}
-          onFocus={() => setFocusedIndex(5)}
+        <ToolbarButton
+          skin={skin}
+          variant={isRetry ? 'pill' : 'icon'}
+          tone={isRetry ? 'warning' : undefined}
+          ref={refFor(5)} {...rove(5)}
+          busy={refreshBusy}
           title={refreshTitle}
           aria-label={isRetry ? 'Retry' : 'Refresh'}
-          className={isRetry ? 'text-co-status-waiting' : undefined}
-          onClick={() => void refreshStatus()}
+          onClick={() => void refreshStatus('refresh')}
         >
-          {isRetry ? '⟳ Retry' : '⟳'}
-        </button>
+          <span aria-hidden="true" className={refreshBusy ? 'co-tb-spin' : undefined}>
+            ⟳
+          </span>
+          {isRetry && 'Retry'}
+        </ToolbarButton>
       </div>
 
       <div>
-        <button
-          ref={(el) => {
-            buttonRefs.current[6] = el
-          }}
-          type="button"
-          tabIndex={focusedIndex === 6 ? 0 : -1}
-          onFocus={() => setFocusedIndex(6)}
-          title="Go to file (Ctrl+P)"
-          onClick={onGoToFile}
-        >
-          {'⌕'} Go to file <span className="opacity-60">Ctrl+P</span>
-        </button>
+        <ToolbarButton skin={skin} variant="search" ref={refFor(6)} {...rove(6)} title="Go to file (Ctrl+P)" onClick={onGoToFile}>
+          <span aria-hidden="true">⌕</span>
+          Go to file
+          <kbd className="co-tb-kbd">Ctrl+P</kbd>
+        </ToolbarButton>
       </div>
 
       {hasSandbox && (
-        <div role="group" aria-label="Tree" className="flex items-center gap-1">
-          {(['workspace', 'sandbox'] as const).map((target, i) => (
-            <button
-              key={target}
-              ref={(el) => {
-                buttonRefs.current[BASE_BUTTON_COUNT + i] = el
-              }}
-              type="button"
-              tabIndex={focusedIndex === BASE_BUTTON_COUNT + i ? 0 : -1}
-              onFocus={() => setFocusedIndex(BASE_BUTTON_COUNT + i)}
-              aria-pressed={root === target}
-              onClick={() => {
-                // Switching trees closes and reopens the session, which would discard an unsaved edit: same guard as every other exit.
-                if (root !== target) guardAction(() => setRoot(target), ['code-explorer'])
-              }}
-            >
-              {target === 'workspace' ? 'Workspace' : 'Sandbox'}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl skin={skin} aria-label="Tree">
+          {(['workspace', 'sandbox'] as const).map((target, i) => {
+            const busy = statusPending === 'root' && root === target
+            return (
+              <ToolbarButton
+                key={target}
+                skin={skin}
+                variant="segment"
+                ref={refFor(BASE_BUTTON_COUNT + i)} {...rove(BASE_BUTTON_COUNT + i)}
+                busy={busy}
+                aria-pressed={root === target}
+                onClick={() => {
+                  // Switching trees closes and reopens the session, which would discard an unsaved edit: same guard as every other exit.
+                  if (root !== target) guardAction(() => setRoot(target), ['code-explorer'])
+                }}
+              >
+                {busy && <Spinner />}
+                <span>{target === 'workspace' ? 'Workspace' : 'Sandbox'}</span>
+              </ToolbarButton>
+            )
+          })}
+        </SegmentedControl>
       )}
     </div>
   )

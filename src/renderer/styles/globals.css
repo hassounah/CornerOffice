@@ -715,6 +715,232 @@
 }
 
 /* ============================================================
+   Explorer toolbar controls
+   One block keyed on --tb-* variables: the skins only swap the
+   variables, the state rules are written once.
+   ============================================================ */
+@layer components {
+  /* Contrast (impl-review C1/H3/H5): control borders are >= 3:1 against the
+     surface, text pairs >= 4.5:1, in both skins and both themes. */
+  .co-tb {
+    --tb-fg: var(--co-text-secondary);
+    --tb-fg-hover: var(--co-text-primary);
+    --tb-border: var(--co-text-muted);
+    --tb-rest-bg: var(--co-bg-secondary);
+    --tb-badge-bg: var(--co-border);
+    --tb-hover-bg: var(--co-bg-tertiary);
+    --tb-hover-border: var(--co-text-secondary);
+    --tb-hover-glow: none;
+    --tb-accent: var(--co-accent);
+    --tb-on-accent: var(--co-bg-primary);
+    --tb-tint: color-mix(in srgb, var(--co-accent) 15%, transparent);
+    --tb-ring: var(--co-accent);
+    --tb-warning: var(--co-status-waiting);
+  }
+
+  /* The amber warning is ~1.5:1 on the light surfaces; a dark amber reads at ~5:1. */
+  .theme-light .co-tb {
+    --tb-warning: #8a5a00;
+  }
+
+  .co-tb[data-skin='realm'] {
+    --tb-fg: var(--co-realm-fg);
+    --tb-fg-hover: var(--co-realm-fg);
+    --tb-border: color-mix(in srgb, var(--co-realm-keyword) 70%, transparent);
+    --tb-rest-bg: color-mix(in srgb, var(--co-realm-keyword) 6%, transparent);
+    --tb-badge-bg: var(--co-realm-border);
+    --tb-hover-bg: var(--co-realm-selection);
+    --tb-hover-border: var(--co-realm-keyword);
+    --tb-hover-glow: 0 0 8px var(--realm-gold-dim);
+    --tb-accent: var(--co-realm-keyword);
+    --tb-on-accent: var(--co-realm-bg);
+    --tb-tint: var(--co-realm-selection);
+    --tb-ring: var(--co-realm-keyword);
+    font-family: serif;
+  }
+
+  .co-tb-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    height: 1.75rem;
+    padding: 0 0.625rem;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    border-radius: 9999px;
+    border: 1px solid var(--tb-border);
+    color: var(--tb-fg);
+    background: var(--tb-rest-bg);
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition:
+      background-color 100ms,
+      border-color 100ms,
+      color 100ms,
+      transform 100ms,
+      filter 100ms;
+  }
+
+  .co-tb-btn[data-variant='ghost'] {
+    border-color: transparent;
+  }
+
+  .co-tb-btn[data-variant='icon'] {
+    width: 1.75rem;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .co-tb-btn[data-variant='search'] {
+    min-width: 10rem;
+    justify-content: flex-start;
+    background: color-mix(in srgb, var(--tb-hover-bg) 50%, transparent);
+  }
+
+  /* Segments sit inside one pill; the container carries the resting fill and border. */
+  .co-tb-btn[data-variant='segment'] {
+    border: 0;
+    background: transparent;
+    height: 1.5rem;
+  }
+
+  .co-tb-seg {
+    display: inline-flex;
+    flex-shrink: 0;
+    gap: 0.125rem;
+    padding: 0.125rem;
+    border-radius: 9999px;
+    border: 1px solid var(--tb-border);
+    background: var(--tb-rest-bg);
+  }
+
+  .co-tb-btn:not([aria-disabled='true']):hover {
+    background: var(--tb-hover-bg);
+    border-color: var(--tb-hover-border);
+    color: var(--tb-fg-hover);
+    box-shadow: var(--tb-hover-glow);
+  }
+
+  .co-tb-btn[data-variant='segment']:not([aria-disabled='true']):hover {
+    border-color: transparent;
+  }
+
+  .co-tb-btn:not([aria-disabled='true']):active {
+    filter: brightness(0.85);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .co-tb-btn:not([aria-disabled='true']):active {
+      transform: scale(0.96);
+    }
+  }
+
+  /* Offset outline: a gap of surface separates the ring from an accent-filled
+     selected segment, so focus stays visible there (impl-review H1). */
+  .co-tb-btn:focus-visible {
+    outline: 2px solid var(--tb-ring);
+    outline-offset: 2px;
+  }
+
+  .co-tb-btn[aria-disabled='true'] {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .co-tb-seg > [aria-pressed='true'],
+  .co-tb-seg > [aria-pressed='true']:not([aria-disabled='true']):hover {
+    background: var(--tb-accent);
+    color: var(--tb-on-accent);
+  }
+
+  .co-tb-btn[data-variant='pill'][aria-pressed='true'] {
+    background: var(--tb-tint);
+    border-color: var(--tb-accent);
+    color: var(--tb-fg-hover);
+  }
+
+  /* The :hover arm keeps Retry's warning colour over the generic hover rule above. */
+  .co-tb-btn[data-tone='warning'],
+  .co-tb-btn[data-tone='warning']:not([aria-disabled='true']):hover {
+    color: var(--tb-warning);
+    border-color: var(--tb-warning);
+  }
+
+  .co-tb-btn[aria-busy='true'] {
+    cursor: progress;
+  }
+
+  .co-tb-badge {
+    min-width: 1rem;
+    padding: 0 0.25rem;
+    border-radius: 9999px;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    background: var(--tb-badge-bg);
+  }
+
+  .co-tb-btn[aria-pressed='true'] .co-tb-badge {
+    background: var(--tb-accent);
+    color: var(--tb-on-accent);
+  }
+
+  .co-tb-kbd {
+    font-family: 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 0 0.25rem;
+    border-radius: 0.25rem;
+    border: 1px solid var(--tb-badge-bg);
+  }
+
+  .co-tb-label {
+    font-size: 0.75rem;
+    line-height: 1rem;
+    white-space: nowrap;
+    color: var(--tb-fg);
+  }
+
+  /* `.co-tb.co-tb-info` outranks the realm serif, so ref names stay monospace in
+     both skins (lookalike characters are easier to tell apart). Long names truncate;
+     the full, tokenized name is in the title. */
+  .co-tb.co-tb-info {
+    display: inline-block;
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    font-family: 'Fira Code', 'JetBrains Mono', monospace;
+    color: var(--tb-fg);
+    cursor: default;
+  }
+
+  .co-tb-spinner {
+    display: inline-block;
+    width: 0.75rem;
+    height: 0.75rem;
+    border-radius: 9999px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+  }
+
+  .co-tb-spin {
+    display: inline-block;
+  }
+
+  .co-tb-progress > span {
+    animation: co-tb-indeterminate 1.2s ease-in-out infinite;
+  }
+
+  .co-tb-flash {
+    animation: co-tb-flash 600ms ease-out 1;
+  }
+}
+
+/* ============================================================
    Animations
    ============================================================ */
 @layer utilities {
@@ -747,6 +973,29 @@
     to {
       opacity: 1;
       transform: translateY(0);
+    }
+  }
+
+  /* Explorer toolbar: indeterminate progress bar slides across, badge flashes once */
+  @keyframes co-tb-indeterminate {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(340%); }
+  }
+
+  @keyframes co-tb-flash {
+    from { box-shadow: 0 0 0 2px var(--tb-accent); }
+    to { box-shadow: 0 0 0 2px transparent; }
+  }
+
+  /* Spin is motion-gated like the realm keyframes: reduced motion shows a static ring */
+  @media (prefers-reduced-motion: no-preference) {
+    @keyframes co-tb-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .co-tb-spinner,
+    .co-tb-spin {
+      animation: co-tb-spin 0.8s linear infinite;
     }
   }
 
@@ -800,6 +1049,16 @@
   .co-card:hover,
   .co-card-interactive:hover {
     transform: none !important;
+  }
+
+  .co-tb-flash,
+  .co-tb-progress > span {
+    animation: none !important;
+  }
+
+  .co-tb-progress > span {
+    width: 100% !important;
+    opacity: 0.5;
   }
 }
 

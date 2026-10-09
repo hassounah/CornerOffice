@@ -45,6 +45,7 @@ export function CodeExplorer({ skin, onBack }: CodeExplorerProps): React.ReactEl
   const liveLimited = useCodeExplorerStore((s) => s.liveLimited)
   const selected = useCodeExplorerStore((s) => s.selected)
   const openFile = useCodeExplorerStore((s) => s.openFile)
+  const statusPending = useCodeExplorerStore((s) => s.statusPending)
 
   const [quickOpenOpen, setQuickOpenOpen] = useState(false)
   const splitContainerRef = useRef<HTMLDivElement | null>(null)
@@ -56,6 +57,17 @@ export function CodeExplorer({ skin, onBack }: CodeExplorerProps): React.ReactEl
   return (
     <div className="relative flex flex-1 min-h-0 flex-col">
       <ExplorerToolbar skin={skin} onBack={onBack} onGoToFile={() => setQuickOpenOpen(true)} />
+      {/* Always reserves its 2px so nothing shifts when the bar appears. */}
+      <div className="co-tb co-tb-progress relative h-0.5 overflow-hidden" data-skin={skin}>
+        {statusPending && (
+          <span
+            role="progressbar"
+            aria-label="Updating status"
+            className="absolute inset-y-0 left-0 w-[30%]"
+            style={{ background: 'var(--tb-accent)' }}
+          />
+        )}
+      </div>
 
       <QuickOpen open={quickOpenOpen} onClose={() => setQuickOpenOpen(false)} onOpenFile={openFile} />
 
@@ -84,7 +96,7 @@ export function CodeExplorer({ skin, onBack }: CodeExplorerProps): React.ReactEl
         ref={splitContainerRef}
         className={`flex flex-1 min-h-0 min-w-0 ${split.dragging ? 'select-none cursor-col-resize' : ''}`}
       >
-        <FileTree id={TREE_ID} className="flex-none" style={{ width: split.treeWidth }} />
+        <FileTree id={TREE_ID} className={`flex-none transition-opacity ${statusPending && statusPending !== 'open' ? 'opacity-60' : ''}`} style={{ width: split.treeWidth }} />
 
         <SplitDivider skin={skin} controlsId={TREE_ID} split={split} />
 
