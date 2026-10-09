@@ -110,6 +110,37 @@ describe('CodeExplorer — shell composition', () => {
   })
 })
 
+describe('CodeExplorer — pending status feedback (#0036)', () => {
+  it('shows the progress bar and dims the tree only while statusPending is set', () => {
+    seed({ statusPending: 'refresh' })
+    render(<CodeExplorer skin="office" onBack={vi.fn()} />)
+    expect(screen.getByRole('progressbar', { name: 'Updating status' })).toBeInTheDocument()
+    const tree = document.getElementById('code-explorer-tree')!
+    expect(tree).toHaveClass('opacity-60', 'flex-none')
+
+    act(() => useCodeExplorerStore.setState({ statusPending: null }))
+    expect(screen.queryByRole('progressbar')).toBeNull()
+    expect(tree).not.toHaveClass('opacity-60')
+    expect(tree).toHaveClass('flex-none')
+  })
+
+  it("shows the progress bar but does not dim the tree while opening ('open')", () => {
+    seed({ statusPending: 'open' })
+    render(<CodeExplorer skin="office" onBack={vi.fn()} />)
+    expect(screen.getByRole('progressbar', { name: 'Updating status' })).toBeInTheDocument()
+    expect(document.getElementById('code-explorer-tree')).not.toHaveClass('opacity-60')
+  })
+
+  it('renders the progress bar track (reserved space) even when idle, keyed to the skin', () => {
+    seed()
+    const { container } = render(<CodeExplorer skin="realm" onBack={vi.fn()} />)
+    const track = container.querySelector('.co-tb-progress')
+    expect(track).toHaveAttribute('data-skin', 'realm')
+    expect(track).toHaveClass('h-0.5', 'co-tb')
+    expect(screen.queryByRole('progressbar')).toBeNull()
+  })
+})
+
 describe('CodeExplorer — branch-mismatch banner (TRD §3.8.3)', () => {
   it('renders nothing when expectedBranch matches the current branch', () => {
     seed({ expectedBranch: 'main', repo: { ...REPO_STATE_FIXTURES.git, branch: 'main' } })

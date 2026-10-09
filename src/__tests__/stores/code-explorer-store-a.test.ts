@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { useCodeExplorerStore } from '../../renderer/stores/code-explorer-store'
+import { useCodeExplorerStore, STATUS_PENDING_MIN_MS } from '../../renderer/stores/code-explorer-store'
 import { setPendingReturnFocus, consumeReturnFocus } from '../../renderer/utils/code-explorer-return-focus'
 import type { CodeChange, CodeListDirResponse, CodeStatusResponse, CodeTreeEntry, RepoInfo } from '@main/types/code'
 
@@ -990,5 +990,173 @@ describe('dirty registry integration', () => {
     discard(['code-explorer']) // routes through the registered discard -> cancelEdit
     expect(getState().editing).toBe(false)
     expect(anyDirty(['code-explorer'])).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// statusPending — user-initiated refresh flag (#0036)
+// ---------------------------------------------------------------------------
+
+describe('statusPending', () => {
+  // Fake timers drive the STATUS_PENDING_MIN_MS floor; `tick(0)` flushes a
+  // resolved request, `tick(STATUS_PENDING_MIN_MS)` runs out the floor.
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  const tick = (ms: number) => vi.advanceTimersByTimeAsync(ms)
+
+  it('is null when closed', () => {
+    expect(getState().statusPending).toBeNull()
+  })
+
+  it("openExplorer sets 'open' while its status request is in flight, then clears", async () => {
+    const result = deferred<{ data: CodeStatusResponse; error: null }>()
+    mockGetStatus.mockReturnValueOnce(result.promise)
+    getState().openExplorer('ws-a')
+    expect(getState().statusPending).toBe('open')
+    result.resolve(ok(mkStatusResponse([])))
+    await tick(STATUS_PENDING_MIN_MS)
+    expect(getState().statusPending).toBeNull()
+  })
+
+  it("setBaseline sets 'baseline' and clears when the refresh finishes", async () => {
+    getState().openExplorer('ws-a')
+    await tick(STATUS_PENDING_MIN_MS)
+    const result = deferred<{ data: CodeStatusResponse; error: null }>()
+    mockGetStatus.mockReturnValueOnce(result.promise)
+    getState().setBaseline('branch')
+    expect(getState().statusPending).toBe('baseline')
+    result.resolve(ok(mkStatusResponse([])))
+    await tick(STATUS_PENDING_MIN_MS)
+    expect(getState().statusPending).toBeNull()
+  })
+
+  it("setRoot leaves 'root' pending until the new session's refresh finishes", async () => {
+    getState().openExplorer('ws-a')
+    await tick(STATUS_PENDING_MIN_MS)
+    const result = deferred<{ data: CodeStatusResponse; error: null }>()
+    mockGetStatus.mockReturnValueOnce(result.promise)
+    getState().setRoot('sandbox')
+    expect(getState().statusPending).toBe('root')
+    result.resolve(ok(mkStatusResponse([])))
+    await tick(STATUS_PENDING_MIN_MS)
+    expect(getState().statusPending).toBeNull()
+  })
+
+  it("refreshStatus('refresh') sets the flag; a reason-less call never does", async () => {
+    getState().openExplorer('ws-a')
+    await tick(STATUS_PENDING_MIN_MS)
+    const quiet = deferred<{ data: CodeStatusResponse; error: null }>()
+    mockGetStatus.mockReturnValueOnce(quiet.promise)
+    const p1 = getState().refreshStatus()
+    expect(getState().statusPending).toBeNull()
+    quiet.resolve(ok(mkStatusResponse([])))
+    await p1
+    expect(getState().statusPending).toBeNull()
+
+    const loud = deferred<{ data: CodeStatusResponse; error: null }>()
+    mockGetStatus.mockReturnValueOnce(loud.promise)
+    const p2 = getState().refreshStatus('refresh')
+    expect(getState().statusPending).toBe('refresh')
+    loud.resolve(ok(mkStatusResponse([])))
+    await p2
+    await tick(STATUS_PENDING_MIN_MS)
+    expect(getState().statusPending).toBeNull()
+  })
+
+  it('a fast request stays pending until the minimum visible time has passed', async () => {
+    getState().openExplorer('ws-a')
+    await tick(STATUS_PENDING_MIN_MS)
+    const p = getState().refreshStatus('refresh') // the default mock resolves immediately
+    await p
+    expect(getState().statusPending).toBe('refresh')
+    await tick(STATUS_PENDING_MIN_MS - 1)
+    expect(getState().statusPending).toBe('refresh')
+    await tick(1)
+    expect(getState().statusPending).toBeNull()
+  })
+
+  it('a new click during the floor is not cleared by the earlier timer', async () => {
+    getState().openExplorer('ws-a')
+    await tick(STATUS_PENDING_MIN_MS)
+    await getState().refreshStatus('refresh')
+    await tick(STATUS_PENDING_MIN_MS / 2)
+    getState().setBaseline('branch') // restarts the floor
+    await tick(STATUS_PENDING_MIN_MS / 2)
+    expect(getState().statusPending).toBe('baseline')
+    await tick(STATUS_PENDING_MIN_MS / 2)
+    expect(getState().statusPending).toBeNull()
+  })
+
+  it('a user click during an in-flight background poll shows pending until the trailing rerun is served', async () => {
+    getState().openExplorer('ws-a')
+    await tick(STATUS_PENDING_MIN_MS)
+    const first = deferred<{ data: CodeStatusResponse; error: null }>()
+    const second = deferred<{ data: CodeStatusResponse; error: null }>()
+    mockGetStatus.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const background = getState().refreshStatus()
+    void getState().refreshStatus('refresh') // early-returns, but flags pending
+    expect(getState().statusPending).toBe('refresh')
+    first.resolve(ok(mkStatusResponse([])))
+    await tick(STATUS_PENDING_MIN_MS)
+    expect(getState().statusPending).toBe('refresh') // trailing rerun still running
+    second.resolve(ok(mkStatusResponse([])))
+    await background
+    await tick(STATUS_PENDING_MIN_MS)
+    expect(getState().statusPending).toBeNull()
+  })
+
+  it("setRoot during an in-flight status request keeps 'root' until the new session's rerun is served", async () => {
+    getState().openExplorer('ws-a')
+    await tick(STATUS_PENDING_MIN_MS)
+    const old = deferred<{ data: CodeStatusResponse; error: null }>()
+    const fresh = deferred<{ data: CodeStatusResponse; error: null }>()
+    mockGetStatus.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise)
+    void getState().refreshStatus() // background request in flight
+    getState().setRoot('sandbox')
+    old.resolve(ok(mkStatusResponse([]))) // stale gen: dropped, loop reruns
+    await tick(STATUS_PENDING_MIN_MS)
+    expect(getState().statusPending).toBe('root')
+    fresh.resolve(ok(mkStatusResponse([])))
+    await tick(STATUS_PENDING_MIN_MS)
+    expect(getState().statusPending).toBeNull()
+  })
+
+  it("close then reopen during an in-flight request keeps the new session's 'open' until its rerun is served", async () => {
+    const old = deferred<{ data: CodeStatusResponse; error: null }>()
+    const fresh = deferred<{ data: CodeStatusResponse; error: null }>()
+    mockGetStatus.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise)
+    getState().openExplorer('ws-a')
+    getState().closeExplorer()
+    getState().openExplorer('ws-a')
+    old.resolve(ok(mkStatusResponse([])))
+    await tick(STATUS_PENDING_MIN_MS)
+    expect(getState().statusPending).toBe('open')
+    fresh.resolve(ok(mkStatusResponse([])))
+    await tick(STATUS_PENDING_MIN_MS)
+    expect(getState().statusPending).toBeNull()
+  })
+
+  it('clears on a failed (rejected) status request', async () => {
+    getState().openExplorer('ws-a')
+    await tick(STATUS_PENDING_MIN_MS)
+    mockGetStatus.mockRejectedValueOnce(new Error('boom'))
+    await getState().refreshStatus('refresh')
+    await tick(STATUS_PENDING_MIN_MS)
+    expect(getState().statusPending).toBeNull()
+    expect(getState().status?.failed).toBe(true)
+  })
+
+  it('closeExplorer resets the flag', async () => {
+    const result = deferred<{ data: CodeStatusResponse; error: null }>()
+    mockGetStatus.mockReturnValueOnce(result.promise)
+    getState().openExplorer('ws-a')
+    expect(getState().statusPending).toBe('open')
+    getState().closeExplorer()
+    expect(getState().statusPending).toBeNull()
+    result.resolve(ok(mkStatusResponse([])))
+    await tick(STATUS_PENDING_MIN_MS)
+    expect(getState().statusPending).toBeNull()
   })
 })

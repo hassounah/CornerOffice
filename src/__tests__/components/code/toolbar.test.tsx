@@ -107,7 +107,7 @@ describe('labels', () => {
         at: 0,
       },
     })
-    expect(screen.getByText(/Changed files · 2/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Changed files 2' })).toBeInTheDocument()
   })
 })
 
@@ -530,5 +530,78 @@ describe('ExplorerToolbar — the Sandbox toggle after a cold start', () => {
     })
 
     expect(screen.getByRole('group', { name: 'Tree' })).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Pending feedback and primitives (#0036)
+// ---------------------------------------------------------------------------
+
+describe('ExplorerToolbar — statusPending feedback (#0036)', () => {
+  beforeEach(() => {
+    useSandboxStore.setState({ summaries: { 'test-ws': { exists: true, running: false, unmergedBranches: [] } } })
+  })
+
+  const spinnersIn = (el: HTMLElement) => el.querySelectorAll('.co-tb-spinner').length
+
+  it("'refresh' marks the Refresh button busy and spins its glyph", () => {
+    renderToolbar({ repo: REPO_STATE_FIXTURES.git, statusPending: 'refresh' })
+    const refresh = screen.getByLabelText('Refresh')
+    expect(refresh).toHaveAttribute('aria-busy', 'true')
+    expect(refresh.querySelector('.co-tb-spin')).not.toBeNull()
+  })
+
+  it("'baseline' puts a spinner in the selected Compare segment only", () => {
+    renderToolbar({ repo: REPO_STATE_FIXTURES.onBaseBranch, baseline: 'branch', statusPending: 'baseline' })
+    expect(spinnersIn(screen.getByText('This branch').closest('button')!)).toBe(1)
+    expect(spinnersIn(screen.getByText('Uncommitted').closest('button')!)).toBe(0)
+  })
+
+  it("'root' puts a spinner in the target tree segment only", () => {
+    renderToolbar({ repo: REPO_STATE_FIXTURES.git, root: 'sandbox', statusPending: 'root' })
+    expect(spinnersIn(screen.getByRole('button', { name: 'Sandbox' }))).toBe(1)
+    expect(spinnersIn(screen.getByRole('button', { name: 'Workspace' }))).toBe(0)
+  })
+
+  it.each([null, 'open'] as const)('%s shows no spinner anywhere', (pending) => {
+    renderToolbar({ repo: REPO_STATE_FIXTURES.git, statusPending: pending })
+    expect(document.querySelector('.co-tb-spinner, .co-tb-spin')).toBeNull()
+  })
+
+  it('clicking Refresh sets statusPending to refresh synchronously', () => {
+    renderToolbar({ repo: REPO_STATE_FIXTURES.git })
+    fireEvent.click(screen.getByLabelText('Refresh'))
+    expect(useCodeExplorerStore.getState().statusPending).toBe('refresh')
+  })
+
+  it('names the Compare group by its label', () => {
+    renderToolbar({ repo: REPO_STATE_FIXTURES.git })
+    expect(screen.getByRole('group', { name: 'Compare:' })).toBeInTheDocument()
+  })
+
+  it('gives the branch info the co-tb class so its --tb-* variables resolve', () => {
+    renderToolbar({ repo: REPO_STATE_FIXTURES.git })
+    const info = document.querySelector('.co-tb-info')
+    expect(info).toHaveClass('co-tb')
+    expect(info).toHaveAttribute('data-skin', 'office')
+  })
+
+  it('titles the (truncatable) branch info with the full, tokenized name', () => {
+    renderToolbar({ repo: { ...REPO_STATE_FIXTURES.git, branch: 'feat/‮evil' } })
+    const title = document.querySelector('.co-tb-info')!.getAttribute('title')!
+    expect(title.startsWith('⎇ feat/')).toBe(true)
+    expect(title).not.toContain('‮')
+  })
+
+  it('keeps the branch info non-interactive (7 buttons without a sandbox)', () => {
+    useSandboxStore.setState({ summaries: {} })
+    renderToolbar({ repo: REPO_STATE_FIXTURES.git })
+    expect(toolbarButtons()).toHaveLength(7)
+  })
+
+  it('carries the skin onto the toolbar and its buttons', () => {
+    renderToolbar({ repo: REPO_STATE_FIXTURES.git }, 'realm')
+    expect(screen.getByRole('toolbar')).toHaveAttribute('data-skin', 'realm')
+    expect(toolbarButtons().every((b) => b.getAttribute('data-skin') === 'realm')).toBe(true)
   })
 })

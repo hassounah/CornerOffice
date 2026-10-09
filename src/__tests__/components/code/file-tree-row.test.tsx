@@ -36,7 +36,7 @@ function mkRow(overrides: Partial<Extract<TreeRowModel, { kind: 'entry' }>> = {}
 function renderRow(row: TreeRowModel, propsOverrides: Partial<Parameters<typeof TreeRow>[0]> = {}) {
   const onActivate = vi.fn()
   const onSetActive = vi.fn()
-  render(
+  const { unmount } = render(
     <div role="tree">
       <TreeRow
         row={row}
@@ -48,7 +48,7 @@ function renderRow(row: TreeRowModel, propsOverrides: Partial<Parameters<typeof 
       />
     </div>,
   )
-  return { onActivate, onSetActive }
+  return { onActivate, onSetActive, unmount }
 }
 
 describe('TreeRow — placeholder rows', () => {
@@ -96,8 +96,17 @@ describe('TreeRow — entry rows: expand affordance and depth', () => {
   it('shows an expand caret for an expandable directory, expanded', () => {
     const row = mkRow({ entry: mkEntry({ name: 'src', relPath: 'src', type: 'dir' }), expandable: true, expanded: true })
     renderRow(row)
-    expect(screen.getByRole('treeitem')).toHaveTextContent('▾')
+    expect(screen.getByRole('treeitem')).toHaveTextContent('▸')
     expect(screen.getByRole('treeitem')).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('rotates the chevron 90 degrees when expanded and not when collapsed', () => {
+    const entry = mkEntry({ name: 'src', relPath: 'src', type: 'dir' })
+    const { unmount } = renderRow(mkRow({ entry, expandable: true, expanded: true }))
+    expect(screen.getByRole('treeitem').querySelector('span[aria-hidden="true"]')).toHaveClass('rotate-90')
+    unmount()
+    renderRow(mkRow({ entry, expandable: true, expanded: false }))
+    expect(screen.getByRole('treeitem').querySelector('span[aria-hidden="true"]')).not.toHaveClass('rotate-90')
   })
 
   it('omits aria-expanded entirely for a non-expandable row (a file)', () => {
@@ -312,6 +321,32 @@ describe('TreeRow — active/selected visual state', () => {
     const row = mkRow()
     renderRow(row, { active: true })
     expect(screen.getByRole('treeitem').className).toContain('bg-co-bg-tertiary')
+  })
+
+  it('gives a selected row an accent tint and left accent bar', () => {
+    renderRow(mkRow(), { selected: true, active: true })
+    const cls = screen.getByRole('treeitem').className
+    expect(cls).toContain('bg-co-accent/15')
+    expect(cls).toContain('shadow-[inset_2px_0_0_var(--co-accent)]')
+    expect(cls).not.toContain('ring-1')
+  })
+
+  it('applies exactly one text colour class: inert stays muted when selected, otherwise selected is primary', () => {
+    const textClasses = () => (screen.getByRole('treeitem').className.match(/(?:^|\s)text-co-text-\w+/g) ?? []).map((c) => c.trim())
+    const { unmount } = renderRow(mkRow({ entry: mkEntry({ type: 'symlink', symlink: 'broken' }) }), { selected: true })
+    expect(textClasses()).toEqual(['text-co-text-muted'])
+    unmount()
+    renderRow(mkRow(), { selected: true })
+    expect(textClasses()).toEqual(['text-co-text-primary'])
+  })
+
+  it('uses a pointer cursor on non-inert rows and a default cursor on inert rows', () => {
+    const { unmount } = renderRow(mkRow())
+    expect(screen.getByRole('treeitem')).toHaveClass('cursor-pointer')
+    unmount()
+    renderRow(mkRow({ entry: mkEntry({ type: 'symlink', symlink: 'broken' }) }))
+    expect(screen.getByRole('treeitem')).toHaveClass('cursor-default')
+    expect(screen.getByRole('treeitem')).not.toHaveClass('cursor-pointer')
   })
 })
 

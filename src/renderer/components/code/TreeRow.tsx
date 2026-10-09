@@ -67,15 +67,24 @@ export function TreeRow({ row, active, selected, conflicted, style, onActivate, 
       onClick={handleClick}
       style={{ ...style, paddingLeft: row.depth * ROW_INDENT_PX + 8 }}
       className={[
-        'flex items-center gap-1.5 h-[22px] px-2 text-xs cursor-default select-none',
-        entry.ignored ? 'opacity-50' : inert ? 'opacity-100 text-co-text-muted' : 'text-co-text-secondary',
-        active ? 'bg-co-bg-tertiary' : 'hover:bg-co-bg-tertiary/60',
-        selected ? 'ring-1 ring-inset ring-co-accent/50' : '',
+        'flex items-center gap-1.5 h-[22px] px-2 text-xs select-none',
+        inert ? 'cursor-default' : 'cursor-pointer',
+        entry.ignored ? 'opacity-50' : inert ? 'opacity-100' : '',
+        // Exactly one text colour class, so the winner never depends on CSS order: inert stays muted even when selected.
+        inert && !entry.ignored ? 'text-co-text-muted' : selected ? 'text-co-text-primary' : entry.ignored ? '' : 'text-co-text-secondary',
+        selected
+          ? 'bg-co-accent/15 shadow-[inset_2px_0_0_var(--co-accent)]'
+          : active
+            ? 'bg-co-bg-tertiary'
+            : 'hover:bg-co-bg-tertiary/60',
       ].join(' ')}
     >
       {row.expandable && (
-        <span className="w-3 shrink-0 text-co-text-muted" aria-hidden="true">
-          {row.expanded ? '▾' : '▸'}
+        <span
+          className={`inline-block w-3 shrink-0 text-co-text-muted transition-transform duration-100 motion-reduce:transition-none ${row.expanded ? 'rotate-90' : ''}`}
+          aria-hidden="true"
+        >
+          ▸
         </span>
       )}
       {!row.expandable && <span className="w-3 shrink-0" aria-hidden="true" />}
