@@ -322,7 +322,7 @@ describe('planMounts — docs_root', () => {
     expect(planMounts({ ...fixture.baseFacts, docsRoot })).toEqual({ ok: false, reason: 'docs-root-unsafe' })
   })
 
-  it('outside REPO under ~/.codex: refused as docs-root-unsafe, and a Claude plan never mounts ~/.codex (SM-4, D8)', () => {
+  it('outside REPO under ~/.codex: dropped with docs-root-unsafe, and a Claude plan never mounts ~/.codex (SM-4, D8)', () => {
     const fixture = makeFixture()
     const codexDir = path.join(fixture.home, '.codex', 'notes')
     mkdir(codexDir)
