@@ -15,7 +15,6 @@ import {
   SANDBOX_IMAGE,
   LABEL,
   STOP_TIMEOUT_S,
-  PERM_FLAGS,
   versionArgv,
   infoArgv,
   imageInspectArgv,
@@ -23,7 +22,7 @@ import {
   createArgv,
   startArgv,
   firewallInitArgv,
-  sessionExecArgv,
+  sessionExecArgv as sessionExecArgvRaw,
   stopArgv,
   rmArgv,
   inspectArgv,
@@ -32,6 +31,8 @@ import {
   parseInspect,
 } from '../main/services/sandbox-spec'
 import type { Mount, BuildArgvOptions, CreateArgvOptions } from '../main/services/sandbox-spec'
+import { PERM_FLAGS } from '../main/agents/claude/handler'
+import { claudeSessionExecArgv as sessionExecArgv } from './helpers/claude-mounts'
 
 // ---------------------------------------------------------------------------
 // sandbox-spec-argv.test.ts (TRD §3.5, §10.9, C1, L1, X5, SEC-L1, SEC-L9)
@@ -409,6 +410,30 @@ describe('sessionExecArgv', () => {
     })
     expect(argv).toEqual(expect.arrayContaining(['--permission-mode', 'auto']))
     expect(argv).not.toContain('--dangerously-skip-permissions')
+  })
+
+  describe('agent-supplied env and argv (#0037 A5)', () => {
+    const base = { c: 'co-sandbox-my-ws', uid: 1000, gid: 1000, workTree: '/wt', gitIdentity: null }
+
+    it('passes agentEnv as --env flags before the container and agentArgv after it', () => {
+      const argv = sessionExecArgvRaw({ ...base, agentEnv: ['CODEX_HOME=/home/a/.codex'], agentArgv: ['codex', '--x'] })
+      const c = argv.indexOf('co-sandbox-my-ws')
+      expect(argv.slice(c)).toEqual(['co-sandbox-my-ws', 'codex', '--x'])
+      const e = argv.indexOf('CODEX_HOME=/home/a/.codex')
+      expect(argv[e - 1]).toBe('--env')
+      expect(e).toBeLessThan(c)
+    })
+
+    it.each([
+      ['a malformed env entry', ['NOEQUALS'], ['x']],
+      ['a lower-case env name', ['bad=1'], ['x']],
+      ['a reserved env name', ['NODE_OPTIONS=--x'], ['x']],
+      ['a control character in an env value', ['FOO=a\nb'], ['x']],
+      ['an empty argv', [], []],
+      ['a control character in an argv token', [], ['x\u0000']],
+    ])('fails closed on %s', (_label, agentEnv, agentArgv) => {
+      expect(() => sessionExecArgvRaw({ ...base, agentEnv, agentArgv })).toThrow()
+    })
   })
 
   it('--user is always uid:gid, never root', () => {

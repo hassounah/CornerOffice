@@ -10,7 +10,7 @@ import {
   seedClaudeJson,
 } from '../../services/sandbox-claude-config'
 import type { ClaudeConfigResult } from '../../services/sandbox-claude-config'
-import { PERM_FLAGS, cardDir, claudeShadowSource, sandboxClaudeJsonPath, settingsOverlayPath } from '../../services/sandbox-spec'
+import { cardDir, claudeShadowSource, sandboxClaudeJsonPath, settingsOverlayPath } from '../../services/sandbox-spec'
 import { claudeConfigDetail } from '../../types/claude-config'
 
 // ---------------------------------------------------------------------------
@@ -23,6 +23,14 @@ import { claudeConfigDetail } from '../../types/claude-config'
 const CLAUDE_COMMAND = 'claude --dangerously-load-development-channels plugin:corner-office@amerh --teammate-mode in-process'
 const CLAUDE_TOKENS: readonly string[] = CLAUDE_COMMAND.split(' ')
 
+/** Bypasses `docker --format` templates for permission-mode argv, per the Phase 0 sign-off (TRD §14.6). `auto`'s exact spelling was confirmed against Claude Code 2.1.284's `--help`. */
+export const PERM_FLAGS = {
+  skip: ['--dangerously-skip-permissions'],
+  auto: ['--permission-mode', 'auto'],
+} as const
+
+export type PermMode = keyof typeof PERM_FLAGS
+
 /** Fixed copy only (never file contents): the label and problem map to a sentence naming the entry and the fix. */
 function toAgentResult(result: ClaudeConfigResult): AgentConfigResult {
   return result.ok ? { ok: true } : { ok: false, detail: claudeConfigDetail(result.label, result.problem) }
@@ -30,7 +38,11 @@ function toAgentResult(result: ClaudeConfigResult): AgentConfigResult {
 
 export const CLAUDE_HANDLER = defineAgent('claude', {
   host: {
-    argv: () => CLAUDE_TOKENS,
+    argv: ({ permissionMode }) => {
+      if (permissionMode === 'default') return CLAUDE_TOKENS
+      if (permissionMode === 'auto') return [...CLAUDE_TOKENS, ...PERM_FLAGS.auto]
+      throw new Error(`claude: the host has no ${permissionMode} permission mode; use default or auto`)
+    },
     envAllow: new Set<string>(),
   },
   sandbox: {

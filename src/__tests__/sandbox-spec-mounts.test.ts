@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { planClaudeMounts as planMounts } from './helpers/claude-mounts'
 import {
-  planMounts,
   specHash,
   docsRootWtTarget,
   diffMountPlans,

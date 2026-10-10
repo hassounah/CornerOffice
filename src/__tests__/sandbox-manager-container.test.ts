@@ -19,6 +19,7 @@ import type { SandboxNotice } from '../main/types/sandbox'
 import type { DockerRunner } from '../main/services/docker-runner'
 import { CLAUDE_JSON_SEED_CAP, SANDBOX_DENY_RULES } from '../main/services/sandbox-claude-config'
 import { claudeConfigDetail } from '../main/types/claude-config'
+import { getHandler } from '../main/agents/registry'
 import { FakeDockerRunner } from './helpers/fake-docker-runner'
 import { makeTmpDir, makeSimpleRepo, serviceEnvOverrides, initRepo, writeFile, commitAll } from './helpers/git-fixtures'
 import dockerVersionFixture from './fixtures/docker-version.json'
@@ -1134,6 +1135,53 @@ describe('0030 claude config preparation', () => {
 
     expect(result).toEqual({ ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: claudeConfigDetail('settings.json', 'invalid-json') })
     expect(mutating(docker)).toEqual([])
+  })
+
+  it("call order: prepare('plan') -> inspect -> prepare('create') -> create", async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], { error: NOT_FOUND_ERROR })
+
+    const sandbox = getHandler('claude').sandbox
+    if (!sandbox) throw new Error('claude has no sandbox handler')
+    const original = sandbox.prepare.bind(sandbox)
+    const order: string[] = []
+    const seen = (verb: string): boolean => docker.calls.some((c) => c.args[0] === verb)
+    const spy = vi.spyOn(sandbox, 'prepare').mockImplementation((ctx, phase) => {
+      order.push(`prepare:${phase}:inspect=${seen('inspect')}:create=${seen('create')}`)
+      return original(ctx, phase)
+    })
+    try {
+      expect((await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')).ok).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(order).toEqual(['prepare:plan:inspect=false:create=false', 'prepare:create:inspect=true:create=false'])
+    expect(seen('create')).toBe(true)
+  })
+
+  it('delete runs every sandbox handler cleanup', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const sandbox = getHandler('claude').sandbox
+    if (!sandbox) throw new Error('claude has no sandbox handler')
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['rm'], { result: { stdout: '', stderr: '', exitCode: 0 } })
+    const spy = vi.spyOn(sandbox, 'cleanup')
+    try {
+      expect(await createSandboxManager(h.makeDeps({ docker })).delete('myslug', false)).toEqual({ ok: true })
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ slug: 'myslug' }))
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('invalid config in recreate: CLAUDE_CONFIG_INVALID before any rm/create', async () => {

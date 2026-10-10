@@ -100,7 +100,7 @@ describe.each(AGENT_IDS)('agent contract: %s', (id: AgentId) => {
       }
       for (const mode of descriptor.permissionModes.sandbox) {
         const launch = handler.sandbox.launch(ctx, { permissionMode: mode.mode })
-        for (const name of launch.env) expect(() => assertAgentEnvName(name)).not.toThrow()
+        for (const entry of launch.env) expect(() => assertAgentEnvName(entry.split('=')[0])).not.toThrow()
         expect(launch.argv.length).toBeGreaterThan(0)
       }
     } finally {

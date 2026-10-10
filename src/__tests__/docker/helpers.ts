@@ -16,7 +16,6 @@ import {
   startArgv,
   stopArgv,
   rmArgv,
-  planMounts,
   cardDir,
   worktreePath,
   worktreePin,
@@ -24,6 +23,7 @@ import {
   CHANNEL_PORT_RANGE,
 } from '../../main/services/sandbox-spec'
 import type { Mount } from '../../main/services/sandbox-spec'
+import { planClaudeMounts as planMounts } from '../helpers/claude-mounts'
 import { resolveBuildContext, createSandboxImageService } from '../../main/services/sandbox-image'
 import { makeTmpDir, makeSimpleRepo, writeFile, commitAll, serviceEnvOverrides } from '../helpers/git-fixtures'
 

@@ -422,8 +422,15 @@ export const SandboxStartSessionSchema = z
     rows: z.number().int().min(1).max(1000),
     permissionMode: z.enum(['skip', 'auto']),
     networkMode: z.enum(['allowlist', 'open']),
+    agentId: AgentIdSchema.default(LEGACY_AGENT_ID),
+    /** Fields the chooser's resolution replaced and the user didn't touch (TRD §5.5); recorded by B2. */
+    fallbackFields: z.array(z.enum(['agentId', 'location', 'permissionMode'])).default([]),
   })
   .strict()
+  .refine((v) => getDescriptor(v.agentId).permissionModes.sandbox.some((m) => m.mode === v.permissionMode), {
+    message: 'permissionMode is not a sandbox mode of this agent',
+    path: ['permissionMode'],
+  })
 export const SandboxHandOffSchema = z.object({ workspaceSlug: SandboxSlugSchema, allowDirty: z.boolean() }).strict()
 export const SandboxPreviewDeleteSchema = SandboxSlugOnly
 export const SandboxDeleteSchema = z.object({ workspaceSlug: SandboxSlugSchema, acknowledgeDirty: z.boolean() }).strict()

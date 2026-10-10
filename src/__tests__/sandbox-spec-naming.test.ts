@@ -58,6 +58,7 @@ describe('naming', () => {
 
   it('containerName is docker-valid by construction', () => {
     expect(containerName('my-workspace')).toBe('co-sandbox-my-workspace')
+    expect(containerName('my-workspace', 'claude')).toBe('co-sandbox-my-workspace')
   })
 
   it('worktreePath and cardDir derive from the sandboxPaths(realHome) object (SEC-M2)', () => {

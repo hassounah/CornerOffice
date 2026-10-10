@@ -169,6 +169,7 @@ export function buildSandboxHandlers(manager: SandboxManagerService, deps: Build
           rows: input.rows,
           permissionMode: input.permissionMode,
           networkMode: input.networkMode,
+          agentId: input.agentId,
         }),
       SandboxStartSessionSchema,
       wrapDeps,

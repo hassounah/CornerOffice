@@ -177,7 +177,7 @@ describe('buildSandboxHandlers', () => {
   it('passes arguments through to the manager', async () => {
     const { handlers, manager } = makeRig()
     await handlers[SANDBOX_CHANNELS.START_SESSION](makeEvent(), VALID_INPUT[SANDBOX_CHANNELS.START_SESSION])
-    expect(manager.startSession).toHaveBeenCalledWith({ slug: SLUG, cols: 80, rows: 24, permissionMode: 'skip', networkMode: 'allowlist' })
+    expect(manager.startSession).toHaveBeenCalledWith({ slug: SLUG, cols: 80, rows: 24, permissionMode: 'skip', networkMode: 'allowlist', agentId: 'claude' })
     await handlers[SANDBOX_CHANNELS.RECREATE](makeEvent(), VALID_INPUT[SANDBOX_CHANNELS.RECREATE])
     expect(manager.recreate).toHaveBeenCalledWith(SLUG, false, HASH)
     await handlers[SANDBOX_CHANNELS.HAND_OFF](makeEvent(), { workspaceSlug: SLUG, allowDirty: true })

@@ -5,6 +5,10 @@ import log from 'electron-log/main'
 import { z } from 'zod'
 import { hiddenHomeSegments, sandboxPaths } from './sandbox-paths'
 import type { SandboxPaths } from './sandbox-paths'
+import { LEGACY_AGENT_ID } from '../agents/descriptors'
+import type { AgentId } from '../agents/descriptors'
+import { assertAgentEnvName } from '../agents/handler'
+import type { AgentMountSpec } from '../agents/handler'
 
 // ---------------------------------------------------------------------------
 // sandbox-spec.ts — constants, naming and the pure validation/pin helpers for
@@ -21,8 +25,9 @@ export const SANDBOX_IMAGE = 'claude-sandbox:latest'
 /** D13: container name, worktree directory and event slug all derive from this. */
 export const SANDBOX_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 
-/** Docker-valid by construction: `SANDBOX_SLUG_RE` never allows a leading `-`. */
-export const containerName = (slug: string): string => `co-sandbox-${slug}`
+/** Docker-valid by construction: `SANDBOX_SLUG_RE` never allows a leading `-`. Claude keeps the legacy name (D22). */
+export const containerName = (slug: string, agentId: AgentId = LEGACY_AGENT_ID): string =>
+  agentId === LEGACY_AGENT_ID ? `co-sandbox-${slug}` : `co-sandbox-${slug}.${agentId}`
 
 /** SEC-M2: `paths` comes from `sandboxPaths(resolveRealHome())` — never build this from `os.homedir()` directly. */
 export const worktreePath = (paths: SandboxPaths, slug: string): string => path.join(paths.sandboxesRoot, slug)
@@ -384,7 +389,7 @@ function planDocsRootMount(
  * `assertMountSafe`; a failure fails the whole plan with `unsafe-path`,
  * except for docs_root, which is dropped with a warning instead (§3.6.3).
  */
-export function planMounts(facts: PlanMountsFacts): PlanMountsResult {
+export function planMounts(facts: PlanMountsFacts, agentMounts: readonly AgentMountSpec[]): PlanMountsResult {
   const { home, repo, wt, slug, gwt, indexExists, hooksPathInsideGit, eventsEnabled, docsRoot, worktreesOverlay } = facts
   const paths = sandboxPaths(home)
   const gitDir = path.join(repo, '.git')
@@ -401,14 +406,8 @@ export function planMounts(facts: PlanMountsFacts): PlanMountsResult {
     mounts.push({ source, target, readonly, provenance: 'app' })
   }
 
-  add(paths.claudeDir, paths.claudeDir, false)
-  add(settingsOverlayPath(paths, slug), paths.claudeSettings, true) // 0030: sanitized settings copy
-  for (const d of paths.claudeRoDirs) add(d, d, true) // 0030: plugins, commands, agents, skills, hooks
-  add(paths.claudeMd, paths.claudeMd, true) // 0030
-  add(paths.claudeSettingsLocal, paths.claudeSettingsLocal, true) // 0030 L4
-  for (const d of paths.claudeShadowDirs) add(claudeShadowSource(paths, slug, d), d, false) // 0030 C1: host-executed state, per-sandbox
-  add(sandboxClaudeJsonPath(paths, slug), paths.claudeJson, false) // 0030: per-sandbox source, never the host file
-  add(cardDir(paths, slug), path.join(paths.claudeDir, 'channels'), false)
+  // The session agent's mounts keep the slot Claude's occupied at 4cbd703, ahead of the neutral block.
+  for (const m of agentMounts) add(m.source, m.target, m.readonly)
 
   add(gitDir, gitDir, false)
   add(path.join(gitDir, 'hooks'), path.join(gitDir, 'hooks'), true)
@@ -541,14 +540,6 @@ export function hasMemoryMdMount(plan: readonly Mount[]): boolean {
 // — builders never recompute it from a slug, so a caller can't accidentally
 // pass a `c` that doesn't match the `slug` used elsewhere in the same call
 // (e.g. the co.sandbox.workspace label in createArgv).
-
-/** Bypasses `docker --format` templates for permission-mode argv, per the Phase 0 sign-off (TRD §14.6). `auto`'s exact spelling was confirmed against Claude Code 2.1.284's `--help`. */
-export const PERM_FLAGS = {
-  skip: ['--dangerously-skip-permissions'],
-  auto: ['--permission-mode', 'auto'],
-} as const
-
-export type PermMode = keyof typeof PERM_FLAGS
 
 /**
  * Rules 1-2 of {@link assertMountSafe} (absolute, normalized, realpath-equal,
@@ -716,13 +707,16 @@ export interface SessionExecArgvOptions {
   uid: number
   gid: number
   workTree: string
-  permMode: PermMode
+  /** The session agent's `launch().env`: `NAME=value` entries. Each name passes `assertAgentEnvName`, each value `validateEnvValue`. */
+  agentEnv: readonly string[]
+  /** The session agent's `launch().argv` (binary first). Every token passes `validateEnvValue`. */
+  agentArgv: readonly string[]
   /** Host `git config --get user.name`/`user.email`, or `null` if either is missing — then all four GIT_* env flags are omitted and git reports its usual "please tell me who you are" inside the container. */
   gitIdentity: { name: string; email: string } | null
 }
 
 export function sessionExecArgv(opts: SessionExecArgvOptions): string[] {
-  const { c, uid, gid, workTree, permMode, gitIdentity } = opts
+  const { c, uid, gid, workTree, agentEnv, agentArgv, gitIdentity } = opts
 
   // Defense in depth (not currently exploitable — uid/gid reaching here
   // always trace back to the same host os.userInfo() call already validated
@@ -744,11 +738,22 @@ export function sessionExecArgv(opts: SessionExecArgvOptions): string[] {
     )
   }
 
+  // Agent-supplied values come from a handler, so both are checked here and fail closed.
+  for (const entry of agentEnv) {
+    const eq = entry.indexOf('=')
+    if (eq < 1) throw new Error('sandbox-spec: agent env entries must be NAME=value for sessionExecArgv')
+    assertAgentEnvName(entry.slice(0, eq))
+    if (!validateEnvValue(entry.slice(eq + 1))) throw new Error('sandbox-spec: invalid agent env value for sessionExecArgv')
+    envFlags.push('--env', entry)
+  }
+  if (agentArgv.length === 0 || !agentArgv.every(validateEnvValue)) {
+    throw new Error('sandbox-spec: invalid agent argv for sessionExecArgv')
+  }
+
   return [
     'exec', '--interactive', '--tty', '--user', `${uid}:${gid}`, '--workdir', workTree,
     ...envFlags,
-    c, 'claude', ...PERM_FLAGS[permMode],
-    '--dangerously-load-development-channels', 'plugin:corner-office@amerh', '--teammate-mode', 'in-process',
+    c, ...agentArgv,
   ]
 }
 

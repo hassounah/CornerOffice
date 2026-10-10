@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import fs from 'fs'
 import path from 'path'
-import { firewallInitArgv, sessionExecArgv, blockedPollArgv, ROOT_EXEC_ENV } from '../main/services/sandbox-spec'
+import { firewallInitArgv, blockedPollArgv, ROOT_EXEC_ENV } from '../main/services/sandbox-spec'
+import { claudeSessionExecArgv as sessionExecArgv } from './helpers/claude-mounts'
 
 // ---------------------------------------------------------------------------
 // sandbox-root-exec.test.ts (§7.1, §10.9, X5, SEC-L1)

@@ -59,6 +59,22 @@ function makeHome(): { home: string; ctx: SandboxCtx } {
 
 const sandbox = CLAUDE_HANDLER.sandbox!
 
+describe('claude host argv', () => {
+  const GOLDEN = 'claude --dangerously-load-development-channels plugin:corner-office@amerh --teammate-mode in-process'
+
+  it('default is the golden command', () => {
+    expect(CLAUDE_HANDLER.host.argv({ permissionMode: 'default' }).join(' ')).toBe(GOLDEN)
+  })
+
+  it('auto appends --permission-mode auto', () => {
+    expect(CLAUDE_HANDLER.host.argv({ permissionMode: 'auto' }).join(' ')).toBe(`${GOLDEN} --permission-mode auto`)
+  })
+
+  it('rejects skip on the host', () => {
+    expect(() => CLAUDE_HANDLER.host.argv({ permissionMode: 'skip' })).toThrow(/no skip permission mode/)
+  })
+})
+
 describe('claude sandbox handler: readiness', () => {
   it('reports home-missing when ~/.claude is absent', () => {
     const home = mkTmp('co-claude-empty-')
@@ -145,7 +161,7 @@ describe('claude sandbox handler: mounts', () => {
       docsRoot: { path: path.join(repo, 'docs'), source: 'default', exists: false, inRepoRel: null },
       worktreesOverlay: false,
     }
-    const plan = planMounts(facts)
+    const plan = planMounts(facts, sandbox.mounts(ctx))
     expect(plan.ok).toBe(true)
     if (!plan.ok) return
     const key = (m: { source: string; target: string; readonly: boolean }): string => `${m.readonly} ${m.source} ${m.target}`
@@ -161,7 +177,15 @@ describe('claude sandbox handler: launch', () => {
   it.each(['skip', 'auto'] as const)('argv for %s is the tail of the golden exec argv', (mode) => {
     const launch = sandbox.launch(ctx, { permissionMode: mode })
     expect(launch.env).toEqual([])
-    const exec = sessionExecArgv({ c: 'co-sandbox-x', uid: 1000, gid: 1000, workTree: '/wt', permMode: mode, gitIdentity: null })
+    const exec = sessionExecArgv({
+      c: 'co-sandbox-x',
+      uid: 1000,
+      gid: 1000,
+      workTree: '/wt',
+      agentEnv: launch.env,
+      agentArgv: launch.argv,
+      gitIdentity: null,
+    })
     expect(exec.slice(exec.indexOf('claude'))).toEqual(launch.argv)
   })
 

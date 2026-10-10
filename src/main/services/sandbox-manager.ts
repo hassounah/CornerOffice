@@ -45,10 +45,13 @@ import {
 } from './sandbox-spec'
 import { planMounts, docsRootWtTarget } from './sandbox-spec'
 import { assertNoSymlinkOnPath } from './safe-fs'
-import { prepareClaudeConfig, seedClaudeJson, checkClaudeConfigSources, claudeHomeOk, clearClaudeConfigFiles } from './sandbox-claude-config'
-import type { ClaudeConfigResult } from './sandbox-claude-config'
-import { claudeConfigDetail } from '../types/claude-config'
-import type { PlanMountsFacts, DocsRootFacts, OldMount, ParsedInspect, PermMode } from './sandbox-spec'
+import { checkClaudeConfigSources, claudeHomeOk } from './sandbox-claude-config'
+import type { PlanMountsFacts, DocsRootFacts, OldMount, ParsedInspect } from './sandbox-spec'
+import { AGENT_IDS, LEGACY_AGENT_ID } from '../agents/descriptors'
+import type { AgentId } from '../agents/descriptors'
+import type { AgentConfigResult, AgentHandler, AgentMountSpec } from '../agents/handler'
+import { getHandler } from '../agents/registry'
+import type { PermMode } from '../agents/claude/handler'
 import { effectiveAllowlist } from './sandbox-allowlist'
 import { createSandboxNetwork } from './sandbox-network'
 import type { LiveUpdateStatus } from './sandbox-network'
@@ -221,7 +224,7 @@ export interface SandboxManagerService extends SandboxSessionDelegate {
    *  `startSession` (3.6) right after worktree ensure. Exposed on the
    *  service, not just the closure, so 3.5's own tests can exercise it
    *  directly before 3.6 exists. */
-  ensureContainer(slug: string): Promise<EnsureContainerResult>
+  ensureContainer(slug: string, agentId?: AgentId): Promise<EnsureContainerResult>
   /** Internal: marks `slug`'s container as needing a user-confirmed recreate
    *  before its next start (§3.9.4's `recreatePending`) — read by
    *  `ensureContainer`, written by a future image-rebuild completion hook
@@ -230,7 +233,7 @@ export interface SandboxManagerService extends SandboxSessionDelegate {
   markRecreatePending(slug: string): void
   /** Internal: see `markSessionEnding`'s doc comment at its definition. */
   markSessionEnding(slug: string): void
-  recreate(slug: string, newPort: boolean, confirmedSpecHash: string): Promise<RecreateResult>
+  recreate(slug: string, newPort: boolean, confirmedSpecHash: string, agentId?: AgentId): Promise<RecreateResult>
   previewDelete(slug: string): Promise<DeletePreview>
   delete(slug: string, acknowledgeDirty: boolean): Promise<DeleteResult>
   startSession(opts: StartSessionOptions): Promise<StartResult>
@@ -260,6 +263,8 @@ export interface StartSessionOptions {
   rows: number
   permissionMode: PermMode
   networkMode: 'allowlist' | 'open'
+  /** Defaults to `claude`. */
+  agentId?: AgentId
 }
 
 // ── Docker availability parsing (§3.9.1, D6, G2) ────────────────────────────
@@ -665,15 +670,27 @@ async function buildMountPlanContext(
  * already exists, so this is safe to call on every `ensureContainer`/
  * `recreate`, not just the first one.
  */
-function precreateMountTargets(paths: SandboxPaths, repo: string, wt: string, slug: string): ClaudeConfigResult {
+function precreateMountTargets(paths: SandboxPaths, repo: string, wt: string, slug: string, agentId: AgentId): AgentConfigResult {
   fs.mkdirSync(path.join(wt, '.rix'), { recursive: true })
   fs.mkdirSync(cardDir(paths, slug), { recursive: true, mode: 0o700 })
   fs.mkdirSync(path.join(repo, '.git', 'hooks'), { recursive: true })
   fs.mkdirSync(path.join(repo, '.git', 'modules'), { recursive: true }) // M2: always
   fs.mkdirSync(path.join(paths.eventsRoot, slug), { recursive: true })
   fs.mkdirSync(path.join(paths.claudeDir, 'channels'), { recursive: true, mode: 0o700 }) // SEC-M3
-  // #0030: the read-only Claude config sources, the settings copy and the first `claude.json` seed.
-  return prepareClaudeConfig(paths, slug)
+  // The agent's own sources (for Claude: the read-only config sources, the settings copy and the first `claude.json` seed).
+  return sandboxHandler(agentId).prepare({ paths, slug, workTree: wt }, 'plan')
+}
+
+/** The sandbox half of `agentId`'s handler; an agent without one is never offered in the sandbox (fail closed). */
+function sandboxHandler(agentId: AgentId): NonNullable<AgentHandler['sandbox']> {
+  const sandbox = getHandler(agentId).sandbox
+  if (!sandbox) throw new Error(`sandbox-manager: the ${agentId} handler has no sandbox half`)
+  return sandbox
+}
+
+/** The agent's mounts for `facts`, from its handler. */
+function agentMountsFor(agentId: AgentId, facts: PlanMountsFacts): readonly AgentMountSpec[] {
+  return sandboxHandler(agentId).mounts({ paths: sandboxPaths(facts.home), slug: facts.slug, workTree: facts.wt })
 }
 
 /**
@@ -712,8 +729,9 @@ function claudeConfigSourcesExist(paths: SandboxPaths, slug: string): boolean {
   ].every((p) => fs.existsSync(p))
 }
 
-function configInvalid(result: Extract<ClaudeConfigResult, { ok: false }>): { ok: false; code: 'CLAUDE_CONFIG_INVALID'; detail: string } {
-  return { ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: claudeConfigDetail(result.label, result.problem) }
+/** Phase A: Claude is the only agent, so a handler config failure keeps the public `CLAUDE_CONFIG_INVALID` code (existing contract). */
+function configInvalid(result: Extract<AgentConfigResult, { ok: false }>): { ok: false; code: 'CLAUDE_CONFIG_INVALID'; detail: string } {
+  return { ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: result.detail }
 }
 
 /** `docker inspect`'s `.HostConfig.PortBindings` keys look like `"20123/tcp"`. `null` when absent or unparseable. */
@@ -995,7 +1013,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     let mountResult: ReturnType<typeof planMounts> | null = null
 
     if (wtExists && claudeConfigSourcesExist(paths, slug)) {
-      mountResult = planMounts(mountFacts)
+      mountResult = planMounts(mountFacts, agentMountsFor(LEGACY_AGENT_ID, mountFacts))
       if (!mountResult.ok && mountResult.reason === 'unsafe-path') return { ok: false, reason: 'unsafe-path' }
     } else if (!fixedMountSourcesSafe({ home: realHome, repo, paths, indexExists, hooksPathInsideGit })) {
       return { ok: false, reason: 'unsafe-path' }
@@ -1089,28 +1107,28 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
   }
 
   /** BE-H1: the public entry is serialized with `startSession`, `recreate` and `deleteSandbox` and re-checks idleness inside the queue (a busy slug reports `CONTAINER_FAILED`). `prepareSession` already runs inside the queue, so it calls `ensureContainerInQueue` directly — no deadlock. */
-  function ensureContainer(slug: string): Promise<EnsureContainerResult> {
+  function ensureContainer(slug: string, agentId: AgentId = LEGACY_AGENT_ID): Promise<EnsureContainerResult> {
     return runSerialized(slug, async () => {
       if (!sessionIsIdle(slug)) return { ok: false, code: 'CONTAINER_FAILED' }
-      return ensureContainerInQueue(slug)
+      return ensureContainerInQueue(slug, agentId)
     })
   }
 
-  async function ensureContainerInQueue(slug: string): Promise<EnsureContainerResult> {
-    const result = await ensureContainerUncached(slug)
+  async function ensureContainerInQueue(slug: string, agentId: AgentId): Promise<EnsureContainerResult> {
+    const result = await ensureContainerUncached(slug, agentId)
     if (!result.ok && result.code === 'RECREATE_REQUIRED') recreatePlans.set(slug, result.plan)
     else recreatePlans.delete(slug)
     return result
   }
 
-  async function ensureContainerUncached(slug: string): Promise<EnsureContainerResult> {
+  async function ensureContainerUncached(slug: string, agentId: AgentId): Promise<EnsureContainerResult> {
     const workspace = appState.getWorkspace(slug)
     if (!workspace) return { ok: false, code: 'CONTAINER_FAILED' }
     const repo = workspace.path
     const paths = sandboxPaths(realHome)
     const wt = worktreePath(paths, slug)
 
-    const prepared = precreateMountTargets(paths, repo, wt, slug)
+    const prepared = precreateMountTargets(paths, repo, wt, slug, agentId)
     if (!prepared.ok) return configInvalid(prepared)
 
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
@@ -1120,7 +1138,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
     const { facts } = await buildMountPlanContext(git, config, appState, realHome, repo, slug, wt)
     await precreateDocsRootTarget(facts)
-    const mountResult = planMounts(facts)
+    const mountResult = planMounts(facts, agentMountsFor(agentId, facts))
     if (!mountResult.ok) return { ok: false, code: 'CONTAINER_FAILED' }
 
     const portResult = await ensurePort(slug)
@@ -1154,7 +1172,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
       }
 
       // #0030 D6: a new container means fresh state, so re-seed `claude.json` from the host. Never on reuse.
-      const seeded = seedClaudeJson(paths, slug)
+      const seeded = sandboxHandler(agentId).prepare({ paths, slug, workTree: wt }, 'create')
       if (!seeded.ok) return configInvalid(seeded)
 
       try {
@@ -1209,11 +1227,11 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
   // ── Recreate (§3.5, §3.16, B-M2, H1) ─────────────────────────────────────
 
-  function recreate(slug: string, newPort: boolean, confirmedSpecHash: string): Promise<RecreateResult> {
-    return runSerialized(slug, () => recreateInQueue(slug, newPort, confirmedSpecHash))
+  function recreate(slug: string, newPort: boolean, confirmedSpecHash: string, agentId: AgentId = LEGACY_AGENT_ID): Promise<RecreateResult> {
+    return runSerialized(slug, () => recreateInQueue(slug, newPort, confirmedSpecHash, agentId))
   }
 
-  async function recreateInQueue(slug: string, newPort: boolean, confirmedSpecHash: string): Promise<RecreateResult> {
+  async function recreateInQueue(slug: string, newPort: boolean, confirmedSpecHash: string, agentId: AgentId): Promise<RecreateResult> {
     if (!sessionIsIdle(slug)) return { ok: false, code: 'SESSION_RUNNING' }
 
     const workspace = appState.getWorkspace(slug)
@@ -1222,7 +1240,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const paths = sandboxPaths(realHome)
     const wt = worktreePath(paths, slug)
 
-    const prepared = precreateMountTargets(paths, repo, wt, slug)
+    const prepared = precreateMountTargets(paths, repo, wt, slug, agentId)
     if (!prepared.ok) return configInvalid(prepared)
 
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
@@ -1232,7 +1250,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
     const { facts } = await buildMountPlanContext(git, config, appState, realHome, repo, slug, wt)
     await precreateDocsRootTarget(facts)
-    const mountResult = planMounts(facts)
+    const mountResult = planMounts(facts, agentMountsFor(agentId, facts))
     if (!mountResult.ok) return { ok: false, code: 'FAILED' }
 
     const portResult = await ensurePort(slug)
@@ -1283,7 +1301,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const finalHash = finalPort === port ? hash : specHash({ plan: mountResult.mounts, port: finalPort, uid, gid, home: realHome, base, imageId })
 
     // #0030 D6: after the hash check (it can't cause PLAN_CHANGED) and before any rm/create.
-    const seeded = seedClaudeJson(paths, slug)
+    const seeded = sandboxHandler(agentId).prepare({ paths, slug, workTree: wt }, 'create')
     if (!seeded.ok) return configInvalid(seeded)
 
     try {
@@ -1364,7 +1382,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
     discovery.removeSandboxSource(slug)
     clearCardDir(paths, slug)
-    clearClaudeConfigFiles(paths, slug)
+    const cleanupCtx = { paths, slug, workTree: worktreePath(paths, slug) }
+    for (const id of AGENT_IDS) getHandler(id).sandbox?.cleanup(cleanupCtx)
     recreatePendingSlugs.delete(slug)
     recreatePlans.delete(slug)
     rejectedCardSlugs.delete(slug)
@@ -1423,7 +1442,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
   }
 
   async function prepareSession(opts: StartSessionOptions, progress: PrepareProgress): Promise<StartResult> {
-    const { slug, cols, rows, permissionMode, networkMode } = opts
+    const { slug, cols, rows, permissionMode, networkMode, agentId = LEGACY_AGENT_ID } = opts
 
     // 1. Eligibility.
     const eligibility = await getEligibility(slug)
@@ -1468,7 +1487,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     // §14.7/Addendum A3) — $WT now exists (step 4 just ran), so every
     // mount, including the structural docs_root rules, gets the full
     // real-path check and fails closed, closing eligibility's advisory gap.
-    const containerResult = await ensureContainerInQueue(slug)
+    const containerResult = await ensureContainerInQueue(slug, agentId)
     const specHashForPort = containerResult.ok ? containerResult.specHash : null
     if (!containerResult.ok) {
       if (containerResult.code === 'RECREATE_REQUIRED') {
@@ -1540,7 +1559,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     try {
       // Building the argv validates every value (uid/gid, git identity) and
       // throws on a bad one — that must fail closed like a spawn failure.
-      const argv = sessionExecArgv({ c, uid, gid, workTree: wt, permMode: permissionMode, gitIdentity })
+      const launch = sandboxHandler(agentId).launch({ paths, slug, workTree: wt }, { permissionMode })
+      const argv = sessionExecArgv({ c, uid, gid, workTree: wt, agentEnv: launch.env, agentArgv: launch.argv, gitIdentity })
       terminal.spawnSandbox(slug, binary.absPath, argv, cols, rows)
     } catch (err) {
       log.warn(`[sandbox-manager] spawnSandbox failed for ${slug}: ${String(err)}`)

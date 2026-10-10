@@ -20,10 +20,8 @@ vi.mock('electron-log/main', () => ({
 
 import * as nodePty from 'node-pty'
 import {
-  planMounts,
   specHash,
   createArgv,
-  sessionExecArgv,
   containerName,
   worktreePath,
   cardDir,
@@ -32,6 +30,8 @@ import {
   claudeShadowSource,
 } from '../main/services/sandbox-spec'
 import type { PlanMountsFacts, Mount, DocsRootFacts } from '../main/services/sandbox-spec'
+// #0037 A5: planMounts/sessionExecArgv take the session agent's handler output; these adapters feed Claude's.
+import { planClaudeMounts as planMounts, claudeSessionExecArgv as sessionExecArgv } from './helpers/claude-mounts'
 import { sandboxPaths } from '../main/services/sandbox-paths'
 import { TerminalManagerService } from '../main/services/terminal-manager'
 import type { AppState } from '../main/ipc/handlers'
