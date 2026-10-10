@@ -1,6 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { AGENT_DESCRIPTORS } from '../agents/descriptors'
 
 // ---------------------------------------------------------------------------
 // sandbox-paths.ts — the single source of every sandbox-related host path
@@ -21,6 +22,20 @@ import path from 'path'
 // `main/index.ts` with a partial `fs` mock): `resolveRealHome()` only
 // touches `fs` when a caller actually invokes it.
 // ---------------------------------------------------------------------------
+
+/**
+ * The hidden first segments under `$HOME` a sandbox mount may use (assertMountSafe
+ * rule 4): `.corner-office` plus every agent's `homeEntries`. Snapshot-pinned, so a
+ * new agent's entries show up in a security review.
+ */
+export function hiddenHomeSegments(): readonly string[] {
+  return ['.corner-office', ...AGENT_DESCRIPTORS.flatMap((d) => d.homeEntries)].filter(
+    (segment, i, all) => all.indexOf(segment) === i,
+  )
+}
+
+/** A `homeEntries` entry with an extension (`.claude.json`) is a single-file mount, not a directory root. */
+const isFileEntry = (entry: string): boolean => path.extname(entry) !== ''
 
 export interface SandboxPaths {
   /** `<realHome>/.corner-office/sandboxes` — SANDBOXES_ROOT (TRD §3.2, Q2). One persistent git worktree per workspace. */
@@ -97,6 +112,13 @@ export function sandboxPaths(realHome: string): SandboxPaths {
     claudeRoDirs,
     claudeShadowDirs,
     eventsRoot,
-    rwMountRoots: [claudeDir, sandboxesRoot, sandboxStateRoot, eventsRoot],
+    rwMountRoots: [
+      ...AGENT_DESCRIPTORS.flatMap((d) => d.homeEntries)
+        .filter((entry) => !isFileEntry(entry))
+        .map((entry) => path.join(realHome, entry)),
+      sandboxesRoot,
+      sandboxStateRoot,
+      eventsRoot,
+    ],
   }
 }

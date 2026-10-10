@@ -312,6 +312,14 @@ describe('planMounts — docs_root', () => {
     expect(result.mounts.some((m) => m.source === appDir)).toBe(false)
   })
 
+  it('outside REPO under an agent home entry (~/.claude/notes): refused as docs-root-unsafe (A7)', () => {
+    const fixture = makeFixture()
+    const agentDir = path.join(fixture.home, '.claude', 'notes')
+    mkdir(agentDir)
+    const docsRoot: DocsRootFacts = { path: agentDir, source: 'memory.md', exists: true, inRepoRel: null }
+    expect(planMounts({ ...fixture.baseFacts, docsRoot })).toEqual({ ok: false, reason: 'docs-root-unsafe' })
+  })
+
   it('backstop: a crafted inRepoRel escaping the repo is docs-root-unsafe (SEC-M1)', () => {
     const fixture = makeFixture()
     for (const inRepoRel of ['..', path.join('..', 'other'), '/etc']) {

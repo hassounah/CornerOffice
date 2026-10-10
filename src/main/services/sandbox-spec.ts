@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import log from 'electron-log/main'
 import { z } from 'zod'
-import { sandboxPaths } from './sandbox-paths'
+import { hiddenHomeSegments, sandboxPaths } from './sandbox-paths'
 import type { SandboxPaths } from './sandbox-paths'
 
 // ---------------------------------------------------------------------------
@@ -114,8 +114,7 @@ export function assertMountSafe(p: string, opts: { home: string }): boolean {
   if (p.startsWith(home + path.sep)) {
     const firstSegment = path.relative(home, p).split(path.sep)[0]
     if (firstSegment.startsWith('.')) {
-      const allowed = firstSegment === '.claude' || firstSegment === '.claude.json' || firstSegment === '.corner-office'
-      if (!allowed) return false
+      if (!hiddenHomeSegments().includes(firstSegment)) return false
     }
   }
 
@@ -272,7 +271,7 @@ interface DocsRootOutcome {
  * the agent edit app config or another sandbox's worktree.
  */
 function insideAppState(p: string, home: string): boolean {
-  return ['.corner-office', '.claude'].some((d) => {
+  return hiddenHomeSegments().some((d) => {
     const dir = path.join(home, d)
     return p === dir || p.startsWith(dir + path.sep)
   })

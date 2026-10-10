@@ -93,6 +93,11 @@ describe('sandbox-paths', () => {
       expect(paths.rwMountRoots).not.toContain(paths.claudeJson)
     })
 
+    it('hiddenHomeSegments is .corner-office plus every agent home entry (security-reviewed snapshot)', async () => {
+      const { hiddenHomeSegments } = await import('../main/services/sandbox-paths')
+      expect(hiddenHomeSegments()).toEqual(['.corner-office', '.claude', '.claude.json'])
+    })
+
     it('every returned path (and every rwMountRoots entry) sits under a symlinked realHome once resolved', async () => {
       const target = fs.mkdtempSync(path.join(os.tmpdir(), 'co-sandbox-paths-target-'))
       const linkParent = fs.mkdtempSync(path.join(os.tmpdir(), 'co-sandbox-paths-link-'))
