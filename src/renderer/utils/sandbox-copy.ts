@@ -1,4 +1,5 @@
 import { tokenizeNameToText } from './name-safety'
+import { CLAUDE_DESCRIPTOR, TRUST_PROMPT_COPY } from '@main/agents/claude/descriptor'
 import type {
   DockerState,
   EligibilityReason,
@@ -31,8 +32,8 @@ export type RecreateFailureCode = Extract<RecreateResult, { ok: false }>['code']
 
 export const ELIGIBILITY_COPY: Record<EligibilityReason, string> = {
   'sandbox-disabled': 'Sandbox is disabled in this build.',
-  'claude-home-missing': 'Run Claude Code on this machine once first, then try again.',
-  'claude-config-invalid': 'An entry in ~/.claude is a symbolic link or the wrong type. Replace it with a real file or folder, then try again.',
+  'claude-home-missing': CLAUDE_DESCRIPTOR.copy.readiness['home-missing'].message,
+  'claude-config-invalid': CLAUDE_DESCRIPTOR.copy.readiness['config-invalid'].message,
   'docker-not-installed': "Docker isn't installed. Install Docker Engine 28 or newer, then press Check again.",
   'docker-daemon-down': "The Docker daemon isn't running. Start it, then press Check again.",
   'docker-no-permission': "Your user can't access Docker. Add it to the docker group and log in again.",
@@ -186,8 +187,8 @@ export const BUILD_CONFIRM_COPY = `${IMAGE_SIZE_COPY}, takes several minutes. Th
 export const IMAGE_READY_COPY = "Image ready. Press Start when you're ready."
 export const IMAGE_BUILDING_REASON = 'The image is still building.'
 export const BUILD_FAILED_COPY = 'The image build did not finish. Start again to build it.'
-/** Shown in sandbox mode: the first session in a new sandbox stops at Claude Code's folder-trust prompt (README, First-run prompts). */
-export const TRUST_PROMPT_COPY = 'The first session in a new sandbox asks you to trust the folder once, in the terminal.'
+/** Shown in sandbox mode: the first session in a new sandbox stops at Claude Code's folder-trust prompt (README, First-run prompts). Lives in the Claude descriptor. */
+export { TRUST_PROMPT_COPY }
 /** The Sandbox option while the status is still loading. */
 export const CHECKING_COPY = 'Checking…'
 /** How long "Checking…" may last before the chooser gives up and offers Check again. */

@@ -23,11 +23,24 @@ export const ENV_DENYLIST = new Set([
   'DATABASE_URL',
 ])
 
-/** `base` with every `ENV_DENYLIST` key (and any undefined value) removed. No behaviour change from the inline loops it replaces. */
-export function sanitizedEnv(base: NodeJS.ProcessEnv): Record<string, string> {
+/** Keys that can change what code a child process loads. No agent may ever re-admit them (SM-5); `ELECTRON_*` is matched by prefix in {@link isNeverAllowed}. */
+export const NEVER_ALLOWED = new Set(['NODE_OPTIONS', 'LD_PRELOAD', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ASAR'])
+
+export function isNeverAllowed(key: string): boolean {
+  return NEVER_ALLOWED.has(key) || key.startsWith('ELECTRON_')
+}
+
+/**
+ * `base` with every `ENV_DENYLIST` key (and any undefined value) removed.
+ * `allow` re-admits a key only if it is in `ENV_DENYLIST` and not
+ * {@link isNeverAllowed}; anything else in `allow` is ignored (SM-5).
+ */
+export function sanitizedEnv(base: NodeJS.ProcessEnv, allow?: ReadonlySet<string>): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && !ENV_DENYLIST.has(key)) {
+    if (value === undefined) continue
+    const readmitted = allow?.has(key) === true && ENV_DENYLIST.has(key) && !isNeverAllowed(key)
+    if (!ENV_DENYLIST.has(key) || readmitted) {
       env[key] = value
     }
   }

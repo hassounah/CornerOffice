@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ENV_DENYLIST, sanitizedEnv } from '../main/services/env-policy'
+import { ENV_DENYLIST, NEVER_ALLOWED, isNeverAllowed, sanitizedEnv } from '../main/services/env-policy'
 
 describe('sanitizedEnv', () => {
   it('removes every denylisted key', () => {
@@ -39,5 +39,29 @@ describe('sanitizedEnv', () => {
     const env = sanitizedEnv({ PATH: '/usr/bin' })
     env.TERM = 'xterm-256color'
     expect(sanitizedEnv({ PATH: '/usr/bin' })).toEqual({ PATH: '/usr/bin' })
+  })
+
+  describe('allow', () => {
+    it('re-admits a denylisted, non-forbidden key', () => {
+      const env = sanitizedEnv({ OPENAI_API_KEY: 'k', GH_TOKEN: 't' }, new Set(['OPENAI_API_KEY']))
+      expect(env).toEqual({ OPENAI_API_KEY: 'k' })
+    })
+
+    it('never re-admits NODE_OPTIONS, LD_PRELOAD or ELECTRON_*', () => {
+      const base = { NODE_OPTIONS: 'x', LD_PRELOAD: 'y', ELECTRON_RUN_AS_NODE: '1', ELECTRON_NO_ASAR: '1' }
+      expect(sanitizedEnv(base, new Set(Object.keys(base)))).toEqual({})
+    })
+
+    it('ignores allow entries that are not on the denylist', () => {
+      expect(sanitizedEnv({ FOO: 'bar' }, new Set(['BAZ']))).toEqual({ FOO: 'bar' })
+    })
+  })
+})
+
+describe('isNeverAllowed', () => {
+  it('covers the fixed set and the ELECTRON_ prefix', () => {
+    for (const key of NEVER_ALLOWED) expect(isNeverAllowed(key)).toBe(true)
+    expect(isNeverAllowed('ELECTRON_ENABLE_LOGGING')).toBe(true)
+    expect(isNeverAllowed('OPENAI_API_KEY')).toBe(false)
   })
 })
