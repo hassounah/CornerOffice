@@ -60,6 +60,7 @@ const HookEventSchema = z.preprocess(normalizeLegacyFields, z.object({
     'PostCompact',
     'Elicitation',
     'ElicitationResult',
+    'Interrupt',
   ]),
   workspace: z.string(),
   sessionId: z.string(),
@@ -216,6 +217,7 @@ export class EventParserService {
 
       case 'SessionEnd':
       case 'StopFailure':
+      case 'Interrupt': // Codex (TRD §4.10): the shared switch, no per-agent hook
         return 'session_ended'
 
       case 'PreCompact':

@@ -16,6 +16,9 @@ describe('sanitizedEnv', () => {
       GITHUB_TOKEN: 'github-tok',
       NPM_TOKEN: 'npm-tok',
       OPENAI_API_KEY: 'oai-key',
+      CODEX_API_KEY: 'codex-key',
+      CODEX_ACCESS_TOKEN: 'codex-tok',
+      CODEX_GITHUB_PERSONAL_ACCESS_TOKEN: 'codex-gh',
       DATABASE_URL: 'postgres://...',
     }
     const env = sanitizedEnv(base)
@@ -23,6 +26,15 @@ describe('sanitizedEnv', () => {
       expect(env[key]).toBeUndefined()
     }
   })
+
+  it.each(['CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'CODEX_GITHUB_PERSONAL_ACCESS_TOKEN'])(
+    'denies the Codex secret %s by default and lets an agent re-admit it',
+    (key) => {
+      expect(ENV_DENYLIST.has(key)).toBe(true)
+      expect(sanitizedEnv({ [key]: 'v', PATH: '/usr/bin' })).toEqual({ PATH: '/usr/bin' })
+      expect(sanitizedEnv({ [key]: 'v' }, new Set([key]))).toEqual({ [key]: 'v' })
+    },
+  )
 
   it('keeps everything else', () => {
     const env = sanitizedEnv({ PATH: '/usr/bin', HOME: '/home/user', SHELL: '/bin/bash' })

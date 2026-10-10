@@ -245,6 +245,23 @@ describe('EventParserService', () => {
       expect(parser.classifyActivity(makeHookEvent('SessionEnd'))).toBe('session_ended')
     })
 
+    it.each([
+      ['SessionStart', 'session_started'],
+      ['SessionEnd', 'session_ended'],
+      ['UserPromptSubmit', 'user_prompt'],
+      ['PreToolUse', 'tool_started'],
+      ['PermissionRequest', 'input_required'],
+      ['PostToolUse', 'tool_completed'],
+      ['PreCompact', 'context_compacted'],
+      ['PostCompact', 'context_compacted'],
+      ['SubagentStart', 'agent_spawned'],
+      ['SubagentStop', 'agent_spawned'],
+      ['Stop', 'session_ended'],
+      ['Interrupt', 'session_ended'],
+    ])('classifies the Codex hook %s as %s (TRD 4.10)', (hook, activity) => {
+      expect(parser.classifyActivity(makeHookEvent(hook))).toBe(activity)
+    })
+
     it('classifies PreCompact as context_compacted', () => {
       expect(parser.classifyActivity(makeHookEvent('PreCompact'))).toBe('context_compacted')
     })
@@ -376,6 +393,21 @@ describe('EventParserService', () => {
       expect(result.events).toHaveLength(1)
       expect(result.events[0].event).toBe('SessionStart')
       expect(result.events[0].sessionId).toBe('session-abc')
+    })
+
+    it('parses an Interrupt line written with the aliases and an agent field', () => {
+      // The agent enum only holds registered agents ('codex' joins it in C2), so this uses 'claude'.
+      const line = JSON.stringify({
+        timestamp: '2026-03-01T10:00:00Z',
+        hook_event_name: 'Interrupt',
+        workspace: 'my-project',
+        session_id: 'codex-1',
+        agent: 'claude',
+      })
+      mockRegularFile(Buffer.from(line + '\n'))
+      const result = parser.parseFromOffset('/path/events.jsonl', 0)
+      expect(result.events).toHaveLength(1)
+      expect(result.events[0]).toMatchObject({ event: 'Interrupt', sessionId: 'codex-1', agent: 'claude' })
     })
 
     it('prefers new-format event field over hook_event_name', () => {

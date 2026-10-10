@@ -101,6 +101,11 @@ describe('NotificationService', () => {
       expect(svc.classify(makeHookEvent('Stop', { featureShipped: true }))).toBe('progress')
     })
 
+    it('classifies a Codex Interrupt as activity', () => {
+      const svc = new NotificationService(makeCallbacks())
+      expect(svc.classify(makeHookEvent('Interrupt'))).toBe('activity')
+    })
+
     it('classifies gatePassed Stop as progress', () => {
       const svc = new NotificationService(makeCallbacks())
       expect(svc.classify(makeHookEvent('Stop', { gatePassed: true }))).toBe('progress')

@@ -22,7 +22,8 @@ export type HookEventName =
   | 'PreCompact'
   | 'PostCompact'
   | 'Elicitation'
-  | 'ElicitationResult';
+  | 'ElicitationResult'
+  | 'Interrupt';
 
 export interface HookEvent {
   timestamp: string;               // ISO 8601
