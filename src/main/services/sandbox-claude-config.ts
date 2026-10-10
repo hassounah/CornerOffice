@@ -153,6 +153,34 @@ export function checkClaudeConfigSources(paths: SandboxPaths): ClaudeConfigResul
   return check.ok ? { ok: true } : check
 }
 
+/** §14.5 #1: missing, or a symlink, or the wrong type — never distinguished
+ *  further (all map to the same `claude-home-missing` reason). Read-only:
+ *  only ever `lstatSync`, never creates either path (Gate 2 Critical). */
+export function claudeHomeOk(paths: SandboxPaths): boolean {
+  let dirStat: fs.Stats
+  try {
+    dirStat = fs.lstatSync(paths.claudeDir)
+  } catch {
+    return false
+  }
+  if (!dirStat.isDirectory()) return false
+
+  let jsonStat: fs.Stats
+  try {
+    jsonStat = fs.lstatSync(paths.claudeJson)
+  } catch {
+    return false
+  }
+  return jsonStat.isFile()
+}
+
+/** Delete's teardown of the per-slug Claude config files and shadow dirs (#0030 D3, C1). */
+export function clearClaudeConfigFiles(paths: SandboxPaths, slug: string): void {
+  fs.rmSync(settingsOverlayPath(paths, slug), { force: true })
+  fs.rmSync(sandboxClaudeJsonPath(paths, slug), { force: true })
+  fs.rmSync(path.dirname(claudeShadowSource(paths, slug, paths.claudeShadowDirs[0])), { recursive: true, force: true })
+}
+
 /** D8: validate every existing source first so a wrong type writes nothing; then create the missing ones. */
 function ensureSources(paths: SandboxPaths, slug: string): ClaudeConfigResult {
   const check = checkSources(paths)

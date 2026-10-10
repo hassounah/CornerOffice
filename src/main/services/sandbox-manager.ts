@@ -45,7 +45,7 @@ import {
 } from './sandbox-spec'
 import { planMounts, docsRootWtTarget } from './sandbox-spec'
 import { assertNoSymlinkOnPath } from './safe-fs'
-import { prepareClaudeConfig, seedClaudeJson, checkClaudeConfigSources } from './sandbox-claude-config'
+import { prepareClaudeConfig, seedClaudeJson, checkClaudeConfigSources, claudeHomeOk, clearClaudeConfigFiles } from './sandbox-claude-config'
 import type { ClaudeConfigResult } from './sandbox-claude-config'
 import { claudeConfigDetail } from '../types/claude-config'
 import type { PlanMountsFacts, DocsRootFacts, OldMount, ParsedInspect, PermMode } from './sandbox-spec'
@@ -375,27 +375,6 @@ function mapDockerStateToEligibilityReason(state: Exclude<DockerState, 'ok'>): E
 }
 
 // ── Eligibility helpers (§3.11, §14.5, D11, D12, M2, SEC-L5) ────────────────
-
-/** §14.5 #1: missing, or a symlink, or the wrong type — never distinguished
- *  further (all map to the same `claude-home-missing` reason). Read-only:
- *  only ever `lstatSync`, never creates either path (Gate 2 Critical). */
-function claudeHomeOk(paths: SandboxPaths): boolean {
-  let dirStat: fs.Stats
-  try {
-    dirStat = fs.lstatSync(paths.claudeDir)
-  } catch {
-    return false
-  }
-  if (!dirStat.isDirectory()) return false
-
-  let jsonStat: fs.Stats
-  try {
-    jsonStat = fs.lstatSync(paths.claudeJson)
-  } catch {
-    return false
-  }
-  return jsonStat.isFile()
-}
 
 function isInsideAny(target: string, roots: readonly string[]): boolean {
   return roots.some((root) => target === root || target.startsWith(root + path.sep))
@@ -731,13 +710,6 @@ function claudeConfigSourcesExist(paths: SandboxPaths, slug: string): boolean {
     ...paths.claudeShadowDirs,
     ...paths.claudeShadowDirs.map((d) => claudeShadowSource(paths, slug, d)),
   ].every((p) => fs.existsSync(p))
-}
-
-/** Delete's teardown of the per-slug Claude config files and shadow dirs (#0030 D3, C1). */
-function clearClaudeConfigFiles(paths: SandboxPaths, slug: string): void {
-  fs.rmSync(settingsOverlayPath(paths, slug), { force: true })
-  fs.rmSync(sandboxClaudeJsonPath(paths, slug), { force: true })
-  fs.rmSync(path.dirname(claudeShadowSource(paths, slug, paths.claudeShadowDirs[0])), { recursive: true, force: true })
 }
 
 function configInvalid(result: Extract<ClaudeConfigResult, { ok: false }>): { ok: false; code: 'CLAUDE_CONFIG_INVALID'; detail: string } {

@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 
 vi.mock('electron-log/main', () => ({
   default: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
@@ -12,6 +15,8 @@ import type { AgentHandler } from '../../main/agents/handler'
 import type { AgentDescriptor } from '../../main/agents/types'
 import { ENV_DENYLIST, isNeverAllowed } from '../../main/services/env-policy'
 import { CLAUDE_DESCRIPTOR } from '../../main/agents/claude/descriptor'
+import { sandboxPaths } from '../../main/services/sandbox-paths'
+import { assertMountSafe } from '../../main/services/sandbox-spec'
 
 const hostOnlyDescriptor = (over: Partial<AgentDescriptor> = {}): AgentDescriptor => ({
   ...CLAUDE_DESCRIPTOR,
@@ -53,9 +58,54 @@ describe.each(AGENT_IDS)('agent contract: %s', (id: AgentId) => {
     }
   })
 
-  // A3 gives Claude its sandbox handler; until then only the reverse direction holds.
-  it('a sandbox handler implies non-empty sandbox modes', () => {
-    if (handler.sandbox) expect(descriptor.permissionModes.sandbox.length).toBeGreaterThan(0)
+  it('sandbox modes are non-empty if and only if the handler has a sandbox', () => {
+    expect(descriptor.permissionModes.sandbox.length > 0).toBe(handler.sandbox !== undefined)
+  })
+
+  it('sandbox readiness codes are a subset of the descriptor copy keys', () => {
+    if (!handler.sandbox) return
+    const copyKeys = Object.keys(descriptor.copy.readiness)
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'co-contract-'))
+    try {
+      const result = handler.sandbox.readiness(sandboxPaths(home))
+      if (!result.ok) expect(copyKeys).toContain(result.code)
+      expect(result).toEqual({ ok: false, code: 'home-missing' })
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('sandbox mounts pass assertMountSafe, launch env names pass assertAgentEnvName, hidden sources stay in homeEntries', () => {
+    if (!handler.sandbox) return
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'co-contract-')))
+    try {
+      const ctx = { paths: sandboxPaths(home), slug: 'x', workTree: path.join(home, 'wt') }
+      const mounts = handler.sandbox.mounts(ctx)
+      expect(mounts.length).toBeGreaterThan(0)
+      // assertMountSafe requires realpath equality, so the paths must exist.
+      for (const m of mounts) {
+        fs.mkdirSync(m.source, { recursive: true })
+        fs.mkdirSync(m.target, { recursive: true })
+      }
+      const hiddenRoots = new Set(descriptor.homeEntries.map((e) => path.join(home, e)))
+      for (const m of mounts) {
+        expect(assertMountSafe(m.source, { home }), m.source).toBe(true)
+        expect(assertMountSafe(m.target, { home }), m.target).toBe(true)
+        for (const p of [m.source, m.target]) {
+          const rel = path.relative(home, p)
+          const first = rel.split(path.sep)[0]
+          // Sources under a hidden home segment must belong to this agent, or to the app's own state root.
+          if (first.startsWith('.') && first !== '.corner-office') expect(hiddenRoots.has(path.join(home, first)), p).toBe(true)
+        }
+      }
+      for (const mode of descriptor.permissionModes.sandbox) {
+        const launch = handler.sandbox.launch(ctx, { permissionMode: mode.mode })
+        for (const name of launch.env) expect(() => assertAgentEnvName(name)).not.toThrow()
+        expect(launch.argv.length).toBeGreaterThan(0)
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
   })
 
   it('plugin.detect() resolves on an unreadable home', async () => {
@@ -119,7 +169,6 @@ describe('assertDescriptorConsistency', () => {
     expect(() => assertDescriptorConsistency(d, ok)).toThrow(
       'fake: sandbox modes are non-empty but handler.sandbox is missing; add sandbox: or set modes to []',
     )
-    expect(() => assertDescriptorConsistency(d, ok, false)).not.toThrow()
   })
 
   it('rejects a sandbox handler without sandbox modes', () => {
@@ -143,11 +192,11 @@ describe('assertDescriptorConsistency', () => {
 
 describe('defineAgent', () => {
   it('fills the envAllow default', () => {
-    const h = defineAgent('claude', { host: { argv: () => ['claude'] }, plugin: { detect: async () => ({ installed: false, meetsMinimumVersion: false, eventsEnabled: false }) } })
+    const h = defineAgent('claude', { host: { argv: () => ['claude'] }, sandbox: sandboxStub, plugin: { detect: async () => ({ installed: false, meetsMinimumVersion: false, eventsEnabled: false }) } })
     expect(h.host.envAllow).toEqual(new Set())
   })
 
   it('throws for an inconsistent handler', () => {
-    expect(() => defineAgent('claude', { host: { argv: () => ['a b'] } })).toThrow(/^claude: agent argv token/)
+    expect(() => defineAgent('claude', { host: { argv: () => ['a b'] }, sandbox: sandboxStub })).toThrow(/^claude: agent argv token/)
   })
 })

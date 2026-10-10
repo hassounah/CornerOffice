@@ -77,24 +77,14 @@ export function assertAgentEnvName(name: string): void {
   }
 }
 
-/**
- * Until A3 gives Claude a `sandbox` handler, a descriptor that lists sandbox
- * modes without one is tolerated. A3 deletes this flag.
- */
-const REQUIRE_SANDBOX_FOR_MODES = false
-
 /** Pure and fail-closed: throws a message naming the agent and the fix. */
-export function assertDescriptorConsistency(
-  descriptor: AgentDescriptor,
-  h: AgentHandler,
-  requireSandboxForModes: boolean = true,
-): void {
+export function assertDescriptorConsistency(descriptor: AgentDescriptor, h: AgentHandler): void {
   const id = descriptor.id
   const hasModes = descriptor.permissionModes.sandbox.length > 0
   if (h.sandbox && !hasModes) {
     throw new Error(`${id}: handler.sandbox is set but sandbox modes are empty; add modes or remove sandbox:`)
   }
-  if (!h.sandbox && hasModes && requireSandboxForModes) {
+  if (!h.sandbox && hasModes) {
     throw new Error(`${id}: sandbox modes are non-empty but handler.sandbox is missing; add sandbox: or set modes to []`)
   }
   if (descriptor.permissionModes.host.length === 0) {
@@ -116,6 +106,6 @@ export function assertDescriptorConsistency(
 
 /** Applies fail-closed defaults and asserts descriptor/handler consistency at module load. */
 export function defineAgent(id: AgentId, h: AgentHandler): AgentHandler {
-  assertDescriptorConsistency(getDescriptor(id), h, REQUIRE_SANDBOX_FOR_MODES)
+  assertDescriptorConsistency(getDescriptor(id), h)
   return { ...h, host: { envAllow: new Set<string>(), ...h.host } }
 }
