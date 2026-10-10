@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { AgentIdSchema, LEGACY_AGENT_ID, getDescriptor } from '../agents/descriptors'
 import { hasGitSegment } from '../services/repo-path'
 import { AllowlistEntrySchema } from '../services/sandbox-allowlist'
 import { SANDBOX_SLUG_RE } from '../services/sandbox-spec'
@@ -208,11 +209,20 @@ export const terminalSlug = z.string().min(1).max(256).regex(/^[a-zA-Z0-9][a-zA-
 const shellSessionKey = z.string().regex(/^shell:(house_[1-4]|office_shell)$/)
 const terminalSessionKey = z.union([terminalSlug, shellSessionKey])
 
-export const TerminalSpawnSchema = z.object({
-  workspaceSlug: terminalSlug,
-  cols: z.number().int().min(1).max(500),
-  rows: z.number().int().min(1).max(500),
-})
+export const TerminalSpawnSchema = z
+  .object({
+    workspaceSlug: terminalSlug,
+    cols: z.number().int().min(1).max(500),
+    rows: z.number().int().min(1).max(500),
+    agentId: AgentIdSchema.default(LEGACY_AGENT_ID),
+    permissionMode: z.enum(['default', 'auto', 'skip']).default('default'),
+    /** Fields the chooser's resolution replaced and the user didn't touch (TRD §5.5); recorded by B2. */
+    fallbackFields: z.array(z.enum(['agentId', 'location', 'permissionMode'])).default([]),
+  })
+  .refine((v) => getDescriptor(v.agentId).permissionModes.host.some((m) => m.mode === v.permissionMode), {
+    message: 'permissionMode is not a host mode of this agent',
+    path: ['permissionMode'],
+  })
 
 export const TerminalSpawnShellSchema = z.object({
   houseId: z.enum(['house_1', 'house_2', 'house_3', 'house_4', 'office_shell']),

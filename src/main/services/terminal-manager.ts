@@ -4,6 +4,10 @@ import log from 'electron-log/main'
 import * as nodePty from 'node-pty'
 import type { BrowserWindow } from 'electron'
 import type { AppState } from '../ipc/handlers'
+import { LEGACY_AGENT_ID, getDescriptor } from '../agents/descriptors'
+import type { AgentId } from '../agents/descriptors'
+import { assertArgvToken } from '../agents/handler'
+import { getHandler } from '../agents/registry'
 import {
   MAX_SCROLLBACK_CHARS,
   DATA_BATCH_MS,
@@ -28,9 +32,6 @@ import { sanitizedEnv } from './env-policy'
 
 /** Spawn claude through a login shell so .bashrc/.profile are sourced (provides PATH for bun, etc.) */
 const USER_SHELL = process.env.SHELL || '/bin/bash'
-const CLAUDE_COMMAND = 'claude --dangerously-load-development-channels plugin:corner-office@amerh --teammate-mode in-process'
-const SPAWN_COMMAND = USER_SHELL
-const SPAWN_ARGS = ['--login', '-i', '-c', CLAUDE_COMMAND]
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -111,7 +112,7 @@ export class TerminalManagerService {
   }
 
   spawn(options: TerminalSpawnOptions): TerminalSpawnResult {
-    const { workspaceSlug, cols, rows } = options
+    const { workspaceSlug, cols, rows, agentId = LEGACY_AGENT_ID, permissionMode = 'default' } = options
 
     if (this._sessions.size >= MAX_CONCURRENT_SESSIONS) {
       throw new Error(`Maximum concurrent sessions (${MAX_CONCURRENT_SESSIONS}) reached`)
@@ -133,11 +134,18 @@ export class TerminalManagerService {
 
     const cwd = fs.existsSync(workspace.path) ? workspace.path : os.homedir()
 
+    if (!getDescriptor(agentId).permissionModes.host.some((m) => m.mode === permissionMode)) {
+      throw new Error(`Permission mode ${permissionMode} is not available on the host for ${agentId}`)
+    }
+    const handler = getHandler(agentId)
+    const argv = handler.host.argv({ permissionMode })
+    for (const token of argv) assertArgvToken(token)
+
     // Build sanitized environment
-    const env = sanitizedEnv(process.env)
+    const env = sanitizedEnv(process.env, handler.host.envAllow)
     env.TERM = 'xterm-256color'
 
-    this._spawnPty(workspaceSlug, 'host', SPAWN_COMMAND, SPAWN_ARGS, cwd, env, cols, rows)
+    this._spawnPty(workspaceSlug, 'host', USER_SHELL, ['--login', '-i', '-c', argv.join(' ')], cwd, env, cols, rows, agentId)
     return { workspaceSlug }
   }
 
@@ -412,6 +420,7 @@ export class TerminalManagerService {
     env: Record<string, string>,
     cols: number,
     rows: number,
+    agentId?: AgentId,
   ): TerminalSession {
     let pty: nodePty.IPty
     try {
@@ -438,6 +447,7 @@ export class TerminalManagerService {
     const session: TerminalSession = {
       workspaceSlug: key,
       kind,
+      agentId,
       pty,
       scrollback: '',
       pendingData: '',

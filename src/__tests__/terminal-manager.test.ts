@@ -166,6 +166,41 @@ describe('TerminalManagerService', () => {
       )
     })
 
+    it('runs the golden Claude command through a login shell by default', () => {
+      svc.spawn({ workspaceSlug: 'my-project', cols: 80, rows: 24 })
+
+      expect(nodePty.spawn).toHaveBeenCalledWith(
+        process.env.SHELL || '/bin/bash',
+        [
+          '--login',
+          '-i',
+          '-c',
+          'claude --dangerously-load-development-channels plugin:corner-office@amerh --teammate-mode in-process',
+        ],
+        expect.any(Object),
+      )
+    })
+
+    it('does not pass OPENAI_API_KEY to the child environment', () => {
+      vi.stubEnv('OPENAI_API_KEY', 'sk-test')
+      try {
+        svc.spawn({ workspaceSlug: 'my-project', cols: 80, rows: 24 })
+      } finally {
+        vi.unstubAllEnvs()
+      }
+
+      const env = vi.mocked(nodePty.spawn).mock.calls[0][2]?.env as Record<string, string>
+      expect(env.OPENAI_API_KEY).toBeUndefined()
+      expect(env.TERM).toBe('xterm-256color')
+    })
+
+    it('rejects a permission mode the agent does not offer on the host', () => {
+      expect(() => svc.spawn({ workspaceSlug: 'my-project', cols: 80, rows: 24, permissionMode: 'skip' })).toThrow(
+        /not available on the host/,
+      )
+      expect(nodePty.spawn).not.toHaveBeenCalled()
+    })
+
     it('throws when MAX_CONCURRENT_SESSIONS reached', () => {
       const ws2 = makeWorkspace('proj-b')
       const ws3 = makeWorkspace('proj-c')

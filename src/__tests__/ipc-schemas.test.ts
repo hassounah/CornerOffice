@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  TerminalSpawnSchema,
   TerminalSpawnShellSchema,
   TerminalWriteSchema,
   TerminalResizeSchema,
@@ -11,6 +12,36 @@ import {
 // ---------------------------------------------------------------------------
 // Terminal IPC schema tests — focus on shellSessionKey union
 // ---------------------------------------------------------------------------
+
+describe('TerminalSpawnSchema', () => {
+  const base = { workspaceSlug: 'my-project', cols: 80, rows: 24 }
+
+  it('defaults agentId to claude, permissionMode to default and fallbackFields to []', () => {
+    expect(TerminalSpawnSchema.parse(base)).toEqual({
+      ...base,
+      agentId: 'claude',
+      permissionMode: 'default',
+      fallbackFields: [],
+    })
+  })
+
+  it('accepts explicit valid fields', () => {
+    const result = TerminalSpawnSchema.safeParse({ ...base, agentId: 'claude', permissionMode: 'default', fallbackFields: ['location'] })
+    expect(result.success).toBe(true)
+  })
+
+  it.each([
+    ['an unknown agent', { agentId: 'nope' }],
+    ['skip on the host', { permissionMode: 'skip' }],
+    ['a mode the agent lacks on the host', { permissionMode: 'auto' }],
+    ['an unknown mode', { permissionMode: 'yolo' }],
+    ['a non-string agentId', { agentId: 5 }],
+    ['a non-array fallbackFields', { fallbackFields: 'location' }],
+    ['an unknown fallback field', { fallbackFields: ['bogus'] }],
+  ])('rejects %s', (_label, extra) => {
+    expect(TerminalSpawnSchema.safeParse({ ...base, ...extra }).success).toBe(false)
+  })
+})
 
 describe('TerminalSpawnShellSchema', () => {
   it('accepts house_1 through house_4', () => {

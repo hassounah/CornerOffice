@@ -73,7 +73,7 @@ import {
   SandboxUpdateSettingsSchema,
   SandboxGetBlockedSchema,
 } from './schemas'
-import type { DocsListTreeInput, DocsReadFileInput, DocsWriteFileInput } from './schemas'
+import type { DocsListTreeInput, DocsReadFileInput, DocsWriteFileInput, TerminalSpawnInput } from './schemas'
 import type { SandboxManagerService } from '../services/sandbox-manager'
 import type { TerminalManagerService } from '../services/terminal-manager'
 import type { IpcResponse } from '../types/ipc'
@@ -750,9 +750,9 @@ export function buildRealHandlers(
     // ─── Terminal ─────────────────────────────────────────────────────────────
 
     [TERMINAL_IPC.SPAWN]: wrapHandler(
-      async ({ workspaceSlug, cols, rows }: { workspaceSlug: string; cols: number; rows: number }) => {
+      async ({ workspaceSlug, cols, rows, agentId, permissionMode }: TerminalSpawnInput) => {
         if (!appState.terminalManager) throw new Error('Terminal manager not initialized')
-        return appState.terminalManager.spawn({ workspaceSlug, cols, rows })
+        return appState.terminalManager.spawn({ workspaceSlug, cols, rows, agentId, permissionMode })
       },
       TerminalSpawnSchema,
     ) as HandlerFn,
