@@ -15,7 +15,10 @@ export const CLAUDE_DESCRIPTOR = {
   binaryName: 'claude',
   capabilities: { channels: true, plugin: true },
   permissionModes: {
-    host: [{ mode: 'default', label: 'Default', note: 'Uses your Claude Code settings.' }],
+    host: [
+      { mode: 'default', label: 'Default', note: 'Uses your Claude Code settings.' },
+      { mode: 'auto', label: 'Auto mode', note: 'Claude decides when to ask.' },
+    ],
     sandbox: [
       { mode: 'skip', label: 'Skip permissions', note: 'Never asks. The sandbox is the boundary.' },
       { mode: 'auto', label: 'Auto mode', note: 'Claude decides when to ask.' },

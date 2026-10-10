@@ -30,10 +30,13 @@ describe('TerminalSpawnSchema', () => {
     expect(result.success).toBe(true)
   })
 
+  it('accepts auto on the host for Claude (B3)', () => {
+    expect(TerminalSpawnSchema.safeParse({ ...base, agentId: 'claude', permissionMode: 'auto' }).success).toBe(true)
+  })
+
   it.each([
     ['an unknown agent', { agentId: 'nope' }],
     ['skip on the host', { permissionMode: 'skip' }],
-    ['a mode the agent lacks on the host', { permissionMode: 'auto' }],
     ['an unknown mode', { permissionMode: 'yolo' }],
     ['a non-string agentId', { agentId: 5 }],
     ['a non-array fallbackFields', { fallbackFields: 'location' }],

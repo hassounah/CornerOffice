@@ -24,7 +24,7 @@ describe('agent descriptors', () => {
   it('pins the Claude descriptor data', () => {
     expect(CLAUDE_DESCRIPTOR.homeEntries).toEqual(['.claude', '.claude.json'])
     expect(CLAUDE_DESCRIPTOR.capabilities).toEqual({ channels: true, plugin: true })
-    expect(CLAUDE_DESCRIPTOR.permissionModes.host.map((m) => m.mode)).toEqual(['default'])
+    expect(CLAUDE_DESCRIPTOR.permissionModes.host.map((m) => m.mode)).toEqual(['default', 'auto'])
     expect(CLAUDE_DESCRIPTOR.permissionModes.sandbox.map((m) => m.mode)).toEqual(['skip', 'auto'])
     expect(CLAUDE_DESCRIPTOR.plugin.minimumVersion).toBe(MINIMUM_PLUGIN_VERSION)
     expect(CLAUDE_DESCRIPTOR.copy.notFound).toBe('claude command not found. Is Claude Code installed?')
