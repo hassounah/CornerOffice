@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventParserService } from '../main/services/event-parser'
 
 vi.mock('fs')
+const { warn } = vi.hoisted(() => ({ warn: vi.fn() }))
+vi.mock('electron-log/main', () => ({ default: { info: vi.fn(), warn, error: vi.fn() } }))
 import fs from 'fs'
 const mockFs = fs as unknown as Record<string, ReturnType<typeof vi.fn>>
 
@@ -85,6 +87,33 @@ describe('EventParserService', () => {
       expect(result.events).toHaveLength(1)
       expect(result.events[0].event).toBe('SessionStart')
       expect(result.newOffset).toBe(bytes.length)
+    })
+
+    it('keeps agent claude, and leaves an absent agent absent', () => {
+      mockRegularFile(Buffer.from(makeEvent({ agent: 'claude' }) + '\n' + makeEvent() + '\n', 'utf-8'))
+      const result = parser.parseFromOffset('/path/events.jsonl', 0)
+      expect(result.events.map((e) => e.agent)).toEqual(['claude', undefined])
+    })
+
+    it('drops lines with an unknown agent, warning once per file', () => {
+      warn.mockClear()
+      const content = [makeEvent({ agent: 'nope' }), makeEvent({ agent: 'other' }), makeEvent({ agent: 'claude' })].join('\n') + '\n'
+      mockRegularFile(Buffer.from(content, 'utf-8'))
+
+      const first = parser.parseFromOffset('/path/a.jsonl', 0)
+      expect(first.events).toHaveLength(1)
+      expect(warn).toHaveBeenCalledTimes(1)
+
+      parser.parseFromOffset('/path/a.jsonl', 0)
+      expect(warn).toHaveBeenCalledTimes(1)
+
+      parser.parseFromOffset('/path/b.jsonl', 0)
+      expect(warn).toHaveBeenCalledTimes(2)
+    })
+
+    it('drops a non-string agent value', () => {
+      mockRegularFile(Buffer.from(makeEvent({ agent: 7 }) + '\n', 'utf-8'))
+      expect(parser.parseFromOffset('/path/events.jsonl', 0).events).toHaveLength(0)
     })
 
     it('skips malformed JSONL lines without crashing', () => {

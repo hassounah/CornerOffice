@@ -26,7 +26,7 @@ vi.mock('os', () => ({
   homedir: () => '/home/test',
 }))
 
-import { PluginDetectorService } from '../main/services/plugin-detector'
+import { PluginDetectorService, detectPlugin, ANY_DIR, VERSION_DIR } from '../main/services/plugin-detector'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -279,5 +279,75 @@ describe('PluginDetectorService', () => {
       mockPromises.unlink.mockRejectedValue(err)
       await expect(svc.uninstallHooks()).rejects.toThrow('EPERM')
     })
+  })
+})
+
+describe('detectPlugin()', () => {
+  const opts = (candidates: { root: string; segments: string[] }[], minimumVersion = '1.0.0') => ({
+    candidates,
+    marker: 'hook.py',
+    minimumVersion,
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('never throws: an unexpected failure is "not installed"', async () => {
+    mockPromises.readdir.mockImplementation(() => {
+      throw new Error('boom')
+    })
+    await expect(detectPlugin(opts([{ root: '/c', segments: [VERSION_DIR] }]))).resolves.toEqual({
+      installed: false,
+      meetsMinimumVersion: false,
+    })
+  })
+
+  it('tries the next candidate when the first has no install', async () => {
+    mockPromises.readdir
+      .mockRejectedValueOnce(new Error('ENOENT'))
+      .mockResolvedValueOnce([makeDirent('2.1.0', { isDir: true })])
+    mockPromises.lstat.mockResolvedValue(makeFileStat())
+
+    const result = await detectPlugin(
+      opts([
+        { root: '/missing', segments: [VERSION_DIR] },
+        { root: '/other/corner-office', segments: [VERSION_DIR] },
+      ]),
+    )
+    expect(result).toEqual({
+      installed: true,
+      version: '2.1.0',
+      meetsMinimumVersion: true,
+      pluginPath: '/other/corner-office/2.1.0',
+    })
+    expect(mockPromises.lstat).toHaveBeenCalledWith('/other/corner-office/2.1.0/hook.py')
+  })
+
+  it('matches literal and wildcard segments, skipping symlinked directories', async () => {
+    mockPromises.readdir
+      .mockResolvedValueOnce([makeDirent('linked', { isSymlink: true }), makeDirent('pub', { isDir: true })])
+      .mockResolvedValueOnce([makeDirent('plugin', { isDir: true })])
+      .mockResolvedValueOnce([makeDirent('0.5.0', { isDir: true })])
+    mockPromises.lstat.mockResolvedValue(makeFileStat())
+
+    const result = await detectPlugin(opts([{ root: '/c', segments: [ANY_DIR, 'plugin', VERSION_DIR] }]))
+    expect(result).toMatchObject({ installed: true, version: '0.5.0', meetsMinimumVersion: false, pluginPath: '/c/pub/plugin/0.5.0' })
+  })
+
+  it('is not installed when the marker is missing or a symlink', async () => {
+    mockPromises.readdir.mockResolvedValue([makeDirent('1.0.0', { isDir: true })])
+    mockPromises.lstat.mockResolvedValue({ isSymbolicLink: () => true, isFile: () => true })
+    expect((await detectPlugin(opts([{ root: '/c', segments: [VERSION_DIR] }]))).installed).toBe(false)
+
+    mockPromises.lstat.mockRejectedValue(new Error('ENOENT'))
+    expect((await detectPlugin(opts([{ root: '/c', segments: [VERSION_DIR] }]))).installed).toBe(false)
+  })
+
+  it('treats an unparseable minimum version as no minimum', async () => {
+    mockPromises.readdir.mockResolvedValue([makeDirent('0.0.1', { isDir: true })])
+    mockPromises.lstat.mockResolvedValue(makeFileStat())
+    const result = await detectPlugin(opts([{ root: '/c', segments: [VERSION_DIR] }], 'not-a-version'))
+    expect(result.meetsMinimumVersion).toBe(true)
   })
 })
