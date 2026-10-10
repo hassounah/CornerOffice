@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ConfigManager } from '../main/services/config-manager'
 import type { AppConfig } from '../main/types/config'
+import { ConfigUpdateSchema } from '../main/ipc/schemas'
 
 // Mock fs and os so no real filesystem is touched
 vi.mock('fs')
@@ -37,8 +38,12 @@ describe('ConfigManager', () => {
       expect(cfg.appearance.theme).toBe('dark')
     })
 
-    it('returns version 3', () => {
-      expect(manager.getDefaultConfig().version).toBe(3)
+    it('returns version 4', () => {
+      expect(manager.getDefaultConfig().version).toBe(4)
+    })
+
+    it('returns empty sessionDefaults', () => {
+      expect(manager.getDefaultConfig().sessionDefaults).toEqual({ last: null, workspaces: {} })
     })
 
     it('returns firstLaunchComplete: false', () => {
@@ -69,7 +74,7 @@ describe('ConfigManager', () => {
       mockFs.readFileSync = vi.fn().mockReturnValue('not-json')
       const result = manager.loadConfig()
       expect(result).not.toBeNull()
-      expect(result!.version).toBe(3)
+      expect(result!.version).toBe(4)
     })
 
     it('returns default config and warns on schema validation failure', () => {
@@ -183,11 +188,11 @@ describe('ConfigManager', () => {
       expect(result!.realm.mapping).toHaveLength(10)
     })
 
-    it('sets version to 3 after full migration chain from v1', () => {
+    it('sets version to 4 after full migration chain from v1', () => {
       mockFs.existsSync = vi.fn().mockReturnValue(true)
       mockFs.readFileSync = vi.fn().mockReturnValue(makeV1Config())
       const result = manager.loadConfig()
-      expect(result!.version).toBe(3)
+      expect(result!.version).toBe(4)
     })
 
     it('adds terminal defaults when migrating from v2', () => {
@@ -200,11 +205,21 @@ describe('ConfigManager', () => {
       expect(result!.terminal.windowBounds).toEqual({})
     })
 
-    it('sets version to 3 after migration from v2', () => {
+    it('sets version to 4 after migration from v2', () => {
       mockFs.existsSync = vi.fn().mockReturnValue(true)
       mockFs.readFileSync = vi.fn().mockReturnValue(makeV2Config())
       const result = manager.loadConfig()
-      expect(result!.version).toBe(3)
+      expect(result!.version).toBe(4)
+    })
+
+    it('adds empty sessionDefaults when migrating from v3', () => {
+      const v3: Partial<AppConfig> = { ...manager.getDefaultConfig(), version: 3 }
+      delete v3.sessionDefaults
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(v3))
+      const result = manager.loadConfig()
+      expect(result!.version).toBe(4)
+      expect(result!.sessionDefaults).toEqual({ last: null, workspaces: {} })
     })
   })
 
@@ -592,7 +607,7 @@ describe('ConfigManager', () => {
       const result = manager.loadConfig()
 
       expect(result).not.toBeNull()
-      expect(result!.version).toBe(3)
+      expect(result!.version).toBe(4)
       expect(result!.workspaces).toEqual([])
     })
 
@@ -603,7 +618,55 @@ describe('ConfigManager', () => {
       const result = manager.loadConfig()
 
       expect(result).not.toBeNull()
-      expect(result!.version).toBe(3)
+      expect(result!.version).toBe(4)
+    })
+  })
+
+  describe('sessionDefaults (#0037 B1)', () => {
+    const choice = {
+      agentId: 'claude',
+      location: 'sandbox',
+      hostPermissionMode: 'default',
+      sandboxPermissionMode: 'skip',
+      networkMode: 'allowlist',
+    }
+
+    function load(sessionDefaults: unknown) {
+      const cfg = { ...manager.getDefaultConfig(), sessionDefaults }
+      mockFs.existsSync = vi.fn((p: string) => !String(p).endsWith('.bak'))
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
+      return manager.loadConfig()
+    }
+
+    it('keeps a valid section', () => {
+      const result = load({ last: choice, workspaces: { 'my-ws': choice } })
+      expect(result!.sessionDefaults).toEqual({ last: choice, workspaces: { 'my-ws': choice } })
+    })
+
+    it('loads a config whose sessionDefaults key was stripped, restoring the default', () => {
+      const stripped: Partial<AppConfig> = manager.getDefaultConfig()
+      delete stripped.sessionDefaults
+      mockFs.existsSync = vi.fn((p: string) => !String(p).endsWith('.bak'))
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(stripped))
+      expect(manager.loadConfig()!.sessionDefaults).toEqual({ last: null, workspaces: {} })
+    })
+
+    it.each([
+      ['a non-object', 'nope'],
+      ['a bad location', { last: { ...choice, location: 'cloud' }, workspaces: {} }],
+      ['a bad workspace key', { last: null, workspaces: { '../evil': choice } }],
+      ['an over-long mode', { last: { ...choice, hostPermissionMode: 'x'.repeat(33) }, workspaces: {} }],
+    ])('resets %s to the default without recovering from .bak', (_label, bad) => {
+      const result = load(bad)
+      expect(result!.sessionDefaults).toEqual({ last: null, workspaces: {} })
+      expect(result!.workspaces).toEqual([])
+      // The reset is silent for .bak purposes: nothing was set aside as corrupt.
+      expect(mockFs.copyFileSync).not.toHaveBeenCalledWith(expect.any(String), expect.stringContaining('.corrupt'))
+    })
+
+    it('ConfigUpdateSchema does not let the renderer write sessionDefaults', () => {
+      const parsed = ConfigUpdateSchema.safeParse({ sessionDefaults: { last: choice, workspaces: {} } })
+      expect(!parsed.success || !('sessionDefaults' in parsed.data)).toBe(true)
     })
   })
 })

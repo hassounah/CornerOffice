@@ -8,6 +8,7 @@ import type { AppConfig, RealmLocation } from '../types'
 import type { SandboxConfig } from '../types/config'
 import { AllowlistSchema } from './sandbox-allowlist'
 import { SANDBOX_SLUG_RE, CHANNEL_PORT_RANGE } from './sandbox-spec'
+import { terminalSlug } from '../ipc/schemas'
 
 // ---------------------------------------------------------------------------
 // Zod schema for AppConfig (used for parse + migration validation)
@@ -107,6 +108,23 @@ const SandboxConfigSchema = z.object({
   workspaces: z.record(z.string().regex(SANDBOX_SLUG_RE), SandboxWorkspaceConfigSchema),
 })
 
+// ---------------------------------------------------------------------------
+// Remembered Start Session options (#0037 TRD §5.2)
+// ---------------------------------------------------------------------------
+
+export const SessionChoiceSchema = z.object({
+  agentId: z.string().min(1).max(32),
+  location: z.enum(['host', 'sandbox']),
+  hostPermissionMode: z.string().min(1).max(32),
+  sandboxPermissionMode: z.string().min(1).max(32),
+  networkMode: z.enum(['allowlist', 'open']),
+})
+
+export const SessionDefaultsSchema = z.object({
+  last: SessionChoiceSchema.nullable(),
+  workspaces: z.record(terminalSlug, SessionChoiceSchema),
+})
+
 // Code Explorer layout (#0031): tree width in px
 const CodeExplorerConfigSchema = z.object({
   treeWidth: z.number().int().min(0).max(10000),
@@ -146,6 +164,7 @@ const AppConfigSchema = z.object({
   terminal: TerminalConfigSchema,
   codeExplorer: CodeExplorerConfigSchema.optional(),
   sandbox: SandboxConfigSchema.optional(),
+  sessionDefaults: SessionDefaultsSchema.default({ last: null, workspaces: {} }),
   discoveryExclusions: z.array(z.string()),
   firstLaunchComplete: z.boolean(),
   terminalEmulator: z.string().nullable(),
@@ -187,9 +206,18 @@ const MIGRATIONS: Migration[] = [
       terminal: cfg.terminal ?? { fontSize: 14, windowBounds: {} },
     }),
   },
+  {
+    fromVersion: 3,
+    toVersion: 4,
+    migrate: (cfg) => ({
+      ...cfg,
+      version: 4,
+      sessionDefaults: { last: null, workspaces: {} },
+    }),
+  },
 ]
 
-const CURRENT_VERSION = 3
+const CURRENT_VERSION = 4
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -367,6 +395,13 @@ export class ConfigManager {
       }
     }
 
+    // Defensive: malformed remembered chooser options reset to the default
+    // (absent is fine: the schema default fills it). Never triggers .bak recovery.
+    if ('sessionDefaults' in migrated && !SessionDefaultsSchema.safeParse(migrated.sessionDefaults).success) {
+      log.warn('[ConfigManager] Invalid sessionDefaults config, falling back to defaults')
+      migrated = { ...migrated, sessionDefaults: { last: null, workspaces: {} } }
+    }
+
     // Defensive: a malformed codeExplorer value is dropped (absent means
     // defaults) — it must never invalidate the whole config or trigger .bak recovery.
     if ('codeExplorer' in migrated && !CodeExplorerConfigSchema.safeParse(migrated.codeExplorer).success) {
@@ -452,6 +487,37 @@ export class ConfigManager {
     }
   }
 
+  // `mutateConfig` for read-modify-write of nested sections; `updateConfig` for shallow top-level replacement.
+  // Calls are chained in-process first (the file lock alone could exhaust its retries under a burst),
+  // then take the file lock, then read -> fn -> save. A failed call never blocks the next one.
+  mutateConfig(fn: (current: AppConfig) => AppConfig): Promise<AppConfig> {
+    const run = this._mutateChain.then(() => this._mutateLocked(fn))
+    this._mutateChain = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private _mutateChain: Promise<void> = Promise.resolve()
+
+  private async _mutateLocked(fn: (current: AppConfig) => AppConfig): Promise<AppConfig> {
+    this.ensureDataDir()
+    const cfgPath = configPath()
+    if (!fs.existsSync(cfgPath)) this.saveConfig(this.getDefaultConfig())
+
+    let release: (() => Promise<void>) | null = null
+    try {
+      release = await lockfile.lock(cfgPath, { retries: { retries: 5, minTimeout: 50 } })
+      const current = this.loadConfig() ?? this.getDefaultConfig()
+      const updated = fn(current)
+      this.saveConfig(updated)
+      return updated
+    } finally {
+      if (release) await release()
+    }
+  }
+
   async updateConfig(partial: Partial<AppConfig>): Promise<AppConfig> {
     this.ensureDataDir()
     const cfgPath = configPath()
@@ -520,6 +586,7 @@ export class ConfigManager {
         fontSize: 14,
         windowBounds: {},
       },
+      sessionDefaults: { last: null, workspaces: {} },
       discoveryExclusions: [],
       firstLaunchComplete: false,
       terminalEmulator: null,

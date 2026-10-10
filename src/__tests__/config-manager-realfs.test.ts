@@ -164,4 +164,52 @@ describe('ConfigManager durability (real filesystem)', () => {
       }
     })
   })
+
+  describe('mutateConfig (#0037 B1)', () => {
+    const choice = {
+      agentId: 'claude',
+      location: 'host',
+      hostPermissionMode: 'default',
+      sandboxPermissionMode: 'skip',
+      networkMode: 'allowlist',
+    } as const
+
+    it('persists 10 concurrent read-modify-write calls', async () => {
+      manager.saveConfig(manager.getDefaultConfig())
+
+      await Promise.all(
+        Array.from({ length: 10 }, (_, i) =>
+          manager.mutateConfig((cfg) => ({
+            ...cfg,
+            sessionDefaults: {
+              last: choice,
+              workspaces: { ...cfg.sessionDefaults?.workspaces, [`ws-${i}`]: choice },
+            },
+          })),
+        ),
+      )
+
+      const loaded = manager.loadConfig()!
+      expect(Object.keys(loaded.sessionDefaults!.workspaces).sort()).toEqual(
+        Array.from({ length: 10 }, (_, i) => `ws-${i}`).sort(),
+      )
+    })
+
+    it('creates the file when absent and returns the updated config', async () => {
+      const updated = await manager.mutateConfig((cfg) => ({ ...cfg, companyName: 'Acme' }))
+      expect(updated.companyName).toBe('Acme')
+      expect(manager.loadConfig()!.companyName).toBe('Acme')
+    })
+
+    it('a throwing mutation rejects its own call but does not block the next', async () => {
+      manager.saveConfig(manager.getDefaultConfig())
+      const failing = manager.mutateConfig(() => {
+        throw new Error('boom')
+      })
+      const next = manager.mutateConfig((cfg) => ({ ...cfg, companyName: 'After' }))
+      await expect(failing).rejects.toThrow('boom')
+      await expect(next).resolves.toMatchObject({ companyName: 'After' })
+      expect(manager.loadConfig()!.companyName).toBe('After')
+    })
+  })
 })

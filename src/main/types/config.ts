@@ -52,6 +52,24 @@ export interface SandboxConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Remembered Start Session options (#0037 TRD §5.2). The zod schemas live in
+// config-manager.ts; these mirror them for renderer-safe imports.
+// ---------------------------------------------------------------------------
+
+export interface SessionChoice {
+  agentId: string;
+  location: 'host' | 'sandbox';
+  hostPermissionMode: string;
+  sandboxPermissionMode: string;
+  networkMode: 'allowlist' | 'open';
+}
+
+export interface SessionDefaults {
+  last: SessionChoice | null;                    // the most recent start, any workspace
+  workspaces: Record<string, SessionChoice>;     // key: workspace slug
+}
+
+// ---------------------------------------------------------------------------
 // AppConfig — persisted to ~/.corner-office/config.json
 // ---------------------------------------------------------------------------
 
@@ -86,6 +104,7 @@ export interface AppConfig {
   terminal: TerminalConfig;
   codeExplorer?: CodeExplorerConfig; // Absent means defaults — no version bump, no migration
   sandbox?: SandboxConfig;         // Absent means defaults (getSandboxConfig()) — no version bump, no migration
+  sessionDefaults?: SessionDefaults; // Remembered chooser options (v4); always present after loadConfig, written by main after a successful start
   discoveryExclusions: string[];   // Additional directory-name exclusion patterns
   firstLaunchComplete: boolean;
   terminalEmulator: string | null; // User-override terminal binary; null = auto-detect
