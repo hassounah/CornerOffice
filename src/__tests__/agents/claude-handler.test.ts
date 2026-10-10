@@ -15,6 +15,7 @@ import {
   sessionExecArgv,
   worktreePath,
   cardDir,
+  sandboxEventsDir,
   settingsOverlayPath,
   sandboxClaudeJsonPath,
   claudeShadowSource,
@@ -149,6 +150,7 @@ describe('claude sandbox handler: mounts', () => {
     mkdir(path.join(ctx.paths.claudeDir, 'channels'))
     sandbox.prepare(ctx, 'plan')
     mkdir(cardDir(ctx.paths, SLUG))
+    mkdir(sandboxEventsDir(ctx.paths, SLUG))
     const facts: PlanMountsFacts = {
       home,
       repo,

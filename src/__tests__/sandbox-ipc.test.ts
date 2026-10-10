@@ -109,6 +109,7 @@ function makeRig(opts: { fail?: boolean; save?: (next: SandboxConfig) => Promise
     },
     workspaceSlugs: () => [SLUG, 'other'],
     noteBuildRequester: vi.fn(),
+    recordSessionStart: vi.fn(),
   }
   return { manager, deps, saved, handlers: buildSandboxHandlers(manager, deps) }
 }
@@ -179,13 +180,43 @@ describe('buildSandboxHandlers', () => {
     await handlers[SANDBOX_CHANNELS.START_SESSION](makeEvent(), VALID_INPUT[SANDBOX_CHANNELS.START_SESSION])
     expect(manager.startSession).toHaveBeenCalledWith({ slug: SLUG, cols: 80, rows: 24, permissionMode: 'skip', networkMode: 'allowlist', agentId: 'claude' })
     await handlers[SANDBOX_CHANNELS.RECREATE](makeEvent(), VALID_INPUT[SANDBOX_CHANNELS.RECREATE])
-    expect(manager.recreate).toHaveBeenCalledWith(SLUG, false, HASH)
+    expect(manager.recreate).toHaveBeenCalledWith(SLUG, false, HASH, 'claude')
     await handlers[SANDBOX_CHANNELS.HAND_OFF](makeEvent(), { workspaceSlug: SLUG, allowDirty: true })
     expect(manager.handOff).toHaveBeenCalledWith(SLUG, true)
     await handlers[SANDBOX_CHANNELS.DELETE](makeEvent(), { workspaceSlug: SLUG, acknowledgeDirty: true })
     expect(manager.delete).toHaveBeenCalledWith(SLUG, true)
     await handlers[SANDBOX_CHANNELS.GET_ENVIRONMENT](makeEvent(), { refresh: true })
     expect(manager.getEnvironment).toHaveBeenCalledWith({ refresh: true })
+  })
+
+  it('records the validated start values after a successful start only', async () => {
+    const { handlers, manager, deps } = makeRig()
+    const input = { ...(VALID_INPUT[SANDBOX_CHANNELS.START_SESSION] as object), fallbackFields: ['location'] }
+
+    vi.mocked(manager.startSession).mockResolvedValueOnce({ ok: false, code: 'IMAGE_MISSING', detail: null })
+    await handlers[SANDBOX_CHANNELS.START_SESSION](makeEvent(), input)
+    expect(deps.recordSessionStart).not.toHaveBeenCalled()
+
+    vi.mocked(manager.startSession).mockResolvedValueOnce({ ok: true, workspaceSlug: SLUG, kind: 'sandbox' })
+    await handlers[SANDBOX_CHANNELS.START_SESSION](makeEvent(), input)
+    expect(deps.recordSessionStart).toHaveBeenCalledWith({
+      workspaceSlug: SLUG,
+      agentId: 'claude',
+      location: 'sandbox',
+      permissionMode: 'skip',
+      networkMode: 'allowlist',
+      fallbackFields: ['location'],
+    })
+  })
+
+  it.each([
+    { ok: false, code: 'AGENT_NOT_READY', detail: null, agentId: 'claude', readiness: 'home-missing' },
+    { ok: false, code: 'AGENT_CONFIG_INVALID', detail: 'x', agentId: 'claude' },
+  ] as const)('passes the agent-tagged failure $code through unchanged, as data', async (failure) => {
+    const { handlers, manager } = makeRig()
+    vi.mocked(manager.startSession).mockResolvedValueOnce(failure as never)
+    const res = await handlers[SANDBOX_CHANNELS.START_SESSION](makeEvent(), VALID_INPUT[SANDBOX_CHANNELS.START_SESSION])
+    expect(res).toEqual({ data: failure, error: null })
   })
 
   it('returns user-facing failures as typed data, not as an error', async () => {

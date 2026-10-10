@@ -67,11 +67,18 @@ export interface SandboxState {
   fetchSettings: () => Promise<void>
 
   // Mutations return the typed result the user-facing flow needs, and throw only when main is unreachable or not ready.
-  startSession: (slug: string, cols: number, rows: number, permissionMode: 'skip' | 'auto', networkMode: 'allowlist' | 'open') => Promise<StartResult>
+  startSession: (
+    slug: string,
+    cols: number,
+    rows: number,
+    permissionMode: 'skip' | 'auto',
+    networkMode: 'allowlist' | 'open',
+    opts?: { agentId?: string; fallbackFields?: readonly string[] },
+  ) => Promise<StartResult>
   handOff: (slug: string, allowDirty: boolean) => Promise<HandOffResult>
   previewDelete: (slug: string) => Promise<DeletePreview>
   deleteSandbox: (slug: string, acknowledgeDirty: boolean) => Promise<DeleteResult>
-  recreate: (slug: string, newPort: boolean, confirmedSpecHash: string) => Promise<RecreateResult>
+  recreate: (slug: string, newPort: boolean, confirmedSpecHash: string, agentId?: string) => Promise<RecreateResult>
   buildImage: (rebuild: boolean, requestedFor?: BuildRequest | null) => Promise<BuildImageResult>
   cancelBuild: () => Promise<void>
   /** Forget which session a finished build was for, so a later chooser doesn't replay "Image ready" or the failure. The log and phase stay for Settings. A running build is untouched. */
@@ -223,8 +230,14 @@ export const useSandboxStore = create<SandboxState>((set, get) => {
       }
     },
 
-    startSession: (slug, cols, rows, permissionMode, networkMode) =>
-      refetchAfter(slug, api().startSession(slug, cols, rows, permissionMode, networkMode).then((r) => requirePayload<StartResult>(r))),
+    startSession: (slug, cols, rows, permissionMode, networkMode, opts) =>
+      refetchAfter(
+        slug,
+        (opts
+          ? api().startSession(slug, cols, rows, permissionMode, networkMode, opts)
+          : api().startSession(slug, cols, rows, permissionMode, networkMode)
+        ).then((r) => requirePayload<StartResult>(r)),
+      ),
 
     handOff: (slug, allowDirty) => refetchAfter(slug, api().handOff(slug, allowDirty).then((r) => requirePayload<HandOffResult>(r))),
 
@@ -232,8 +245,13 @@ export const useSandboxStore = create<SandboxState>((set, get) => {
 
     deleteSandbox: (slug, acknowledgeDirty) => refetchAfter(slug, api().delete(slug, acknowledgeDirty).then((r) => requirePayload<DeleteResult>(r))),
 
-    recreate: (slug, newPort, confirmedSpecHash) =>
-      refetchAfter(slug, api().recreate(slug, newPort, confirmedSpecHash).then((r) => requirePayload<RecreateResult>(r))),
+    recreate: (slug, newPort, confirmedSpecHash, agentId) =>
+      refetchAfter(
+        slug,
+        (agentId === undefined ? api().recreate(slug, newPort, confirmedSpecHash) : api().recreate(slug, newPort, confirmedSpecHash, agentId)).then((r) =>
+          requirePayload<RecreateResult>(r),
+        ),
+      ),
 
     buildImage: async (rebuild, requestedFor = null) => {
       set({ build: { running: true, lines: [], phase: 'running', requestedFor } })

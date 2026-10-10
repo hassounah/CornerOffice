@@ -25,6 +25,7 @@ import {
   containerName,
   worktreePath,
   cardDir,
+  sandboxEventsDir,
   settingsOverlayPath,
   sandboxClaudeJsonPath,
   claudeShadowSource,
@@ -92,6 +93,7 @@ function makeFixture(): Fixture {
     mkdir(claudeShadowSource(paths, SLUG, d))
   }
   mkdir(cardDir(paths, SLUG))
+  mkdir(sandboxEventsDir(paths, SLUG)) // D7: the events mount source is now S/events
   mkdir(path.join(paths.claudeDir, 'channels'))
 
   mkdir(path.join(repo, '.git', 'hooks'))

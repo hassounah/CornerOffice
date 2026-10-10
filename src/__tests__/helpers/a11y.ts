@@ -1,4 +1,5 @@
 import { expect } from 'vitest'
+import axe from 'axe-core'
 
 // ---------------------------------------------------------------------------
 // a11y.ts — shared nested-interactive check (TRD §5.2 step 2.11, UX L1: "Shared
@@ -21,4 +22,14 @@ export function assertNoNestedInteractive(container: HTMLElement): void {
     '[role="button"] button, [role="button"] [role="button"], button button',
   )
   expect(nested).toHaveLength(0)
+}
+
+/**
+ * Runs axe-core on `container` and fails with a readable list of violations. jsdom has no layout or
+ * computed colors, so the color-contrast rule can't run here; contrast is checked live at F1 (UX-1..UX-6).
+ */
+export async function expectNoAxeViolations(container: HTMLElement): Promise<void> {
+  const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } })
+  const summary = results.violations.map((v) => `${v.id}: ${v.help} (${v.nodes.map((n) => n.target.join(' ')).join(', ')})`)
+  expect(summary).toEqual([])
 }

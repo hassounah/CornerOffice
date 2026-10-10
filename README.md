@@ -132,7 +132,9 @@ A sandbox limits the damage an unattended agent can do. It is not a guarantee. T
 - The agent can move or delete refs, and can delete or corrupt `.git/objects`, `packed-refs` and `logs/`, which loses unpushed history. The reflog recovers refs. It does not recover deleted objects.
 - Files the agent writes on its branch (`package.json` scripts, `.husky/`, the Makefile) only run on your host once you check out or merge that branch, so review before you merge.
 - Don't run `git` or git-aware tools (including your editor's git integration) inside directories the agent writes to, such as the worktree's subfolders, `.rix` or the docs folder. A nested `.git` the agent plants there can make git run code (hooks, config) on your host.
-- A host Claude session in the same repo can still have its session IDs read by the sandbox agent, so it can pass its events off as host events, until directory-based provenance ships. Host IDs are only accepted for the event's own workspace.
+- Events are labelled by where they were written. Each sandbox writes to its own events directory (`~/.corner-office/sandbox/<workspace>/events`), which the app watches separately from the host's `~/.corner-office/events`. Anything in the first is tagged Sandbox and anything in the second is tagged Host, whatever the event says about itself (including its `agent` field), so a sandbox agent can no longer pass its events off as host events.
+  - History from before this change is the exception: in a workspace that has a sandbox, host-folder events older than the cutover (recorded once, as `sandbox.eventsSplitAt` in `config.json`) keep the old session-ID rule, so old sandbox events aren't relabelled as Host.
+  - A sandbox container that kept running across the upgrade (only possible after a crash) still writes to the old host folder until it is recreated, so its events are labelled Host in the meantime.
 
 Everything a sandbox sends to the app (chat, permission prompts, notifications, activity) is untrusted text and carries a persistent Sandbox tag.
 

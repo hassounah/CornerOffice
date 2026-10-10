@@ -12,6 +12,8 @@ exports[`golden: containerName and argv > createArgv 1`] = `
   "--label",
   "co.sandbox.workspace=my-workspace",
   "--label",
+  "co.sandbox.agent=claude",
+  "--label",
   "co.sandbox.spec=deadbeef",
   "--init",
   "--user",
@@ -89,7 +91,7 @@ exports[`golden: containerName and argv > createArgv 1`] = `
   "--mount",
   "type=bind,source=$REPO/.rix,target=$HOME/.corner-office/sandboxes/my-workspace/.rix",
   "--mount",
-  "type=bind,source=$HOME/.corner-office/events/my-workspace,target=$HOME/.corner-office/events/my-workspace",
+  "type=bind,source=$HOME/.corner-office/sandbox/my-workspace/events,target=$HOME/.corner-office/events/my-workspace",
   "--mount",
   "type=bind,source=$HOME/.corner-office/events/enabled,target=$HOME/.corner-office/events/enabled,readonly",
   "--workdir",
@@ -245,7 +247,7 @@ exports[`golden: planMounts (Claude) > .git/index is mounted only when it exists
     "rw app $HOME/.corner-office/sandboxes/my-workspace -> $HOME/.corner-office/sandboxes/my-workspace",
     "ro app $HOME/.corner-office/sandboxes/my-workspace/.git -> $HOME/.corner-office/sandboxes/my-workspace/.git",
     "rw app $REPO/.rix -> $HOME/.corner-office/sandboxes/my-workspace/.rix",
-    "rw app $HOME/.corner-office/events/my-workspace -> $HOME/.corner-office/events/my-workspace",
+    "rw app $HOME/.corner-office/sandbox/my-workspace/events -> $HOME/.corner-office/events/my-workspace",
   ],
   "warnings": [
     "docs-root-missing",
@@ -283,7 +285,7 @@ exports[`golden: planMounts (Claude) > .git/index is mounted only when it exists
     "rw app $HOME/.corner-office/sandboxes/my-workspace -> $HOME/.corner-office/sandboxes/my-workspace",
     "ro app $HOME/.corner-office/sandboxes/my-workspace/.git -> $HOME/.corner-office/sandboxes/my-workspace/.git",
     "rw app $REPO/.rix -> $HOME/.corner-office/sandboxes/my-workspace/.rix",
-    "rw app $HOME/.corner-office/events/my-workspace -> $HOME/.corner-office/events/my-workspace",
+    "rw app $HOME/.corner-office/sandbox/my-workspace/events -> $HOME/.corner-office/events/my-workspace",
   ],
   "warnings": [
     "docs-root-missing",
@@ -321,7 +323,7 @@ exports[`golden: planMounts (Claude) > a custom hooksPath inside .git adds one r
     "rw app $HOME/.corner-office/sandboxes/my-workspace -> $HOME/.corner-office/sandboxes/my-workspace",
     "ro app $HOME/.corner-office/sandboxes/my-workspace/.git -> $HOME/.corner-office/sandboxes/my-workspace/.git",
     "rw app $REPO/.rix -> $HOME/.corner-office/sandboxes/my-workspace/.rix",
-    "rw app $HOME/.corner-office/events/my-workspace -> $HOME/.corner-office/events/my-workspace",
+    "rw app $HOME/.corner-office/sandbox/my-workspace/events -> $HOME/.corner-office/events/my-workspace",
   ],
   "warnings": [
     "docs-root-missing",
@@ -358,7 +360,7 @@ exports[`golden: planMounts (Claude) > docs_root in the repo mounts at both repo
     "rw app $HOME/.corner-office/sandboxes/my-workspace -> $HOME/.corner-office/sandboxes/my-workspace",
     "ro app $HOME/.corner-office/sandboxes/my-workspace/.git -> $HOME/.corner-office/sandboxes/my-workspace/.git",
     "rw app $REPO/.rix -> $HOME/.corner-office/sandboxes/my-workspace/.rix",
-    "rw app $HOME/.corner-office/events/my-workspace -> $HOME/.corner-office/events/my-workspace",
+    "rw app $HOME/.corner-office/sandbox/my-workspace/events -> $HOME/.corner-office/events/my-workspace",
   ],
   "warnings": [
     "docs-root-unsafe",
@@ -396,7 +398,7 @@ exports[`golden: planMounts (Claude) > docs_root outside the repo from settings 
     "ro app $HOME/.corner-office/sandboxes/my-workspace/.git -> $HOME/.corner-office/sandboxes/my-workspace/.git",
     "rw app $REPO/.rix -> $HOME/.corner-office/sandboxes/my-workspace/.rix",
     "rw settings $HOME/notes -> $HOME/notes",
-    "rw app $HOME/.corner-office/events/my-workspace -> $HOME/.corner-office/events/my-workspace",
+    "rw app $HOME/.corner-office/sandbox/my-workspace/events -> $HOME/.corner-office/events/my-workspace",
   ],
   "warnings": [],
 }
@@ -432,7 +434,7 @@ exports[`golden: planMounts (Claude) > docs_root sourced from memory.md carries 
     "ro app $HOME/.corner-office/sandboxes/my-workspace/.git -> $HOME/.corner-office/sandboxes/my-workspace/.git",
     "rw app $REPO/.rix -> $HOME/.corner-office/sandboxes/my-workspace/.rix",
     "rw memory.md $HOME/memdocs -> $HOME/memdocs",
-    "rw app $HOME/.corner-office/events/my-workspace -> $HOME/.corner-office/events/my-workspace",
+    "rw app $HOME/.corner-office/sandbox/my-workspace/events -> $HOME/.corner-office/events/my-workspace",
   ],
   "warnings": [],
 }
@@ -467,7 +469,7 @@ exports[`golden: planMounts (Claude) > events enabled adds the enabled marker mo
     "rw app $HOME/.corner-office/sandboxes/my-workspace -> $HOME/.corner-office/sandboxes/my-workspace",
     "ro app $HOME/.corner-office/sandboxes/my-workspace/.git -> $HOME/.corner-office/sandboxes/my-workspace/.git",
     "rw app $REPO/.rix -> $HOME/.corner-office/sandboxes/my-workspace/.rix",
-    "rw app $HOME/.corner-office/events/my-workspace -> $HOME/.corner-office/events/my-workspace",
+    "rw app $HOME/.corner-office/sandbox/my-workspace/events -> $HOME/.corner-office/events/my-workspace",
   ],
   "warnings": [
     "docs-root-missing",
@@ -504,7 +506,7 @@ exports[`golden: planMounts (Claude) > events enabled adds the enabled marker mo
     "rw app $HOME/.corner-office/sandboxes/my-workspace -> $HOME/.corner-office/sandboxes/my-workspace",
     "ro app $HOME/.corner-office/sandboxes/my-workspace/.git -> $HOME/.corner-office/sandboxes/my-workspace/.git",
     "rw app $REPO/.rix -> $HOME/.corner-office/sandboxes/my-workspace/.rix",
-    "rw app $HOME/.corner-office/events/my-workspace -> $HOME/.corner-office/events/my-workspace",
+    "rw app $HOME/.corner-office/sandbox/my-workspace/events -> $HOME/.corner-office/events/my-workspace",
     "ro app $HOME/.corner-office/events/enabled -> $HOME/.corner-office/events/enabled",
   ],
   "warnings": [
@@ -541,7 +543,7 @@ exports[`golden: planMounts (Claude) > pins the full ordered plan with docs_root
   "rw app $HOME/.corner-office/sandboxes/my-workspace -> $HOME/.corner-office/sandboxes/my-workspace",
   "ro app $HOME/.corner-office/sandboxes/my-workspace/.git -> $HOME/.corner-office/sandboxes/my-workspace/.git",
   "rw app $REPO/.rix -> $HOME/.corner-office/sandboxes/my-workspace/.rix",
-  "rw app $HOME/.corner-office/events/my-workspace -> $HOME/.corner-office/events/my-workspace",
+  "rw app $HOME/.corner-office/sandbox/my-workspace/events -> $HOME/.corner-office/events/my-workspace",
 ]
 `;
 
@@ -576,7 +578,7 @@ exports[`golden: planMounts (Claude) > worktreesOverlay adds .git/worktrees ro a
     "rw app $HOME/.corner-office/sandboxes/my-workspace -> $HOME/.corner-office/sandboxes/my-workspace",
     "ro app $HOME/.corner-office/sandboxes/my-workspace/.git -> $HOME/.corner-office/sandboxes/my-workspace/.git",
     "rw app $REPO/.rix -> $HOME/.corner-office/sandboxes/my-workspace/.rix",
-    "rw app $HOME/.corner-office/events/my-workspace -> $HOME/.corner-office/events/my-workspace",
+    "rw app $HOME/.corner-office/sandbox/my-workspace/events -> $HOME/.corner-office/events/my-workspace",
   ],
   "warnings": [
     "docs-root-missing",

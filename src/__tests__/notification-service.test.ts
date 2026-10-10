@@ -672,6 +672,29 @@ describe('NotificationService', () => {
       expect(svc.getBanners()).toHaveLength(0)
     })
 
+    it('setIdleSuppressed(on) silences the idle notification for that workspace only', () => {
+      vi.useFakeTimers()
+      const svc = new NotificationService(makeCallbacks())
+      svc.startIdleCheck(['ws-a', 'ws-b'])
+      svc.setIdleSuppressed('ws-a', true)
+      vi.advanceTimersByTime(6 * 60_000)
+      const idle = svc.getBanners().filter((b) => b.tier === 'idle')
+      expect(idle.map((b) => b.workspace)).toEqual(['ws-b'])
+    })
+
+    it('setIdleSuppressed(off) lets the idle notification fire again', () => {
+      vi.useFakeTimers()
+      const svc = new NotificationService(makeCallbacks())
+      svc.startIdleCheck(['ws-a'])
+      svc.setIdleSuppressed('ws-a', true)
+      vi.advanceTimersByTime(6 * 60_000)
+      expect(svc.getBanners()).toHaveLength(0)
+
+      svc.setIdleSuppressed('ws-a', false)
+      vi.advanceTimersByTime(6 * 60_000)
+      expect(svc.getBanners().some((b) => b.tier === 'idle' && b.workspace === 'ws-a')).toBe(true)
+    })
+
     it('stopIdleCheck prevents further idle notifications', () => {
       vi.useFakeTimers()
       const callbacks = makeCallbacks()

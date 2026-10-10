@@ -106,6 +106,8 @@ const SandboxConfigSchema = z.object({
   toolchains: z.object({ node: z.boolean(), go: z.boolean(), buildBase: z.boolean() }),
   globalAllowlist: AllowlistSchema,
   workspaces: z.record(z.string().regex(SANDBOX_SLUG_RE), SandboxWorkspaceConfigSchema),
+  // D23 cutover: when container events moved to their own root. Host-root files at or before it keep the legacy attribution.
+  eventsSplitAt: z.string().nullable().default(null),
 })
 
 // ---------------------------------------------------------------------------
@@ -614,7 +616,28 @@ export class ConfigManager {
       toolchains: { node: true, go: true, buildBase: true },
       globalAllowlist: [],
       workspaces: {},
+      eventsSplitAt: null,
     }
+  }
+
+  /**
+   * D23 cutover: records `sandbox.eventsSplitAt` the first time it is asked for and returns it afterwards. Call it
+   * before the event watcher starts, so a file written after the split is never mistaken for legacy history.
+   * `null` when the write fails: callers then treat every host-root file as legacy (fail closed toward `sandbox`).
+   */
+  async ensureEventsSplitAt(now: Date): Promise<string | null> {
+    let split: string | null = null
+    try {
+      await this.mutateConfig((cfg) => {
+        const sandbox = this.getSandboxConfig(cfg)
+        split = sandbox.eventsSplitAt ?? now.toISOString()
+        return sandbox.eventsSplitAt === split ? cfg : { ...cfg, sandbox: { ...sandbox, eventsSplitAt: split } }
+      })
+    } catch (err) {
+      log.warn('[ConfigManager] Could not record sandbox.eventsSplitAt:', err)
+      return null
+    }
+    return split
   }
 
   /** `config.sandbox` is optional (TRD §3.14) — this returns the effective value, defaulting when absent. */

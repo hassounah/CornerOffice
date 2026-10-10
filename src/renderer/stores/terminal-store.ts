@@ -5,6 +5,9 @@ import { useSandboxStore } from './sandbox-store'
 import { startFailureMessage, SANDBOX_UNAVAILABLE_COPY } from '../utils/sandbox-copy'
 import type { StartFailureCode } from '../utils/sandbox-copy'
 import type { RecreatePlan } from '@main/types/sandbox'
+import { LEGACY_AGENT_ID, getDescriptor } from '@main/agents/descriptors'
+import type { AgentId } from '@main/agents/descriptors'
+import type { AppPermissionMode } from '@main/agents/types'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -14,12 +17,28 @@ export type TerminalSessionState = 'none' | 'starting' | 'running' | 'stopping'
 
 export type SessionKind = 'host' | 'sandbox'
 
+/** The chooser fields resolution replaced and the user didn't touch; main skips them when remembering the start. */
+export type FallbackField = 'agentId' | 'location' | 'permissionMode'
+
 /** What a sandbox start was asked to do; the build flow remembers it, but never replays it (UX-C). */
 export interface SandboxSpawnOpts {
   kind: 'sandbox'
+  /** Defaults to the legacy agent. */
+  agentId?: AgentId
   permissionMode: 'skip' | 'auto'
   networkMode: 'allowlist' | 'open'
+  fallbackFields?: readonly FallbackField[]
 }
+
+/** What a host start was asked to do. Omitting options entirely starts the legacy agent with its default mode. */
+export interface HostSpawnOpts {
+  kind: 'host'
+  agentId: AgentId
+  permissionMode: AppPermissionMode
+  fallbackFields?: readonly FallbackField[]
+}
+
+export type SpawnOpts = HostSpawnOpts | SandboxSpawnOpts
 
 export interface TerminalState {
   sessions: Record<string, TerminalSessionState>
@@ -27,6 +46,12 @@ export interface TerminalState {
   spawnError: Record<string, string | null>
   /** Which kind of session each workspace has (or last had). Absent means host. */
   sessionKind: Record<string, SessionKind>
+  /** Which agent each workspace's session runs (or last ran). Absent means the legacy agent. */
+  sessionAgent: Record<string, AgentId>
+  /** The options of each workspace's most recent start, for Retry. Never replayed automatically. */
+  lastSpawnOpts: Record<string, SpawnOpts>
+  /** Exit 127 shortly after a host start: the agent's "may not be installed" copy, shown as a persistent banner with Retry and Change agent. */
+  exitBanner: Record<string, string | null>
   /** The typed code of the last failed sandbox start, so the UI can offer the matching action (e.g. Recreate on PORT_CONFLICT). */
   spawnFailure: Record<string, StartFailureCode | null>
   /** `IMAGE_MISSING`: the build dialog should open. Start is NOT retried by the store. */
@@ -34,12 +59,16 @@ export interface TerminalState {
   /** `RECREATE_REQUIRED`: the recreate dialog should open with this plan. */
   recreatePrompt: Record<string, { plan: RecreatePlan; opts: SandboxSpawnOpts } | null>
 
-  spawn: (workspaceSlug: string, opts?: SandboxSpawnOpts) => Promise<void>
+  spawn: (workspaceSlug: string, opts?: SpawnOpts) => Promise<void>
   spawnShell: (houseId: string) => Promise<void>
   kill: (workspaceSlug: string) => Promise<void>
   showOverlay: (workspaceSlug: string) => void
   hideOverlay: (workspaceSlug: string) => void
   clearSpawnError: (workspaceSlug: string) => void
+  /** Retry the exit-127 banner: spawns again with the options of the last start. */
+  retryExited: (workspaceSlug: string) => Promise<void>
+  /** Change agent from the exit-127 banner: closes the overlay and opens the Start Session chooser. */
+  changeAgent: (workspaceSlug: string) => void
   clearBuildPrompt: (workspaceSlug: string) => void
   clearRecreatePrompt: (workspaceSlug: string) => void
   initListeners: () => () => void
@@ -49,11 +78,12 @@ export interface TerminalState {
 // Error mapping (amendment P11)
 // ---------------------------------------------------------------------------
 
-/** Map node-pty / IPC errors to user-friendly messages. */
-function mapSpawnError(err: unknown): string {
+/** Map node-pty / IPC errors to user-friendly messages, with the agent's own copy. */
+function mapSpawnError(err: unknown, agentId: AgentId = LEGACY_AGENT_ID): string {
   const message = err instanceof Error ? err.message : String(err)
-  if (message.includes('ENOENT')) return 'claude command not found. Is Claude Code installed?'
-  if (message.includes('EACCES')) return 'Permission denied launching claude.'
+  const descriptor = getDescriptor(agentId)
+  if (message.includes('ENOENT')) return descriptor.copy.notFound
+  if (message.includes('EACCES')) return `Permission denied launching ${descriptor.binaryName}.`
   if (message.includes('Maximum concurrent sessions')) return 'Maximum of 7 sessions already running.'
   return message
 }
@@ -64,6 +94,13 @@ function mapSpawnError(err: unknown): string {
 
 /** Sandbox kills whose `terminal:kill` IPC hasn't resolved yet: their exit push must not end the 'stopping' state early. */
 const killing = new Set<string>()
+
+/** An exit with this code soon after a host start means "command not found" (the shell's own code). */
+const COMMAND_NOT_FOUND_EXIT = 127
+const COMMAND_NOT_FOUND_WINDOW_MS = 10_000
+
+/** When each host session was last started, to tell a failed launch from a normal exit. */
+const hostStartedAt = new Map<string, number>()
 
 export const useTerminalStore = create<TerminalState>((set, get) => {
   /** A sandbox start that did not produce a session: back to idle, overlay closed, plus whatever the failure asks for. */
@@ -84,12 +121,21 @@ export const useTerminalStore = create<TerminalState>((set, get) => {
       buildPrompt: { ...state.buildPrompt, [workspaceSlug]: null },
       recreatePrompt: { ...state.recreatePrompt, [workspaceSlug]: null },
       sessionKind: { ...state.sessionKind, [workspaceSlug]: 'sandbox' },
+      sessionAgent: { ...state.sessionAgent, [workspaceSlug]: opts.agentId ?? LEGACY_AGENT_ID },
+      lastSpawnOpts: { ...state.lastSpawnOpts, [workspaceSlug]: opts },
     }))
 
     const sandbox = useSandboxStore.getState()
     let result
     try {
-      result = await sandbox.startSession(workspaceSlug, 80, 24, opts.permissionMode, opts.networkMode)
+      result = await sandbox.startSession(
+        workspaceSlug,
+        80,
+        24,
+        opts.permissionMode,
+        opts.networkMode,
+        opts.agentId || opts.fallbackFields ? { agentId: opts.agentId, fallbackFields: opts.fallbackFields } : undefined,
+      )
     } catch {
       failSandboxStart(workspaceSlug, { spawnError: { ...get().spawnError, [workspaceSlug]: SANDBOX_UNAVAILABLE_COPY } })
       return
@@ -124,7 +170,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => {
 
     const reason = status && !status.eligibility.ok ? status.eligibility.reason : null
     failSandboxStart(workspaceSlug, {
-      spawnError: { ...get().spawnError, [workspaceSlug]: startFailureMessage(result.code, reason, result.detail) },
+      spawnError: { ...get().spawnError, [workspaceSlug]: startFailureMessage(result.code, reason, result.detail, 'agentId' in result ? { agentId: result.agentId, readiness: 'readiness' in result ? result.readiness : undefined } : undefined) },
       spawnFailure: { ...get().spawnFailure, [workspaceSlug]: result.code },
     })
   }
@@ -134,36 +180,46 @@ export const useTerminalStore = create<TerminalState>((set, get) => {
   overlayVisible: {},
   spawnError: {},
   sessionKind: {},
+  sessionAgent: {},
+  lastSpawnOpts: {},
+  exitBanner: {},
   spawnFailure: {},
   buildPrompt: {},
   recreatePrompt: {},
 
-  spawn: async (workspaceSlug, sandboxOpts) => {
-    if (sandboxOpts) {
-      await spawnSandbox(workspaceSlug, sandboxOpts)
+  spawn: async (workspaceSlug, opts) => {
+    if (opts?.kind === 'sandbox') {
+      await spawnSandbox(workspaceSlug, opts)
       return
     }
+    const hostOpts: HostSpawnOpts = opts ?? { kind: 'host', agentId: LEGACY_AGENT_ID, permissionMode: 'default' }
+    hostStartedAt.set(workspaceSlug, Date.now())
     // Set starting state immediately (amendment A7: provisional 80x24 on spawn)
     set((state) => ({
       sessions: { ...state.sessions, [workspaceSlug]: 'starting' },
       overlayVisible: { ...state.overlayVisible, [workspaceSlug]: true },
       spawnError: { ...state.spawnError, [workspaceSlug]: null },
+      exitBanner: { ...state.exitBanner, [workspaceSlug]: null },
       sessionKind: { ...state.sessionKind, [workspaceSlug]: 'host' },
+      sessionAgent: { ...state.sessionAgent, [workspaceSlug]: hostOpts.agentId },
+      lastSpawnOpts: { ...state.lastSpawnOpts, [workspaceSlug]: hostOpts },
     }))
 
     try {
-      const response = await window.cornerOffice.terminal.spawn(
-        workspaceSlug,
-        80,
-        24,
-      ) as IpcResponse<{ workspaceSlug: string }>
+      const response = await (opts
+        ? window.cornerOffice.terminal.spawn(workspaceSlug, 80, 24, {
+            agentId: opts.agentId,
+            permissionMode: opts.permissionMode,
+            fallbackFields: opts.fallbackFields,
+          })
+        : window.cornerOffice.terminal.spawn(workspaceSlug, 80, 24)) as IpcResponse<{ workspaceSlug: string }>
       unwrapIpc(response)
       set((state) => ({
         sessions: { ...state.sessions, [workspaceSlug]: 'running' },
       }))
     } catch (err) {
       // Amendment A4 + P11: surface friendly error, hide overlay
-      const errorMessage = mapSpawnError(err)
+      const errorMessage = mapSpawnError(err, hostOpts.agentId)
       set((state) => ({
         sessions: { ...state.sessions, [workspaceSlug]: 'none' },
         overlayVisible: { ...state.overlayVisible, [workspaceSlug]: false },
@@ -255,7 +311,22 @@ export const useTerminalStore = create<TerminalState>((set, get) => {
   hideOverlay: (workspaceSlug) => {
     set((state) => ({
       overlayVisible: { ...state.overlayVisible, [workspaceSlug]: false },
+      // A banner belongs to a visible overlay: hiding it dismisses the banner.
+      exitBanner: { ...state.exitBanner, [workspaceSlug]: null },
     }))
+  },
+
+  retryExited: async (workspaceSlug) => {
+    const last = get().lastSpawnOpts[workspaceSlug]
+    await get().spawn(workspaceSlug, last?.kind === 'host' ? last : undefined)
+  },
+
+  changeAgent: (workspaceSlug) => {
+    set((state) => ({
+      overlayVisible: { ...state.overlayVisible, [workspaceSlug]: false },
+      exitBanner: { ...state.exitBanner, [workspaceSlug]: null },
+    }))
+    useSandboxStore.getState().requestChooser(workspaceSlug)
   },
 
   clearSpawnError: (workspaceSlug) => {
@@ -278,7 +349,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => {
 
   initListeners: () => {
     const unsubExited = window.cornerOffice.on('terminal:exited', (payload) => {
-      const { workspaceSlug } = payload as { workspaceSlug: string; exitCode: number; signal?: string }
+      const { workspaceSlug, exitCode } = payload as { workspaceSlug: string; exitCode: number; signal?: string }
       if (get().sessionKind[workspaceSlug] === 'sandbox') {
         // A sandbox session isn't over when its pty is: main is still stopping the container
         // ("ending"). Stay in 'stopping' until a kill resolves or the status reads idle.
@@ -289,6 +360,21 @@ export const useTerminalStore = create<TerminalState>((set, get) => {
           }))
           void useSandboxStore.getState().fetchStatus(workspaceSlug)
         }
+        return
+      }
+      const startedAt = hostStartedAt.get(workspaceSlug)
+      const notFound =
+        exitCode === COMMAND_NOT_FOUND_EXIT &&
+        get().sessionKind[workspaceSlug] === 'host' &&
+        startedAt !== undefined &&
+        Date.now() - startedAt <= COMMAND_NOT_FOUND_WINDOW_MS
+      if (notFound) {
+        // Keep the overlay open with a persistent banner: Retry or Change agent are the next steps.
+        const agentId = get().sessionAgent[workspaceSlug] ?? LEGACY_AGENT_ID
+        set((state) => ({
+          sessions: { ...state.sessions, [workspaceSlug]: 'none' },
+          exitBanner: { ...state.exitBanner, [workspaceSlug]: getDescriptor(agentId).copy.notFound },
+        }))
         return
       }
       set((state) => ({

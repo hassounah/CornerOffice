@@ -41,7 +41,7 @@ export function cleanupHarness(): void {
 export function fakeImage(state: ImageState['state'] = 'ready'): { service: SandboxImageService; buildCalls: number } {
   const counter = { buildCalls: 0 }
   const service: SandboxImageService = {
-    getImageState: async () => ({ state, builtAt: null, sizeBytes: null, imageId: IMAGE_ID }),
+    getImageState: async () => ({ state, builtAt: null, sizeBytes: null, imageId: IMAGE_ID, agents: ['claude', 'codex'] }),
     build: async () => {
       counter.buildCalls += 1
       return { ok: true, imageId: IMAGE_ID, recreatePendingNames: [] }

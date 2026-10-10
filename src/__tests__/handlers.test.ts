@@ -1,5 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { IpcResponse } from '../main/types/ipc'
+import { AGENT_IDS } from '../main/agents/descriptors'
+import { HANDLERS } from '../main/agents/registry'
 import type { AppState } from '../main/ipc/handlers'
 import type { Workspace, ActivityFeedItem, NotificationItem, GamificationState, HomunculusState } from '../main/types'
 import type { ChannelSession, PluginStatus } from '../main/types/channels'
@@ -37,6 +39,7 @@ vi.mock('../main/services/config-manager', () => ({
       notifications: { enabled: true },
     })),
     updateConfig: vi.fn().mockResolvedValue(undefined),
+    mutateConfig: vi.fn().mockResolvedValue(undefined),
   },
 }))
 
@@ -532,24 +535,45 @@ describe('channels:getHistory', () => {
   })
 })
 
-describe('plugin:getStatus', () => {
-  it('returns default status when pluginDetector is null', async () => {
-    const handler = getHandler('plugin:getStatus')
-    const result = await handler(fakeEvent, undefined) as IpcResponse<PluginStatus>
-    expect(result.error).toBeNull()
-    expect(result.data!.installed).toBe(false)
-    expect(result.data!.version).toBeUndefined()
+describe('plugin:getStatus (one status per agent)', () => {
+  const NOT_INSTALLED: PluginStatus = { installed: false, meetsMinimumVersion: false, eventsEnabled: false }
+  const originalClaude = HANDLERS.claude
+  const originalCodex = HANDLERS.codex
+
+  afterEach(() => {
+    HANDLERS.claude = originalClaude
+    HANDLERS.codex = originalCodex
   })
 
-  it('returns status from pluginDetector', async () => {
-    const status: PluginStatus = { installed: true, version: '1.29.0', pluginPath: '/path/to/plugin', meetsMinimumVersion: true, eventsEnabled: false }
-    appState.pluginDetector = { getStatus: vi.fn().mockReturnValue(status) } as unknown as AppState['pluginDetector']
+  it('returns a "not installed" status for every agent when pluginDetector is null', async () => {
+    const handler = getHandler('plugin:getStatus')
+    const result = await handler(fakeEvent, undefined) as IpcResponse<Record<string, PluginStatus>>
+    expect(result.error).toBeNull()
+    expect(Object.keys(result.data!)).toEqual([...AGENT_IDS])
+    for (const id of AGENT_IDS) expect(result.data![id]).toEqual(NOT_INSTALLED)
+  })
+
+  it('keys each agent\'s own detection result by agent id', async () => {
+    const claude: PluginStatus = { installed: true, version: '1.29.0', pluginPath: '/path/to/plugin', meetsMinimumVersion: true, eventsEnabled: false }
+    const codex: PluginStatus = { installed: true, version: '0.2.0', pluginPath: '/codex/plugin', meetsMinimumVersion: true, eventsEnabled: true }
+    appState.pluginDetector = {} as unknown as AppState['pluginDetector']
+    HANDLERS.claude = { ...originalClaude, plugin: { detect: async () => claude } }
+    HANDLERS.codex = { ...originalCodex, plugin: { detect: async () => codex } }
     handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
 
     const handler = getHandler('plugin:getStatus')
-    const result = await handler(fakeEvent, undefined) as IpcResponse<PluginStatus>
-    expect(result.data!.installed).toBe(true)
-    expect(result.data!.version).toBe('1.29.0')
+    const result = await handler(fakeEvent, undefined) as IpcResponse<Record<string, PluginStatus>>
+    expect(result.data).toEqual({ claude, codex })
+  })
+
+  it('reports "not installed" for an agent without a plugin handler', async () => {
+    appState.pluginDetector = {} as unknown as AppState['pluginDetector']
+    HANDLERS.codex = { host: originalCodex.host }
+    handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
+
+    const handler = getHandler('plugin:getStatus')
+    const result = await handler(fakeEvent, undefined) as IpcResponse<Record<string, PluginStatus>>
+    expect(result.data!.codex).toEqual(NOT_INSTALLED)
   })
 })
 
@@ -625,6 +649,76 @@ describe('terminal:spawnShell', () => {
     expect(result.error).toBeNull()
     expect(result.data!.sessionKey).toBe('shell:house_1')
     expect(mockSpawnShell).toHaveBeenCalledWith({ houseId: 'house_1', cols: 80, rows: 24 })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// terminal:spawn records the remembered options on success only (#0037 B2)
+// ---------------------------------------------------------------------------
+
+describe('terminal:spawn session recording', () => {
+  const input = { workspaceSlug: 'test-ws', cols: 80, rows: 24, fallbackFields: ['agentId'] }
+
+  beforeEach(() => {
+    vi.mocked(configManager.mutateConfig).mockClear()
+  })
+
+  it('records the validated host start after a successful spawn', async () => {
+    const spawn = vi.fn().mockReturnValue({ workspaceSlug: 'test-ws' })
+    appState.workspaces = new Map([['test-ws', makeWorkspace()]])
+    appState.terminalManager = { spawn } as unknown as AppState['terminalManager']
+    handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
+
+    const result = await getHandler('terminal:spawn')(fakeEvent, input) as IpcResponse<unknown>
+
+    expect(result.error).toBeNull()
+    expect(spawn).toHaveBeenCalledWith({ workspaceSlug: 'test-ws', cols: 80, rows: 24, agentId: 'claude', permissionMode: 'default' })
+    expect(configManager.mutateConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('records nothing when the spawn throws', async () => {
+    const spawn = vi.fn().mockImplementation(() => {
+      throw new Error('boom')
+    })
+    appState.terminalManager = { spawn } as unknown as AppState['terminalManager']
+    handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
+
+    const result = await getHandler('terminal:spawn')(fakeEvent, input) as IpcResponse<unknown>
+
+    expect(result.error).not.toBeNull()
+    expect(configManager.mutateConfig).not.toHaveBeenCalled()
+  })
+})
+
+describe('agents:getHostAvailability', () => {
+  it('returns found or not-found for every registered agent', async () => {
+    const result = await getHandler('agents:getHostAvailability')(fakeEvent, { refresh: true }) as IpcResponse<Record<string, string>>
+    expect(result.error).toBeNull()
+    expect(Object.keys(result.data!).sort()).toEqual(['claude', 'codex'])
+    for (const state of Object.values(result.data!)) expect(['found', 'not-found']).toContain(state)
+  })
+
+  it('rejects a missing flag and an extra key', async () => {
+    const handler = getHandler('agents:getHostAvailability')
+    expect(((await handler(fakeEvent, {})) as IpcResponse<unknown>).error).not.toBeNull()
+    expect(((await handler(fakeEvent, { refresh: false, extra: 1 })) as IpcResponse<unknown>).error).not.toBeNull()
+  })
+})
+
+describe('session:getDefaults', () => {
+  it('returns the remembered choice with its source', async () => {
+    const choice = { agentId: 'claude', location: 'sandbox', hostPermissionMode: 'default', sandboxPermissionMode: 'auto', networkMode: 'open' }
+    vi.mocked(configManager.loadConfig).mockReturnValueOnce({ sessionDefaults: { last: null, workspaces: { 'test-ws': choice } } } as never)
+    handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
+
+    const result = await getHandler('session:getDefaults')(fakeEvent, { workspaceSlug: 'test-ws' }) as IpcResponse<unknown>
+
+    expect(result).toEqual({ data: { choice, source: 'workspace' }, error: null })
+  })
+
+  it('rejects an extra key', async () => {
+    const result = await getHandler('session:getDefaults')(fakeEvent, { workspaceSlug: 'test-ws', extra: 1 }) as IpcResponse<unknown>
+    expect(result.error).not.toBeNull()
   })
 })
 

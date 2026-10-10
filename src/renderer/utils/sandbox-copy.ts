@@ -1,5 +1,7 @@
 import { tokenizeNameToText } from './name-safety'
-import { CLAUDE_DESCRIPTOR, TRUST_PROMPT_COPY } from '@main/agents/claude/descriptor'
+import { TRUST_PROMPT_COPY } from '@main/agents/claude/descriptor'
+import { AGENT_DESCRIPTORS } from '@main/agents/descriptors'
+import type { ReadinessCopy } from '@main/agents/types'
 import type {
   DockerState,
   EligibilityReason,
@@ -32,8 +34,6 @@ export type RecreateFailureCode = Extract<RecreateResult, { ok: false }>['code']
 
 export const ELIGIBILITY_COPY: Record<EligibilityReason, string> = {
   'sandbox-disabled': 'Sandbox is disabled in this build.',
-  'claude-home-missing': CLAUDE_DESCRIPTOR.copy.readiness['home-missing'].message,
-  'claude-config-invalid': CLAUDE_DESCRIPTOR.copy.readiness['config-invalid'].message,
   'docker-not-installed': "Docker isn't installed. Install Docker Engine 28 or newer, then press Check again.",
   'docker-daemon-down': "The Docker daemon isn't running. Start it, then press Check again.",
   'docker-no-permission': "Your user can't access Docker. Add it to the docker group and log in again.",
@@ -132,7 +132,8 @@ export const START_FAILURE_COPY: Record<StartFailureCode, string | null> = {
   DOCKER_UNAVAILABLE: 'Docker stopped responding. Check that the Docker daemon is running.',
   FIREWALL_FAILED: `The sandbox firewall couldn't start, so the session wasn't started. Nothing ran unprotected. Try Start again. ${APP_LOG_HINT}`,
   SPAWN_FAILED: `The sandbox started, but Claude Code couldn't be launched in it. The container was stopped. Try Start again. ${APP_LOG_HINT}`,
-  CLAUDE_CONFIG_INVALID: CLAUDE_CONFIG_COPY,
+  AGENT_CONFIG_INVALID: CLAUDE_CONFIG_COPY,
+  AGENT_NOT_READY: null, // the message comes from the agent's descriptor (agentReadinessMessage)
 }
 
 export const HAND_OFF_FAILURE_COPY: Record<HandOffFailureCode, string | null> = {
@@ -153,7 +154,7 @@ export const DELETE_FAILURE_COPY: Record<DeleteFailureCode, string> = {
 export const RECREATE_FAILURE_COPY: Record<RecreateFailureCode, string> = {
   SESSION_RUNNING: 'End the sandbox session first.',
   PLAN_CHANGED: 'The sandbox settings changed again. Review them before recreating.',
-  CLAUDE_CONFIG_INVALID: CLAUDE_CONFIG_RECREATE_COPY,
+  AGENT_CONFIG_INVALID: CLAUDE_CONFIG_RECREATE_COPY,
   DOCKER_UNAVAILABLE: 'Docker stopped responding. Check that the Docker daemon is running.',
   FAILED: COULDNT_FINISH,
 }
@@ -167,16 +168,33 @@ export const SANDBOX_UNAVAILABLE_COPY = "The sandbox isn't available right now. 
 export const PORT_CONFLICT_NO_RECREATE_COPY = "Another program is using the sandbox's channel port. Close it and try again."
 
 /** The message for a failed start, or `null` when the code isn't an error (build / recreate flows). */
-export function startFailureMessage(code: StartFailureCode, eligibilityReason?: EligibilityReason | null, detail?: string | null): string | null {
+export function startFailureMessage(
+  code: StartFailureCode,
+  eligibilityReason?: EligibilityReason | null,
+  detail?: string | null,
+  agent?: { agentId: string; readiness?: string },
+): string | null {
   if (code === 'NOT_ELIGIBLE') return eligibilityReason ? ELIGIBILITY_COPY[eligibilityReason] : "Sandbox isn't available for this workspace."
+  if (code === 'AGENT_NOT_READY') {
+    return (agent?.readiness && agentReadinessMessage(agent.agentId, agent.readiness)) || "This agent isn't ready to run in the sandbox yet."
+  }
   const message = START_FAILURE_COPY[code]
-  return code === 'CLAUDE_CONFIG_INVALID' && message !== null && detail ? `${detail} ${message}` : message
+  return code === 'AGENT_CONFIG_INVALID' && message !== null && detail ? `${detail} ${message}` : message
 }
 
-/** The message for a failed recreate. `detail` is the fixed copy main built for `CLAUDE_CONFIG_INVALID`, e.g. "~/.claude/commands exists but isn't a folder." */
+/**
+ * The one source of an agent's readiness message (UX-M8): the descriptor's copy for a handler readiness code.
+ * `null` for an unknown agent or code. The chooser's Sandbox reason and the Start refusal both read it.
+ */
+export function agentReadinessMessage(agentId: string, code: string): string | null {
+  const readiness: Readonly<Record<string, ReadinessCopy>> | undefined = AGENT_DESCRIPTORS.find((d) => d.id === agentId)?.copy.readiness
+  return readiness?.[code]?.message ?? null
+}
+
+/** The message for a failed recreate. `detail` is the fixed copy main built for `AGENT_CONFIG_INVALID`, e.g. "~/.claude/commands exists but isn't a folder." */
 export function recreateFailureMessage(code: RecreateFailureCode, detail?: string | null): string {
   const message = RECREATE_FAILURE_COPY[code]
-  return code === 'CLAUDE_CONFIG_INVALID' && detail ? `${detail} ${message}` : message
+  return code === 'AGENT_CONFIG_INVALID' && detail ? `${detail} ${message}` : message
 }
 
 // ── Chooser copy (§3.15.2, UX-C, D10) ───────────────────────────────────────

@@ -2,6 +2,8 @@ import log from 'electron-log/main'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { z } from 'zod'
+import { readRegularFileCappedSync } from './safe-fs'
 import { MINIMUM_PLUGIN_VERSION } from '../types/channels'
 import type { PluginStatus } from '../types/channels'
 
@@ -10,7 +12,7 @@ const EVENTS_ENABLED_FILE = path.join(os.homedir(), '.corner-office', 'events', 
 // Plugin cache layout: ~/.claude/plugins/cache/<publisher>/<plugin>/<version>/
 const PLUGIN_CACHE_DIR = path.join(os.homedir(), '.claude', 'plugins', 'cache')
 const CORNER_OFFICE_PLUGIN = 'corner-office'
-const EMIT_ACTIVITY_FILE = path.join('scripts', 'hooks', 'emit_activity.py')
+export const EMIT_ACTIVITY_FILE = path.join('scripts', 'hooks', 'emit_activity.py')
 
 // Valid version string: digits and dots only (e.g. "1.29.0")
 const VERSION_RE = /^\d+(\.\d+)*$/
@@ -57,7 +59,36 @@ export interface DetectPluginOptions {
   candidates: readonly PluginCandidate[]
   /** File, relative to the plugin dir, that must be a regular file. */
   marker: string
-  minimumVersion: string
+  /**
+   * Manifests (relative to the plugin dir) that identify the plugin when the marker is absent: a regular file of at
+   * most {@link MANIFEST_CAP_BYTES} whose JSON `name` is `corner-office` (SEC-L3).
+   */
+  manifests?: readonly string[]
+  /** `null` means no minimum: any install counts as current. */
+  minimumVersion: string | null
+}
+
+/** A plugin manifest is a few hundred bytes; anything past this is not one. */
+export const MANIFEST_CAP_BYTES = 64 * 1024
+
+const ManifestSchema = z.object({ name: z.string(), version: z.string().optional() }).passthrough()
+
+/** The directory is a corner-office install: the marker is a regular file, or a manifest names the plugin. */
+async function acceptPluginDir(dir: string, opts: DetectPluginOptions): Promise<{ manifestVersion?: string } | null> {
+  if (await isRegularFile(path.join(dir, opts.marker))) return {}
+  for (const manifest of opts.manifests ?? []) {
+    const read = readRegularFileCappedSync(path.join(dir, manifest), MANIFEST_CAP_BYTES)
+    if (read === null || read.size > MANIFEST_CAP_BYTES) continue
+    let json: unknown
+    try {
+      json = JSON.parse(read.buf.toString('utf8'))
+    } catch {
+      continue
+    }
+    const parsed = ManifestSchema.safeParse(json)
+    if (parsed.success && parsed.data.name === CORNER_OFFICE_PLUGIN) return { manifestVersion: parsed.data.version }
+  }
+  return null
 }
 
 export type PluginMatch = Omit<PluginStatus, 'eventsEnabled'>
@@ -81,12 +112,25 @@ async function isRegularFile(file: string): Promise<boolean> {
   }
 }
 
-/** Walks `segments` below `dir`; returns the first plugin dir that passes the marker check. Never follows symlinks. */
-async function walk(
-  dir: string,
-  segments: readonly string[],
-  opts: DetectPluginOptions,
-): Promise<{ dir: string; version: string; parsed: number[] } | null> {
+interface Found {
+  dir: string
+  /** The version directory's name, or the manifest's `version`; absent when the layout has none. */
+  version?: string
+}
+
+/** A segment ending in `*` (other than `*` itself) matches directory names with that prefix. */
+function segmentMatches(segment: string, name: string): boolean {
+  if (segment === ANY_DIR) return true
+  if (segment.length > 1 && segment.endsWith('*')) return name.startsWith(segment.slice(0, -1))
+  return name === segment
+}
+
+/** Walks `segments` below `dir`; returns the first plugin dir that is an install. Never follows symlinks. */
+async function walk(dir: string, segments: readonly string[], opts: DetectPluginOptions): Promise<Found | null> {
+  if (segments.length === 0) {
+    const accepted = await acceptPluginDir(dir, opts)
+    return accepted ? { dir, version: accepted.manifestVersion } : null
+  }
   const [segment, ...rest] = segments
   const entries = await readDirs(dir)
   if (!entries) return null
@@ -101,13 +145,13 @@ async function walk(
     }
     if (!best) return null
     const versionDir = path.join(dir, best.name)
-    if (!(await isRegularFile(path.join(versionDir, opts.marker)))) return null
-    return { dir: versionDir, version: best.name, parsed: best.parsed }
+    if (!(await acceptPluginDir(versionDir, opts))) return null
+    return { dir: versionDir, version: best.name }
   }
 
   for (const entry of entries) {
     if (entry.isSymbolicLink() || !entry.isDirectory()) continue
-    if (segment !== ANY_DIR && entry.name !== segment) continue
+    if (!segmentMatches(segment, entry.name)) continue
     const found = await walk(path.join(dir, entry.name), rest, opts)
     if (found) return found
   }
@@ -120,14 +164,17 @@ async function walk(
  */
 export async function detectPlugin(opts: DetectPluginOptions): Promise<PluginMatch> {
   try {
-    const minimumParsed = parseVersion(opts.minimumVersion)
+    const minimumParsed = opts.minimumVersion === null ? null : parseVersion(opts.minimumVersion)
     for (const candidate of opts.candidates) {
       log.info(`[PluginDetector] Scanning cache dir: ${candidate.root}`)
       const found = await walk(candidate.root, candidate.segments, opts)
       if (!found) continue
-      const meetsMinimumVersion = minimumParsed === null || compareVersions(found.parsed, minimumParsed) >= 0
-      log.info(`[PluginDetector] Found plugin v${found.version} at ${found.dir} (meets minimum: ${meetsMinimumVersion})`)
-      return { installed: true, version: found.version, meetsMinimumVersion, pluginPath: found.dir }
+      // A version that can't be parsed (or none at all) raises no "outdated" flag.
+      const parsed = found.version === undefined ? null : parseVersion(found.version)
+      const meetsMinimumVersion = minimumParsed === null || parsed === null || compareVersions(parsed, minimumParsed) >= 0
+      const shown = parsed === null ? undefined : found.version
+      log.info(`[PluginDetector] Found plugin ${shown === undefined ? '(no version)' : `v${shown}`} at ${found.dir} (meets minimum: ${meetsMinimumVersion})`)
+      return { installed: true, ...(shown === undefined ? {} : { version: shown }), meetsMinimumVersion, pluginPath: found.dir }
     }
   } catch (err) {
     log.warn('[PluginDetector] Detection failed:', err)
@@ -141,6 +188,18 @@ export async function detectPlugin(opts: DetectPluginOptions): Promise<PluginMat
 const CLAUDE_CANDIDATES: readonly PluginCandidate[] = [
   { root: PLUGIN_CACHE_DIR, segments: [ANY_DIR, CORNER_OFFICE_PLUGIN, VERSION_DIR] },
 ]
+
+/** Where Codex may keep the plugin (TRD §4.12), tried in this order; all at most four levels deep. */
+export function codexCandidates(home: string): readonly PluginCandidate[] {
+  const plugins = path.join(home, '.codex', 'plugins')
+  return [
+    { root: path.join(plugins, 'cache'), segments: [ANY_DIR, CORNER_OFFICE_PLUGIN, VERSION_DIR] },
+    { root: plugins, segments: [ANY_DIR, CORNER_OFFICE_PLUGIN] },
+    { root: plugins, segments: [`${CORNER_OFFICE_PLUGIN}*`] },
+  ]
+}
+/** Either layout's manifest names the plugin when its hook script is not where Claude's is. */
+export const CODEX_MANIFESTS = [path.join('.codex-plugin', 'plugin.json'), path.join('.claude-plugin', 'plugin.json')] as const
 
 /**
  * PluginDetectorService scans the Claude Code plugin cache for the
@@ -167,6 +226,24 @@ export class PluginDetectorService {
       marker: EMIT_ACTIVITY_FILE,
       minimumVersion: MINIMUM_PLUGIN_VERSION,
     })
+    return this.withEvents(match)
+  }
+
+  /**
+   * Codex's plugin (D21): the hook script or a manifest in any of the §4.12 layouts. There is no minimum version
+   * until the plugin repo publishes one, so any install counts as current. Never throws.
+   */
+  async getCodexStatus(): Promise<PluginStatus> {
+    const match = await detectPlugin({
+      candidates: codexCandidates(os.homedir()),
+      marker: EMIT_ACTIVITY_FILE,
+      manifests: CODEX_MANIFESTS,
+      minimumVersion: null,
+    })
+    return this.withEvents(match)
+  }
+
+  private async withEvents(match: PluginMatch): Promise<PluginStatus> {
     if (!match.installed) return { ...match, eventsEnabled: false }
     return { ...match, eventsEnabled: await this.checkEventsEnabled() }
   }

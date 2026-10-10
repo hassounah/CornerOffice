@@ -51,6 +51,26 @@ export function resolveBuildContext(opts: ResolveBuildContextOptions): string {
 /** Bumped whenever `resources/sandbox/*` changes in a way that should make every existing image `stale`, even if none of the four files' bytes moved (e.g. a semantic change the hash wouldn't otherwise catch). */
 export const ASSET_VERSION = 1
 
+/**
+ * The pinned Codex release baked into the image (D11, SL-1): the version and the hex sha512 of each
+ * platform tarball, verified in the Dockerfile with `sha512sum -c` before unpacking. The pins are
+ * trust-on-first-use against the npm registry (see spike-d1.md); they feed the build hash, so bumping
+ * them marks every existing image stale.
+ */
+export const CODEX_VERSION = '0.162.1'
+export const CODEX_SHA512 = {
+  x64: '7232b699d1c87c47a9675950d4c5f7693402fbc9dc22cbe769c97feaf23674821c7cff3f32b853436faa46591714d0f32528f5777eaab88b333fedffe0250959',
+  arm64: '4aced6fd2acab5014d68cb52a233688b2909817fa20c2f1d68cf98adcbe0989003b503e4d1c777c3a0e76b80981f6098bdff6742b6a78faf5fa5c4f3677b1021',
+} as const
+
+/** Agents installed in the image, written to its `co.sandbox.agents` label. */
+export const IMAGE_AGENTS = ['claude', 'codex'] as const
+
+/** A pre-Codex image has no `co.sandbox.agents` label: it holds Claude only. */
+const LEGACY_IMAGE_AGENTS: readonly string[] = ['claude']
+
+const CODEX_PINS = { version: CODEX_VERSION, sha512: CODEX_SHA512 }
+
 const ASSET_FILENAMES = ['Dockerfile', 'co-entrypoint.sh', 'dnsmasq-base.conf', 'init-firewall.sh'] as const
 
 /** Output lines kept per build (`sandbox:buildProgress`, TRD §3.9.2). */
@@ -66,6 +86,8 @@ export interface ImageState {
   builtAt: string | null
   sizeBytes: number | null
   imageId: string | null
+  /** Agent ids the image holds (`co.sandbox.agents`; a missing label means `['claude']`); empty when there is no image. */
+  agents: readonly string[]
 }
 
 export type BuildPhase = 'running' | 'done' | 'failed' | 'cancelled'
@@ -129,6 +151,12 @@ interface ParsedImageInspect {
   created: string
   size: number
   buildHash: string | null
+  agents: readonly string[]
+}
+
+function parseAgentsLabel(label: string | undefined): readonly string[] {
+  if (label === undefined) return LEGACY_IMAGE_AGENTS
+  return label.split(',').filter((id) => id.length > 0)
 }
 
 /** Never logs the raw inspect JSON on failure (SEC-L9) — only zod issue paths. */
@@ -154,10 +182,16 @@ function parseImageInspect(json: string): ParsedImageInspect | null {
     created: result.data.Created,
     size: result.data.Size,
     buildHash: result.data.Config.Labels?.[LABEL.build] ?? null,
+    agents: parseAgentsLabel(result.data.Config.Labels?.[LABEL.agents]),
   }
 }
 
 // ── Build hash (D15) ─────────────────────────────────────────────────────
+
+/** The Codex pins as build-arg lines, so both the build hash and its cache signature move when a pin does. */
+function codexPinLines(): string[] {
+  return [`CODEX_VERSION=${CODEX_PINS.version}`, `CODEX_SHA512_X64=${CODEX_PINS.sha512.x64}`, `CODEX_SHA512_ARM64=${CODEX_PINS.sha512.arm64}`]
+}
 
 /** Cheap cache key for `computeBuildHash`: each asset's mtime and size plus the same build args and version. A change to any of them changes the key; the service also drops the cached hash when a build finishes, so correctness never rests on mtimes alone. */
 export async function buildHashSignature(ctx: string, identity: SandboxImageIdentity, toolchains: SandboxImageToolchains): Promise<string> {
@@ -167,6 +201,7 @@ export async function buildHashSignature(ctx: string, identity: SandboxImageIden
     parts.push(`${filename}:${stat.mtimeMs}:${stat.size}`)
   }
   parts.push(`${toolchains.node}:${toolchains.go}:${toolchains.buildBase}:${identity.uid}:${identity.gid}:${identity.home}:${ASSET_VERSION}`)
+  parts.push(codexPinLines().join(':'))
   return parts.join('|')
 }
 
@@ -188,6 +223,7 @@ export async function computeBuildHash(ctx: string, identity: SandboxImageIdenti
     `AGENT_UID=${identity.uid}`,
     `AGENT_GID=${identity.gid}`,
     `AGENT_HOME=${identity.home}`,
+    ...codexPinLines(),
   ].sort()
   hash.update(args.join('\n'))
   hash.update(String(ASSET_VERSION))
@@ -235,16 +271,16 @@ export function createSandboxImageService(deps: SandboxImageDeps, callbacks: San
   }
 
   async function getImageState(): Promise<ImageState> {
-    if (inFlight) return { state: 'building', builtAt: null, sizeBytes: null, imageId: null }
+    if (inFlight) return { state: 'building', builtAt: null, sizeBytes: null, imageId: null, agents: [] }
 
     const inspected = await inspectImage()
     if (!inspected) {
-      return { state: lastBuildFailed ? 'failed' : 'absent', builtAt: null, sizeBytes: null, imageId: null }
+      return { state: lastBuildFailed ? 'failed' : 'absent', builtAt: null, sizeBytes: null, imageId: null, agents: [] }
     }
 
     const expectedHash = await expectedBuildHash()
     const state: ImageStateKind = inspected.buildHash === expectedHash ? 'ready' : 'stale'
-    return { state, builtAt: inspected.created, sizeBytes: inspected.size, imageId: inspected.id }
+    return { state, builtAt: inspected.created, sizeBytes: inspected.size, imageId: inspected.id, agents: inspected.agents }
   }
 
   /**
@@ -286,7 +322,18 @@ export function createSandboxImageService(deps: SandboxImageDeps, callbacks: San
     const ids = identity()
     const chains = toolchains()
     const buildHash = await computeBuildHash(ctx, ids, chains)
-    const argv = buildArgv({ rebuild: opts.rebuild, toolchains: chains, uid: ids.uid, gid: ids.gid, home: ids.home, buildHash, ctx, image })
+    const argv = buildArgv({
+      rebuild: opts.rebuild,
+      toolchains: chains,
+      uid: ids.uid,
+      gid: ids.gid,
+      home: ids.home,
+      buildHash,
+      ctx,
+      codex: CODEX_PINS,
+      agents: IMAGE_AGENTS,
+      image,
+    })
 
     const onLine = (line: string): void => {
       pushLog(line)

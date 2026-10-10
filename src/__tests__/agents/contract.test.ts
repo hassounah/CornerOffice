@@ -129,7 +129,10 @@ describe('claude host handler', () => {
 
   it('re-admits no env keys', () => {
     expect([...(getHandler('claude').host.envAllow ?? [])]).toEqual([])
-    expect(AGENT_SECRET_KEYS.size).toBe(0)
+  })
+
+  it('AGENT_SECRET_KEYS is exactly the three Codex keys', () => {
+    expect([...AGENT_SECRET_KEYS].sort()).toEqual(['CODEX_ACCESS_TOKEN', 'CODEX_API_KEY', 'OPENAI_API_KEY'])
   })
 })
 

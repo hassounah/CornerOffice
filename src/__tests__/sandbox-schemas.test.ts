@@ -125,6 +125,13 @@ describe('request schemas', () => {
     }
   })
 
+  it('recreate carries an agentId that defaults to claude and rejects unknown agents (D4)', () => {
+    const base = { workspaceSlug: SLUG, newPort: false, confirmedSpecHash: HASH }
+    expect(SandboxRecreateSchema.parse(base)).toMatchObject({ agentId: 'claude' })
+    expect(SandboxRecreateSchema.parse({ ...base, agentId: 'codex' })).toMatchObject({ agentId: 'codex' })
+    expect(SandboxRecreateSchema.safeParse({ ...base, agentId: 'nope' }).success).toBe(false)
+  })
+
   it('updateSettings validates allowlist entries and caps both lists at 200', () => {
     expect(SandboxUpdateSettingsSchema.safeParse({ globalAllowlist: ['not a host!'] }).success).toBe(false)
     const many = (n: number) => Array.from({ length: n }, (_, i) => `d${i}.example.com`)

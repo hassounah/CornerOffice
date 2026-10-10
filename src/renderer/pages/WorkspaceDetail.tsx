@@ -20,6 +20,9 @@ import { DocViewerOverlay } from '../components/docviewer'
 import { HistoryTimeline } from '../components/workspace/HistoryTimeline'
 import { ChatPanel } from '../components/channels/ChatPanel'
 import { PermissionButton } from '../components/channels/PermissionButton'
+import { ChatUnavailable } from '../components/channels/ChatUnavailable'
+import { ActivityTrackingNote } from '../components/shared/ActivityTrackingNote'
+import { useSessionAgent } from '../hooks/useSessionAgent'
 import { TerminalOverlay } from '../components/terminal/TerminalOverlay'
 import { useDocViewerStore } from '../stores/docviewer-store'
 import { useOpenCodeExplorer, browseCodeTooltip } from '../utils/code-explorer-nav'
@@ -115,8 +118,10 @@ export default function WorkspaceDetail(): React.ReactElement {
   const terminalSlug = slug ?? ''
   const sessionState = useTerminalStore((s) => s.sessions[terminalSlug] ?? 'none')
   const overlayVisible = useTerminalStore((s) => s.overlayVisible[terminalSlug] ?? false)
+  const hasExitBanner = useTerminalStore((s) => Boolean(s.exitBanner[terminalSlug]))
+  const { chatUnavailableReason } = useSessionAgent(terminalSlug)
   const spawnError = useTerminalStore((s) => s.spawnError[terminalSlug] ?? null)
-  const { spawn, kill, showOverlay, hideOverlay, clearSpawnError } = useTerminalStore()
+  const { kill, showOverlay, hideOverlay, clearSpawnError } = useTerminalStore()
 
   const openFolder = useDocViewerStore((s) => s.openFolder)
 
@@ -155,13 +160,9 @@ export default function WorkspaceDetail(): React.ReactElement {
     }
   }, [])
 
-  // Start Session opens the chooser (Host or Sandbox); Host runs the unchanged host spawn.
+  // Start Session opens the chooser (Agent, Where, Permissions); it starts the session through the terminal store.
   function handleStartSession(): void {
     setChooserOpen(true)
-  }
-
-  function handleStartHost(): void {
-    void spawn(terminalSlug)
   }
 
   function handleEndSession(): void {
@@ -260,6 +261,7 @@ export default function WorkspaceDetail(): React.ReactElement {
           <PermissionButton workspaceSlug={workspace.slug} />
           {/* Renders only for a workspace that has a sandbox; both hide themselves otherwise. */}
           <SandboxBadge slug={workspace.slug} skin="office" />
+          <ActivityTrackingNote slug={terminalSlug} className="text-xs text-co-text-muted" />
           <SandboxActions slug={workspace.slug} skin="office" />
           {/* Start / End Session */}
           {sessionState === 'none' && (
@@ -281,7 +283,6 @@ export default function WorkspaceDetail(): React.ReactElement {
                   <StartSessionChooser
                     slug={terminalSlug}
                     skin="office"
-                    onStartHost={handleStartHost}
                     onClose={closeChooser}
                     onShowLog={() => {
                       // The build log lives in Sandbox settings: land on that tab, not the default one.
@@ -420,15 +421,21 @@ export default function WorkspaceDetail(): React.ReactElement {
           )}
         </div>
 
-        {/* Right: ChatPanel — only when sessions active */}
-        {hasSessions && (
+        {/* Right: ChatPanel — only when sessions active; an agent without channels gets its disabled entry instead (C6) */}
+        {hasSessions ? (
           <div className="w-[350px] shrink-0 border-l border-stone-800">
             <ChatPanel workspaceSlug={workspace.slug} className="h-full" />
           </div>
+        ) : (
+          chatUnavailableReason && (
+            <div className="w-[350px] shrink-0 border-l border-stone-800">
+              <ChatUnavailable reason={chatUnavailableReason} />
+            </div>
+          )
         )}
 
         {/* Terminal overlay — covers body area when session is active (A15) */}
-        {overlayVisible && (sessionState === 'starting' || sessionState === 'running') && (
+        {overlayVisible && (sessionState === 'starting' || sessionState === 'running' || hasExitBanner) && (
           <TerminalOverlay
             workspaceSlug={terminalSlug}
             workspaceName={workspace.displayName}

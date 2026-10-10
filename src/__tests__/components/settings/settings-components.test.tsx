@@ -36,7 +36,7 @@ vi.mock('../../../renderer/stores/workspace-store', () => ({
 Object.defineProperty(window, 'cornerOffice', {
   value: {
     plugin: {
-      getStatus: vi.fn().mockResolvedValue({ data: { installed: false, meetsMinimumVersion: false, eventsEnabled: false }, error: null }),
+      getStatus: vi.fn().mockResolvedValue({ data: { claude: { installed: false, meetsMinimumVersion: false, eventsEnabled: false } }, error: null }),
       installHooks: vi.fn().mockResolvedValue({ data: { installed: true }, error: null }),
       uninstallHooks: vi.fn().mockResolvedValue({ data: { uninstalled: true }, error: null }),
     },
@@ -46,6 +46,9 @@ Object.defineProperty(window, 'cornerOffice', {
       getSummaries: vi.fn().mockResolvedValue({ data: {}, error: null }),
       getStatus: vi.fn().mockResolvedValue({ data: null, error: null }),
       getBlocked: vi.fn().mockResolvedValue({ data: [], error: null }),
+    },
+    agents: {
+      getHostAvailability: vi.fn().mockResolvedValue({ data: { claude: 'found', codex: 'not-found' }, error: null }),
     },
     shell: {
       openTerminal: vi.fn().mockResolvedValue({ data: { success: true }, error: null }),
@@ -65,6 +68,7 @@ import { WorkspaceSettings } from '../../../renderer/components/settings/Workspa
 import Settings from '../../../renderer/pages/Settings'
 import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
 import { registerDirtySource, useGuardDialogStore } from '../../../renderer/stores/dirty-registry'
+import { expectNoAxeViolations } from '../../helpers/a11y'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -323,7 +327,7 @@ describe('HookSettings', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { installed: false, meetsMinimumVersion: false, eventsEnabled: false }, error: null,
+      data: { claude: { installed: false, meetsMinimumVersion: false, eventsEnabled: false } }, error: null,
     })
   })
 
@@ -344,7 +348,7 @@ describe('HookSettings', () => {
 
   it('shows installed badge when plugin is installed and meets minimum', async () => {
     ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { installed: true, version: '1.30.0', meetsMinimumVersion: true, pluginPath: '/path/to/plugin' }, error: null,
+      data: { claude: { installed: true, version: '1.30.0', meetsMinimumVersion: true, pluginPath: '/path/to/plugin' } }, error: null,
     })
     render(<HookSettings />)
     expect(await screen.findByLabelText('Plugin status: Installed')).toBeInTheDocument()
@@ -352,7 +356,7 @@ describe('HookSettings', () => {
 
   it('shows update-required badge when below minimum version', async () => {
     ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { installed: true, version: '1.28.0', meetsMinimumVersion: false }, error: null,
+      data: { claude: { installed: true, version: '1.28.0', meetsMinimumVersion: false } }, error: null,
     })
     render(<HookSettings />)
     expect(await screen.findByLabelText('Plugin status: Update required')).toBeInTheDocument()
@@ -392,7 +396,7 @@ describe('HookSettings', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const { unmount } = render(<HookSettings />)
     unmount()
-    resolveStatus({ data: { installed: false, meetsMinimumVersion: false, eventsEnabled: false }, error: null })
+    resolveStatus({ data: { claude: { installed: false, meetsMinimumVersion: false, eventsEnabled: false } }, error: null })
     await Promise.resolve()
     expect(errorSpy).not.toHaveBeenCalled()
     errorSpy.mockRestore()
@@ -407,7 +411,7 @@ describe('HookSettings', () => {
 
   it('shows Install Hooks button when plugin installed, meets version, and events disabled', async () => {
     ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: false }, error: null,
+      data: { claude: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: false } }, error: null,
     })
     render(<HookSettings />)
     expect(await screen.findByRole('button', { name: 'Install event hooks' })).toBeInTheDocument()
@@ -415,7 +419,7 @@ describe('HookSettings', () => {
 
   it('shows Uninstall Hooks button when events enabled', async () => {
     ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: true }, error: null,
+      data: { claude: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: true } }, error: null,
     })
     render(<HookSettings />)
     expect(await screen.findByRole('button', { name: 'Uninstall event hooks' })).toBeInTheDocument()
@@ -428,9 +432,68 @@ describe('HookSettings', () => {
     expect(screen.queryByRole('button', { name: 'Uninstall event hooks' })).not.toBeInTheDocument()
   })
 
+  describe('other agents\' plugin rows (#0037 C5)', () => {
+    const setStatuses = (codex: Record<string, unknown>): void => {
+      ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { claude: { installed: false, meetsMinimumVersion: false, eventsEnabled: false }, codex },
+        error: null,
+      })
+    }
+    const setAvailability = (codex: 'found' | 'not-found'): void => {
+      ;(window.cornerOffice.agents.getHostAvailability as ReturnType<typeof vi.fn>).mockResolvedValue({ data: { claude: 'found', codex }, error: null })
+    }
+
+    afterEach(() => setAvailability('not-found'))
+
+    it('hides the Codex row when Codex is not found on the host', async () => {
+      setStatuses({ installed: false, meetsMinimumVersion: false, eventsEnabled: false })
+      setAvailability('not-found')
+      render(<HookSettings />)
+      await screen.findByRole('button', { name: 'Refresh' })
+      expect(screen.queryByTestId('plugin-row-codex')).not.toBeInTheDocument()
+    })
+
+    it('hides the row when the PATH check itself fails', async () => {
+      setStatuses({ installed: false, meetsMinimumVersion: false, eventsEnabled: false })
+      ;(window.cornerOffice.agents.getHostAvailability as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('no ipc'))
+      render(<HookSettings />)
+      await screen.findByRole('button', { name: 'Refresh' })
+      expect(screen.queryByTestId('plugin-row-codex')).not.toBeInTheDocument()
+    })
+
+    it('shows the not-installed copy and next step when Codex is found without a plugin', async () => {
+      setStatuses({ installed: false, meetsMinimumVersion: false, eventsEnabled: false })
+      setAvailability('found')
+      render(<HookSettings />)
+      const row = await screen.findByTestId('plugin-row-codex')
+      expect(row).toHaveTextContent('No Corner Office plugin for Codex found. Sessions work, but activity tracking and idle alerts are off for Codex.')
+      expect(row).toHaveTextContent("A Corner Office plugin for Codex isn't published yet.")
+      expect(screen.getByLabelText('Codex plugin status: Not installed')).toBeInTheDocument()
+      expect(row.querySelector('button')).toBeNull()
+    })
+
+    it('shows Installed with the version when the Codex plugin is found', async () => {
+      setStatuses({ installed: true, version: '0.3.0', meetsMinimumVersion: true, eventsEnabled: true })
+      setAvailability('found')
+      render(<HookSettings />)
+      const row = await screen.findByTestId('plugin-row-codex')
+      expect(screen.getByLabelText('Codex plugin status: Installed')).toBeInTheDocument()
+      expect(row).toHaveTextContent('v0.3.0')
+      expect(row).not.toHaveTextContent('No Corner Office plugin')
+    })
+
+    it('has no axe violations with the Codex row shown', async () => {
+      setStatuses({ installed: false, meetsMinimumVersion: false, eventsEnabled: false })
+      setAvailability('found')
+      const { container } = render(<HookSettings />)
+      await screen.findByTestId('plugin-row-codex')
+      await expectNoAxeViolations(container)
+    })
+  })
+
   it('hides hooks buttons when version does not meet minimum', async () => {
     ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { installed: true, version: '1.28.0', meetsMinimumVersion: false, eventsEnabled: false }, error: null,
+      data: { claude: { installed: true, version: '1.28.0', meetsMinimumVersion: false, eventsEnabled: false } }, error: null,
     })
     render(<HookSettings />)
     await screen.findByRole('button', { name: 'Refresh' })
@@ -440,7 +503,7 @@ describe('HookSettings', () => {
 
   it('shows error when installHooks fails', async () => {
     ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: false }, error: null,
+      data: { claude: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: false } }, error: null,
     })
     ;(window.cornerOffice.plugin.installHooks as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Permission denied'))
     render(<HookSettings />)
@@ -450,7 +513,7 @@ describe('HookSettings', () => {
 
   it('shows badge "Hooks not installed" (orange) when installed but events disabled', async () => {
     ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: false }, error: null,
+      data: { claude: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: false } }, error: null,
     })
     render(<HookSettings />)
     expect(await screen.findByLabelText('Events status: Hooks not installed')).toBeInTheDocument()
@@ -458,7 +521,7 @@ describe('HookSettings', () => {
 
   it('shows badge "Active" (green) when events enabled', async () => {
     ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: true }, error: null,
+      data: { claude: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: true } }, error: null,
     })
     render(<HookSettings />)
     expect(await screen.findByLabelText('Events status: Active')).toBeInTheDocument()
@@ -466,7 +529,7 @@ describe('HookSettings', () => {
 
   it('clicking Uninstall Hooks calls plugin.uninstallHooks()', async () => {
     ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: true }, error: null,
+      data: { claude: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: true } }, error: null,
     })
     render(<HookSettings />)
     fireEvent.click(await screen.findByRole('button', { name: 'Uninstall event hooks' }))
@@ -475,7 +538,7 @@ describe('HookSettings', () => {
 
   it('shows error when uninstallHooks fails', async () => {
     ;(window.cornerOffice.plugin.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: true }, error: null,
+      data: { claude: { installed: true, version: '1.31.0', meetsMinimumVersion: true, eventsEnabled: true } }, error: null,
     })
     ;(window.cornerOffice.plugin.uninstallHooks as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Access denied'))
     render(<HookSettings />)

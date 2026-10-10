@@ -8,6 +8,7 @@ import { PipelineTypeBadge } from '../shared/PipelineTypeBadge'
 import { GateDots } from '../shared/GateDots'
 import { useSettingsStore } from '../../stores/settings-store'
 import { UnmergedDot } from '../sandbox/UnmergedDot'
+import { ActivityTrackingNote } from '../shared/ActivityTrackingNote'
 
 interface WorkspaceCardProps {
   workspace: Workspace
@@ -32,6 +33,7 @@ export function WorkspaceCard({ workspace: ws }: WorkspaceCardProps): React.Reac
       >
         {isActive ? <PulseDot /> : <StatusIcon status={ws.status} size="sm" />}
         <span className="text-[13px] font-medium text-co-text-primary truncate flex-1">{ws.displayName}</span>
+        <ActivityTrackingNote slug={ws.slug} className="text-[11px] text-amber-300/80 shrink-0" />
         <UnmergedDot slug={ws.slug} focusable={false} />
         <span className="text-[11px] text-co-text-muted shrink-0 tabular-nums">Lv {ws.level.number}</span>
         {ws.activePipelines.map((pipeline) => (
@@ -62,6 +64,8 @@ export function WorkspaceCard({ workspace: ws }: WorkspaceCardProps): React.Reac
           Lv {ws.level.number}
         </span>
       </div>
+
+      <ActivityTrackingNote slug={ws.slug} className="block text-[11px] text-amber-300/80 mb-2" />
 
       {/* Active pipeline section */}
       {ws.activePipelines.length > 0 && (

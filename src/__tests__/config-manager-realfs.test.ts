@@ -165,6 +165,38 @@ describe('ConfigManager durability (real filesystem)', () => {
     })
   })
 
+  describe('ensureEventsSplitAt (#0037 D7, D23)', () => {
+    it('records the split once and returns the same value afterwards', async () => {
+      manager.saveConfig(manager.getDefaultConfig())
+      const first = await manager.ensureEventsSplitAt(new Date('2026-06-01T00:00:00.000Z'))
+      const second = await manager.ensureEventsSplitAt(new Date('2026-09-09T00:00:00.000Z'))
+
+      expect(first).toBe('2026-06-01T00:00:00.000Z')
+      expect(second).toBe(first)
+      expect(manager.loadConfig()?.sandbox?.eventsSplitAt).toBe(first)
+    })
+
+    it('keeps the rest of an existing sandbox section', async () => {
+      const cfg = manager.getDefaultConfig()
+      manager.saveConfig({ ...cfg, sandbox: { toolchains: { node: false, go: true, buildBase: true }, globalAllowlist: ['example.com'], workspaces: {} } })
+
+      await manager.ensureEventsSplitAt(new Date('2026-06-01T00:00:00.000Z'))
+
+      expect(manager.loadConfig()?.sandbox).toMatchObject({ toolchains: { node: false }, globalAllowlist: ['example.com'], eventsSplitAt: '2026-06-01T00:00:00.000Z' })
+    })
+
+    it('a sandbox section saved without the field loads with a null split', () => {
+      const cfg = manager.getDefaultConfig()
+      manager.saveConfig({ ...cfg, sandbox: { toolchains: { node: true, go: true, buildBase: true }, globalAllowlist: [], workspaces: {} } })
+      expect(manager.loadConfig()?.sandbox?.eventsSplitAt).toBeNull()
+    })
+
+    it('returns null, without throwing, when the config cannot be written', async () => {
+      vi.spyOn(manager, 'mutateConfig').mockRejectedValueOnce(new Error('disk full'))
+      await expect(manager.ensureEventsSplitAt(new Date())).resolves.toBeNull()
+    })
+  })
+
   describe('mutateConfig (#0037 B1)', () => {
     const choice = {
       agentId: 'claude',

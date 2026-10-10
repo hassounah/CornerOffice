@@ -15,9 +15,7 @@ import {
   worktreePath,
   worktreePin,
   cardDir,
-  settingsOverlayPath,
-  sandboxClaudeJsonPath,
-  claudeShadowSource,
+  sandboxEventsDir,
   containerName,
   versionArgv,
   infoOsArgv,
@@ -42,12 +40,13 @@ import {
   STOP_TIMEOUT_S,
   SANDBOX_KILL_TIMEOUT_MS,
   psArgv,
+  psWorkspaceArgv,
+  parseContainerName,
 } from './sandbox-spec'
 import { planMounts, docsRootWtTarget } from './sandbox-spec'
 import { assertNoSymlinkOnPath } from './safe-fs'
-import { checkClaudeConfigSources, claudeHomeOk } from './sandbox-claude-config'
 import type { PlanMountsFacts, DocsRootFacts, OldMount, ParsedInspect } from './sandbox-spec'
-import { AGENT_IDS, LEGACY_AGENT_ID } from '../agents/descriptors'
+import { AGENT_IDS, LEGACY_AGENT_ID, getDescriptor } from '../agents/descriptors'
 import type { AgentId } from '../agents/descriptors'
 import type { AgentConfigResult, AgentHandler, AgentMountSpec } from '../agents/handler'
 import { getHandler } from '../agents/registry'
@@ -215,7 +214,7 @@ export type EnsureContainerResult =
   | { ok: false; code: 'RECREATE_REQUIRED'; plan: RecreatePlan }
   | { ok: false; code: 'CONTAINER_FAILED' }
   | { ok: false; code: 'DOCKER_UNAVAILABLE' }
-  | { ok: false; code: 'CLAUDE_CONFIG_INVALID'; detail: string | null }
+  | { ok: false; code: 'AGENT_CONFIG_INVALID'; detail: string | null; agentId: AgentId }
 
 export interface SandboxManagerService extends SandboxSessionDelegate {
   getEnvironment(opts: { refresh: boolean }): Promise<SandboxEnvironment>
@@ -230,7 +229,7 @@ export interface SandboxManagerService extends SandboxSessionDelegate {
    *  `ensureContainer`, written by a future image-rebuild completion hook
    *  and cleared by `ending` (3.7) after the `docker rm` it triggers.
    *  Exposed now for the same reason as `ensureContainer`. */
-  markRecreatePending(slug: string): void
+  markRecreatePending(slug: string, agentId?: AgentId): void
   /** Internal: see `markSessionEnding`'s doc comment at its definition. */
   markSessionEnding(slug: string): void
   recreate(slug: string, newPort: boolean, confirmedSpecHash: string, agentId?: AgentId): Promise<RecreateResult>
@@ -585,7 +584,7 @@ function buildDocsRootFacts(repo: string, resolved: { path: string; source: Docs
  * doesn't exist yet (i.e. this workspace's sandbox has never been prepared),
  * skip the real `planMounts` call and instead check with `assertMountSafe`
  * only the mount sources that are unconditionally already present for any
- * git repo — `~/.claude`, `~/.claude.json`, `$REPO/.git` and its `hooks`,
+ * git repo — `$REPO/.git` and its `hooks`,
  * `config` and `HEAD` (always created by `git init`), `$REPO/.git/index` if
  * present, and a custom `hooksPathInsideGit` if one resolved. The
  * pre-create list (`$WT`, the card directory, the events directory,
@@ -593,10 +592,10 @@ function buildDocsRootFacts(repo: string, resolved: { path: string; source: Docs
  * agent-writable while absent, and gets its own hardened creation and real
  * `planMounts` check when `preparing` actually runs.
  */
-function fixedMountSourcesSafe(facts: { home: string; repo: string; paths: SandboxPaths; indexExists: boolean; hooksPathInsideGit: string | null }): boolean {
-  const { home, repo, paths, indexExists, hooksPathInsideGit } = facts
+function fixedMountSourcesSafe(facts: { home: string; repo: string; indexExists: boolean; hooksPathInsideGit: string | null }): boolean {
+  const { home, repo, indexExists, hooksPathInsideGit } = facts
   const gitDir = path.join(repo, '.git')
-  const checkPaths = [paths.claudeDir, paths.claudeJson, gitDir, path.join(gitDir, 'hooks'), path.join(gitDir, 'config'), path.join(gitDir, 'HEAD')]
+  const checkPaths = [gitDir, path.join(gitDir, 'hooks'), path.join(gitDir, 'config'), path.join(gitDir, 'HEAD')]
   if (indexExists) checkPaths.push(path.join(gitDir, 'index'))
   if (hooksPathInsideGit) checkPaths.push(hooksPathInsideGit)
   return checkPaths.every((p) => assertMountSafe(p, { home }))
@@ -676,8 +675,9 @@ function precreateMountTargets(paths: SandboxPaths, repo: string, wt: string, sl
   fs.mkdirSync(path.join(repo, '.git', 'hooks'), { recursive: true })
   fs.mkdirSync(path.join(repo, '.git', 'modules'), { recursive: true }) // M2: always
   fs.mkdirSync(path.join(paths.eventsRoot, slug), { recursive: true })
-  fs.mkdirSync(path.join(paths.claudeDir, 'channels'), { recursive: true, mode: 0o700 }) // SEC-M3
-  // The agent's own sources (for Claude: the read-only config sources, the settings copy and the first `claude.json` seed).
+  fs.mkdirSync(sandboxEventsDir(paths, slug), { recursive: true, mode: 0o700 }) // D23: the container's events mount source
+  // The agent's own sources and nested mount targets (for Claude: `~/.claude/channels`, the read-only config
+  // sources, the settings copy and the first `claude.json` seed).
   return sandboxHandler(agentId).prepare({ paths, slug, workTree: wt }, 'plan')
 }
 
@@ -712,26 +712,20 @@ async function precreateDocsRootTarget(facts: PlanMountsFacts): Promise<void> {
 }
 
 /**
- * #0030 §4.5: the sources `prepareClaudeConfig` creates. Eligibility runs the real `planMounts`
- * only once they all exist (a plain `existsSync`, no side effects); before that, such as right
- * after an upgrade, the advisory `fixedMountSourcesSafe` check stands in.
+ * The neutral mount sources a start pre-creates. Eligibility runs the real `planMounts` (neutral mounts
+ * only, #0037 D6) once they exist (a plain `existsSync`, no side effects); before that, such as right after
+ * an upgrade, the advisory `fixedMountSourcesSafe` check stands in. An agent's own sources are its
+ * handler's business and show up as `agentReadiness`, not as workspace eligibility.
  */
-function claudeConfigSourcesExist(paths: SandboxPaths, slug: string): boolean {
+function neutralMountSourcesExist(paths: SandboxPaths, slug: string): boolean {
   return [
-    settingsOverlayPath(paths, slug),
-    sandboxClaudeJsonPath(paths, slug),
-    paths.claudeSettings,
-    paths.claudeMd,
-    paths.claudeSettingsLocal,
-    ...paths.claudeRoDirs,
-    ...paths.claudeShadowDirs,
-    ...paths.claudeShadowDirs.map((d) => claudeShadowSource(paths, slug, d)),
+    sandboxEventsDir(paths, slug), // D23: absent in a sandbox prepared before it existed, until its next start creates it
   ].every((p) => fs.existsSync(p))
 }
 
-/** Phase A: Claude is the only agent, so a handler config failure keeps the public `CLAUDE_CONFIG_INVALID` code (existing contract). */
-function configInvalid(result: Extract<AgentConfigResult, { ok: false }>): { ok: false; code: 'CLAUDE_CONFIG_INVALID'; detail: string } {
-  return { ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: result.detail }
+/** A handler config failure, tagged with the agent it belongs to. */
+function configInvalid(agentId: AgentId, result: Extract<AgentConfigResult, { ok: false }>): { ok: false; code: 'AGENT_CONFIG_INVALID'; detail: string; agentId: AgentId } {
+  return { ok: false, code: 'AGENT_CONFIG_INVALID', detail: result.detail, agentId }
 }
 
 /** `docker inspect`'s `.HostConfig.PortBindings` keys look like `"20123/tcp"`. `null` when absent or unparseable. */
@@ -780,7 +774,13 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
   let cachedDockerState: { docker: DockerState; dockerVersion: string | null } | null = null
   let reachedOkOnce = false
   /** §3.9.4 `recreatePending` — read by `ensureContainer`, set/cleared by future steps (see `markRecreatePending`'s doc comment). */
-  const recreatePendingSlugs = new Set<string>()
+  const recreatePendingNames = new Set<string>()
+  /** `recreatePending` is per container, so it is keyed by container name (one per workspace and agent, D22). */
+  const isRecreatePending = (slug: string, agentId: AgentId = LEGACY_AGENT_ID): boolean => recreatePendingNames.has(containerName(slug, agentId))
+  const clearRecreatePending = (slug: string, agentId: AgentId = LEGACY_AGENT_ID): void => {
+    recreatePendingNames.delete(containerName(slug, agentId))
+  }
+  const anyRecreatePending = (slug: string): boolean => AGENT_IDS.some((id) => isRecreatePending(slug, id))
   /** §3.9.5 session state, in-memory per slug — absent means `idle`.
    *  `startSession` (3.6) is the only writer of `preparing`; `ending` and the
    *  transition back to idle are 3.7's (`endSession`/`onPtyExit`), sharing
@@ -799,12 +799,39 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
    *  TOCTOU window a bare `hasSession`/`sessionStates` read would leave
    *  between "no session yet" and "a pty is actually spawned" (B-M1-adjacent). */
   const slugQueues = new Map<string, Promise<unknown>>()
+  // The queue is per slug and shared by every agent's container on purpose (D22): they share the worktree,
+  // the firewall state and the channel port, so two agents' ensure/recreate/start/delete must never interleave.
   /** Modes of the running session, for `getStatus` — set on a successful start, cleared when it ends. */
-  const sessionModes = new Map<string, { permissionMode: PermMode; networkMode: 'allowlist' | 'open' }>()
+  const sessionModes = new Map<string, { permissionMode: PermMode; networkMode: 'allowlist' | 'open'; agentId: AgentId }>()
+  /** The agent of the session that is preparing, running or ending: every stop and inspect of the slug's container goes through it. */
+  const sessionAgentOf = (slug: string): AgentId => sessionModes.get(slug)?.agentId ?? LEGACY_AGENT_ID
+  /** The agent of the slug's most recent start, which decides whose recreate plan `getStatus` shows first. Survives the session. */
+  const lastStartedAgent = new Map<string, AgentId>()
   /** SEC-H4: slugs whose channel card was rejected; cleared by the next successful start. */
   const rejectedCardSlugs = new Set<string>()
-  /** The plan from the last `ensureContainer` that returned `RECREATE_REQUIRED` — what `getStatus.recreatePlan` reports. Cleared when an ensure succeeds or the sandbox is recreated or deleted. */
+  /** The plan from the last `ensureContainer` that returned `RECREATE_REQUIRED` — what `getStatus.recreatePlan` reports. Cleared when an ensure succeeds or the sandbox is recreated or deleted. Keyed by container name: one plan per workspace and agent (D22). */
   const recreatePlans = new Map<string, RecreatePlan>()
+  const recreatePlanFor = (slug: string, agentId: AgentId = LEGACY_AGENT_ID): RecreatePlan | undefined => recreatePlans.get(containerName(slug, agentId))
+  const setRecreatePlan = (slug: string, agentId: AgentId, plan: RecreatePlan): void => {
+    recreatePlans.set(containerName(slug, agentId), plan)
+  }
+  const clearRecreatePlan = (slug: string, agentId: AgentId = LEGACY_AGENT_ID): void => {
+    recreatePlans.delete(containerName(slug, agentId))
+  }
+  /** Every agent's pending plan for the workspace, tagged with its agent. */
+  const allRecreatePlans = (slug: string): RecreatePlan[] =>
+    AGENT_IDS.flatMap((id) => {
+      const plan = recreatePlanFor(slug, id)
+      return plan ? [{ ...plan, agentId: id }] : []
+    })
+  /** `getStatus.recreatePlan` (kept for compatibility) is the last-started agent's plan, else the first in registry order. */
+  const anyRecreatePlan = (slug: string): RecreatePlan | null => {
+    const plans = allRecreatePlans(slug)
+    const preferred = plans.find((p) => p.agentId === lastStartedAgent.get(slug)) ?? plans[0]
+    return preferred ? (recreatePlanFor(slug, preferred.agentId) ?? null) : null
+  }
+  /** Only agents with channels use the workspace's channel port; the others publish nothing. */
+  const usesChannelPort = (agentId: AgentId): boolean => getDescriptor(agentId).capabilities.channels
   /** In-flight `ending` per slug, so a second end request joins the first instead of racing it. */
   const endings = new Map<string, Promise<void>>()
   /** B-M3: reconcile has run in this app session (`reconcile()` or the first transition into `ok`). */
@@ -814,7 +841,11 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
   /** BE-M3: bumped by every change. A compute that started in an older generation never writes the cache and is never joined by a caller that arrived after the change. */
   let summariesGeneration = 0
   /** BE-M8: getStatus polls eligibility; one result is reused for a moment, per slug and generation. Starting a session never reads this — its own gate is always fresh. */
-  const statusEligibility = new Map<string, { generation: number; at: number; result: Promise<EligibilityResult> }>()
+  interface StatusEligibility {
+    eligibility: EligibilityResult
+    agentReadiness: Record<AgentId, { code: string } | null>
+  }
+  const statusEligibility = new Map<string, { generation: number; at: number; result: Promise<StatusEligibility> }>()
 
   /** Every change to a sandbox (session state, status) makes the cached summaries stale, so drop them before telling the renderer. */
   function pushChanged(slug: string | null): void {
@@ -832,6 +863,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     // Fixed copy: it never names the domain, because the agent chooses the name (UX-H1).
     notifyBlocked: (slug) => notify({ kind: 'blocked', slug }),
     onLiveUpdateStatus: (slug) => pushChanged(slug),
+    containerFor: (slug) => containerName(slug, sessionAgentOf(slug)),
     // B-L2: the container vanished or the daemon died mid-poll — re-check Docker, which drives the container and session states.
     onPollerStopped: (slug) => {
       getEnvironment({ refresh: true })
@@ -972,13 +1004,9 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     if (!workspace) return { ok: false, reason: 'repo-unsafe' }
     const repo = workspace.path
 
-    // 3. §14.5: claude-home-missing, before any path or mount check —
-    // preempts unsafe-path. Checked before repo-unsafe/not-git too: it's a
-    // host-environment precondition, unrelated to any specific workspace.
+    // 3. Workspace eligibility is about the workspace and Docker only (#0037 D6). An agent's own home
+    // (for Claude: ~/.claude missing or malformed) is `agentReadiness`, reported per agent.
     const paths = sandboxPaths(realHome)
-    if (!claudeHomeOk(paths)) return { ok: false, reason: 'claude-home-missing' }
-    // #0030: the same lstat checks Start's prepare runs, so a symlinked or wrong-type ~/.claude entry shows here, not at Start.
-    if (!checkClaudeConfigSources(paths).ok) return { ok: false, reason: 'claude-config-invalid' }
 
     // 4. repo-unsafe.
     if (workspace.repoRootStatus !== 'ok') return { ok: false, reason: 'repo-unsafe' }
@@ -1012,15 +1040,16 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const wtExists = fs.existsSync(wt)
     let mountResult: ReturnType<typeof planMounts> | null = null
 
-    if (wtExists && claudeConfigSourcesExist(paths, slug)) {
-      mountResult = planMounts(mountFacts, agentMountsFor(LEGACY_AGENT_ID, mountFacts))
+    if (wtExists && neutralMountSourcesExist(paths, slug)) {
+      mountResult = planMounts(mountFacts, [])
       if (!mountResult.ok && mountResult.reason === 'unsafe-path') return { ok: false, reason: 'unsafe-path' }
-    } else if (!fixedMountSourcesSafe({ home: realHome, repo, paths, indexExists, hooksPathInsideGit })) {
+    } else if (!fixedMountSourcesSafe({ home: realHome, repo, indexExists, hooksPathInsideGit })) {
       return { ok: false, reason: 'unsafe-path' }
     }
 
     // 9. git-config-unsafe (D11, M2, SEC-L5 — values are agent-writable, only ever compared, never re-passed to git).
-    const otherRwSources = [wt, path.join(repo, '.rix'), docsRootFacts.path, paths.claudeDir, eventsDirPath, cardDirPath]
+    // Every read-write root an agent can write to, derived from the descriptors (no agent names here).
+    const otherRwSources = [wt, path.join(repo, '.rix'), docsRootFacts.path, ...paths.rwMountRoots, eventsDirPath, cardDirPath]
     const configCtx = { gitDirPath, hooksPathResolved: configFacts.hooksPathResolved, otherRwSources }
     const hooksUnsafe = isUnsafeConfigTarget(configFacts.hooksPathResolved, configCtx)
     const includeUnsafe = configFacts.includeTargets.some((target) => isUnsafeConfigTarget(target, configCtx))
@@ -1116,8 +1145,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
   async function ensureContainerInQueue(slug: string, agentId: AgentId): Promise<EnsureContainerResult> {
     const result = await ensureContainerUncached(slug, agentId)
-    if (!result.ok && result.code === 'RECREATE_REQUIRED') recreatePlans.set(slug, result.plan)
-    else recreatePlans.delete(slug)
+    if (!result.ok && result.code === 'RECREATE_REQUIRED') setRecreatePlan(slug, agentId, result.plan)
+    else clearRecreatePlan(slug, agentId)
     return result
   }
 
@@ -1129,7 +1158,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const wt = worktreePath(paths, slug)
 
     const prepared = precreateMountTargets(paths, repo, wt, slug, agentId)
-    if (!prepared.ok) return configInvalid(prepared)
+    if (!prepared.ok) return configInvalid(agentId, prepared)
 
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
     const baseResult = await worktree.resolveBase(git, repoCtx)
@@ -1141,16 +1170,20 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const mountResult = planMounts(facts, agentMountsFor(agentId, facts))
     if (!mountResult.ok) return { ok: false, code: 'CONTAINER_FAILED' }
 
-    const portResult = await ensurePort(slug)
-    if (!portResult) return { ok: false, code: 'CONTAINER_FAILED' }
-    const { port, wasNew } = portResult
+    let port: number | null = null
+    let wasNew = false
+    if (usesChannelPort(agentId)) {
+      const portResult = await ensurePort(slug)
+      if (!portResult) return { ok: false, code: 'CONTAINER_FAILED' }
+      ;({ port, wasNew } = portResult)
+    }
 
     const imageState = await image.getImageState()
     const imageId = imageState.imageId ?? ''
     const { uid, gid } = identity()
     const hash = specHash({ plan: mountResult.mounts, port, uid, gid, home: realHome, base, imageId })
 
-    const c = containerName(slug)
+    const c = containerName(slug, agentId)
     const inspected = await inspectContainerTri(c)
     if (inspected.state === 'unavailable') return { ok: false, code: 'DOCKER_UNAVAILABLE' }
     const parsed = inspected.state === 'present' ? inspected.parsed : null
@@ -1173,10 +1206,10 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
       // #0030 D6: a new container means fresh state, so re-seed `claude.json` from the host. Never on reuse.
       const seeded = sandboxHandler(agentId).prepare({ paths, slug, workTree: wt }, 'create')
-      if (!seeded.ok) return configInvalid(seeded)
+      if (!seeded.ok) return configInvalid(agentId, seeded)
 
       try {
-        await docker.run(createArgv({ c, slug, uid, gid, port, home: realHome, base, specHash: hash, mounts: mountResult.mounts, workTree: wt }), { timeoutMs: CREATE_TIMEOUT_MS })
+        await docker.run(createArgv({ c, slug, uid, gid, port, agentId, home: realHome, base, specHash: hash, mounts: mountResult.mounts, workTree: wt }), { timeoutMs: CREATE_TIMEOUT_MS })
       } catch (err) {
         if (err instanceof DockerError) {
           log.warn(`[sandbox-manager] docker create failed for ${slug}: ${describeDockerError(err)}`)
@@ -1185,7 +1218,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
         throw err
       }
 
-      const recreatedNotice = !wasNew
+      // Only a channel agent's port says whether the sandbox existed before; the first container of another agent is simply new.
+      const recreatedNotice = port !== null && !wasNew
       if (recreatedNotice) notify({ kind: 'container-recreated', slug })
       return { ok: true, recreatedNotice, specHash: hash }
     }
@@ -1195,13 +1229,13 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const specLabel = parsed.Config.Labels?.[LABEL.spec] ?? null
     const imageChanged = parsed.Image !== imageId
     const specMismatch = specLabel !== hash
-    const pending = recreatePendingSlugs.has(slug)
+    const pending = isRecreatePending(slug, agentId)
 
     if (imageChanged || specMismatch || pending) {
       const oldMounts: OldMount[] = parsed.Mounts.map((m) => ({ source: m.Source, target: m.Destination, readonly: !m.RW }))
       const diff = diffMountPlans(oldMounts, mountResult.mounts)
       const oldPort = extractBoundPort(parsed.HostConfig.PortBindings)
-      const portChanged = oldPort !== null && oldPort !== port
+      const portChanged = oldPort !== null && port !== null && oldPort !== port
       const reason: RecreatePlan['reason'] = imageChanged ? 'image' : portChanged ? 'port' : 'mount-plan'
       return {
         ok: false,
@@ -1213,8 +1247,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     return { ok: true, recreatedNotice: false, specHash: hash }
   }
 
-  function markRecreatePending(slug: string): void {
-    recreatePendingSlugs.add(slug)
+  function markRecreatePending(slug: string, agentId: AgentId = LEGACY_AGENT_ID): void {
+    recreatePendingNames.add(containerName(slug, agentId))
   }
 
   /** Internal: marks `slug`'s session as `ending` — exposed now for the same
@@ -1241,7 +1275,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const wt = worktreePath(paths, slug)
 
     const prepared = precreateMountTargets(paths, repo, wt, slug, agentId)
-    if (!prepared.ok) return configInvalid(prepared)
+    if (!prepared.ok) return configInvalid(agentId, prepared)
 
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
     const baseResult = await worktree.resolveBase(git, repoCtx)
@@ -1253,9 +1287,13 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const mountResult = planMounts(facts, agentMountsFor(agentId, facts))
     if (!mountResult.ok) return { ok: false, code: 'FAILED' }
 
-    const portResult = await ensurePort(slug)
-    if (!portResult) return { ok: false, code: 'FAILED' }
-    const { port } = portResult
+    const channels = usesChannelPort(agentId)
+    let port: number | null = null
+    if (channels) {
+      const portResult = await ensurePort(slug)
+      if (!portResult) return { ok: false, code: 'FAILED' }
+      port = portResult.port
+    }
 
     const imageState = await image.getImageState()
     const imageId = imageState.imageId ?? ''
@@ -1270,19 +1308,20 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     // getting PLAN_CHANGED (and the exposed plan) back with nothing having been touched.
     if (hash !== confirmedSpecHash) {
       // Expose the plan as it is now, so the dialog can reopen with it (the user then confirms THIS hash).
-      const currentInspect = await inspectContainerTri(containerName(slug))
+      const currentInspect = await inspectContainerTri(containerName(slug, agentId))
       if (currentInspect.state === 'unavailable') return { ok: false, code: 'DOCKER_UNAVAILABLE' }
       const current = currentInspect.state === 'present' ? currentInspect.parsed : null
       const oldMounts: OldMount[] = current ? current.Mounts.map((m) => ({ source: m.Source, target: m.Destination, readonly: !m.RW })) : []
       const diff = diffMountPlans(oldMounts, mountResult.mounts)
       // A container that doesn't exist yet is still a create; otherwise keep the reason the user was already shown.
-      const reason = current ? (recreatePlans.get(slug)?.reason ?? 'mount-plan') : 'new-container'
-      recreatePlans.set(slug, { reason, specHash: hash, newHostMounts: diff.newHostMounts, removedHostMounts: diff.removedHostMounts })
+      const reason = current ? (recreatePlanFor(slug, agentId)?.reason ?? 'mount-plan') : 'new-container'
+      setRecreatePlan(slug, agentId, { reason, specHash: hash, newHostMounts: diff.newHostMounts, removedHostMounts: diff.removedHostMounts })
       return { ok: false, code: 'PLAN_CHANGED' }
     }
 
+    // `newPort` means nothing to an agent without channels: it has no port to change.
     let finalPort = port
-    if (newPort) {
+    if (newPort && channels) {
       const cfg = config.getSandboxConfig()
       const taken = Object.entries(cfg.workspaces)
         .filter(([s]) => s !== slug)
@@ -1293,7 +1332,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
       finalPort = picked
     }
 
-    const c = containerName(slug)
+    const c = containerName(slug, agentId)
     const existence = await inspectContainerTri(c)
     if (existence.state === 'unavailable') return { ok: false, code: 'DOCKER_UNAVAILABLE' }
     const containerExists = existence.state === 'present'
@@ -1302,11 +1341,11 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
     // #0030 D6: after the hash check (it can't cause PLAN_CHANGED) and before any rm/create.
     const seeded = sandboxHandler(agentId).prepare({ paths, slug, workTree: wt }, 'create')
-    if (!seeded.ok) return configInvalid(seeded)
+    if (!seeded.ok) return configInvalid(agentId, seeded)
 
     try {
       if (containerExists) await docker.run(rmArgv(c))
-      await docker.run(createArgv({ c, slug, uid, gid, port: finalPort, home: realHome, base, specHash: finalHash, mounts: mountResult.mounts, workTree: wt }), { timeoutMs: CREATE_TIMEOUT_MS })
+      await docker.run(createArgv({ c, slug, uid, gid, port: finalPort, agentId, home: realHome, base, specHash: finalHash, mounts: mountResult.mounts, workTree: wt }), { timeoutMs: CREATE_TIMEOUT_MS })
     } catch (err) {
       if (err instanceof DockerError) {
         log.warn(`[sandbox-manager] recreate (rm/create) failed for ${slug}: ${describeDockerError(err)}`)
@@ -1315,9 +1354,9 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
       throw err
     }
 
-    if (finalPort !== port) await config.setWorkspaceChannelPort(slug, finalPort)
-    recreatePendingSlugs.delete(slug)
-    recreatePlans.delete(slug)
+    if (finalPort !== null && finalPort !== port) await config.setWorkspaceChannelPort(slug, finalPort)
+    clearRecreatePending(slug, agentId)
+    clearRecreatePlan(slug, agentId)
 
     return { ok: true }
   }
@@ -1355,6 +1394,33 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     return runSerialized(slug, () => deleteSandboxInQueue(slug, acknowledgeDirty))
   }
 
+  /** Containers to remove for `slug`: every one labeled with the workspace whose name parses back to that slug (SL-5), else the names derived from the registry when `docker ps` can't answer. */
+  async function workspaceContainerNames(slug: string): Promise<string[]> {
+    try {
+      const result = await docker.run(psWorkspaceArgv(slug))
+      return result.stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((name) => name.length > 0 && parseContainerName(name)?.slug === slug)
+    } catch (err) {
+      if (!(err instanceof DockerError)) throw err
+      log.warn(`[sandbox-manager] docker ps failed during delete for ${slug}: ${describeDockerError(err)}`)
+      return AGENT_IDS.map((id) => containerName(slug, id))
+    }
+  }
+
+  /** Delete removes every agent's container for the workspace; an already-absent one is fine and any other docker error is logged, so a misbehaving container never leaves the user stuck. */
+  async function removeWorkspaceContainers(slug: string): Promise<void> {
+    for (const c of await workspaceContainerNames(slug)) {
+      try {
+        await docker.run(rmArgv(c))
+      } catch (err) {
+        if (!(err instanceof DockerError)) throw err
+        if (err.subkind !== 'no-such-container') log.warn(`[sandbox-manager] docker rm failed during delete for ${c}: ${describeDockerError(err)}`)
+      }
+    }
+  }
+
   async function deleteSandboxInQueue(slug: string, acknowledgeDirty: boolean): Promise<DeleteResult> {
     if (!sessionIsIdle(slug)) return { ok: false, code: 'SESSION_RUNNING' }
 
@@ -1366,16 +1432,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const repo = workspace.path
     const paths = sandboxPaths(realHome)
 
-    const c = containerName(slug)
-    try {
-      await docker.run(rmArgv(c))
-    } catch (err) {
-      // Already absent is fine (nothing to remove); any other docker error
-      // still lets teardown proceed best-effort — Delete must not get the
-      // user stuck because a container is already gone or misbehaving.
-      if (!(err instanceof DockerError)) throw err
-      if (err.subkind !== 'no-such-container') log.warn(`[sandbox-manager] docker rm failed during delete for ${slug}: ${describeDockerError(err)}`)
-    }
+    await removeWorkspaceContainers(slug)
 
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
     await worktree.remove(git, repoCtx, paths, slug)
@@ -1383,9 +1440,11 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     discovery.removeSandboxSource(slug)
     clearCardDir(paths, slug)
     const cleanupCtx = { paths, slug, workTree: worktreePath(paths, slug) }
-    for (const id of AGENT_IDS) getHandler(id).sandbox?.cleanup(cleanupCtx)
-    recreatePendingSlugs.delete(slug)
-    recreatePlans.delete(slug)
+    for (const id of AGENT_IDS) {
+      getHandler(id).sandbox?.cleanup(cleanupCtx)
+      clearRecreatePending(slug, id)
+      clearRecreatePlan(slug, id)
+    }
     rejectedCardSlugs.delete(slug)
 
     return { ok: true }
@@ -1393,7 +1452,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
   // ── startSession / preparing (§3.9.5 steps 1-10, B-M1, SEC-H1) ──────────
 
-  type StartFailureCode = Extract<StartResult, { ok: false }>['code']
+  /** The failures that carry no agent: `failPreparing` builds these. The two agent-tagged ones are built where they happen. */
+  type StartFailureCode = Exclude<Extract<StartResult, { ok: false }>['code'], 'AGENT_CONFIG_INVALID' | 'AGENT_NOT_READY'>
 
   /** Best-effort `docker stop` used by the PORT_CONFLICT/FIREWALL_FAILED/
    *  SPAWN_FAILED cleanup paths — its own failure is logged, never thrown
@@ -1412,10 +1472,18 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
    *  distinguishes a step-6-or-later failure (source was added, must be
    *  removed) from an earlier one (source was never added). */
   function failPreparing(slug: string, code: StartFailureCode, removeSource: boolean, detail: string | null = null): StartResult {
-    log.warn(`[sandbox-manager] start failed for ${slug}: ${code}`)
-    sessionStates.delete(slug)
-    if (removeSource) discovery.removeSandboxSource(slug)
+    releasePreparing(slug, code, removeSource)
     return { ok: false, code, detail }
+  }
+
+  /** Gives the slug back after a failed start: logs `code`, drops the session state and, if it was added, the discovery source. */
+  function releasePreparing(slug: string, code: string, removeSource: boolean): void {
+    log.warn(`[sandbox-manager] start failed for ${slug}: ${code}`)
+    // Only a channel agent's start added a discovery source (step 6), so only its failure removes one.
+    const addedSource = usesChannelPort(sessionAgentOf(slug))
+    sessionStates.delete(slug)
+    sessionModes.delete(slug)
+    if (removeSource && addedSource) discovery.removeSandboxSource(slug)
   }
 
   /** What `prepareSession` has done so far, so `startSessionOnce` can undo
@@ -1434,8 +1502,13 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     try {
       return await prepareSession(opts, progress)
     } catch (err) {
-      if (progress.preparing) sessionStates.delete(opts.slug)
-      if (progress.containerStarted) await stopBestEffort(containerName(opts.slug))
+      // The container to stop is the preparing session's own (.codex for Codex), never a fixed Claude name.
+      const c = containerName(opts.slug, sessionModes.get(opts.slug)?.agentId ?? opts.agentId)
+      if (progress.preparing) {
+        sessionStates.delete(opts.slug)
+        sessionModes.delete(opts.slug)
+      }
+      if (progress.containerStarted) await stopBestEffort(c)
       if (progress.sourceAdded) discovery.removeSandboxSource(opts.slug)
       throw err
     }
@@ -1448,6 +1521,12 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const eligibility = await getEligibility(slug)
     if (!eligibility.ok) {
       log.warn(`[sandbox-manager] start refused for ${slug}: not eligible (${eligibility.reason})`)
+      return { ok: false, code: 'NOT_ELIGIBLE', detail: null }
+    }
+
+    // An agent whose handler has no sandbox half is never offered in the sandbox (fail closed).
+    if (!getHandler(agentId).sandbox) {
+      log.warn(`[sandbox-manager] start refused for ${slug}: ${agentId} has no sandbox handler`)
       return { ok: false, code: 'NOT_ELIGIBLE', detail: null }
     }
 
@@ -1468,7 +1547,19 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const paths = sandboxPaths(realHome)
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
 
+    // The agent's own home must be ready (for Claude: ~/.claude present and real). One source with the chooser's
+    // reason (UX-M8): the same readiness code selects the same descriptor copy. Before any state or image step.
+    const readiness = sandboxHandler(agentId).readiness(paths)
+    if (!readiness.ok) {
+      log.warn(`[sandbox-manager] start refused for ${slug}: ${agentId} is not ready (${readiness.code})`)
+      return { ok: false, code: 'AGENT_NOT_READY', detail: null, agentId, readiness: readiness.code }
+    }
+
     sessionStates.set(slug, 'preparing')
+    // The agent is recorded at `preparing` (not after the spawn) so that every stop, inspect and cleanup of this start
+    // addresses the right container. It is dropped only when the slug becomes idle again.
+    sessionModes.set(slug, { permissionMode, networkMode, agentId })
+    lastStartedAgent.set(slug, agentId)
     progress.preparing = true
     pushChanged(slug) // BE-L4: the renderer sees Starting… as soon as the slug is claimed
 
@@ -1492,21 +1583,28 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     if (!containerResult.ok) {
       if (containerResult.code === 'RECREATE_REQUIRED') {
         sessionStates.delete(slug)
+        sessionModes.delete(slug)
         return { ok: false, code: 'RECREATE_REQUIRED', detail: null }
       }
       if (containerResult.code === 'DOCKER_UNAVAILABLE') return failPreparing(slug, 'DOCKER_UNAVAILABLE', false)
-      if (containerResult.code === 'CLAUDE_CONFIG_INVALID') return failPreparing(slug, 'CLAUDE_CONFIG_INVALID', false, containerResult.detail)
+      if (containerResult.code === 'AGENT_CONFIG_INVALID') {
+        releasePreparing(slug, 'AGENT_CONFIG_INVALID', false)
+        return { ok: false, code: 'AGENT_CONFIG_INVALID', detail: containerResult.detail, agentId: containerResult.agentId }
+      }
       return failPreparing(slug, 'CONTAINER_FAILED', false)
     }
 
     // 6. Clear the card directory (contents only — see clearCardDirContents'
     // doc comment) and add the discovery source (idempotent).
-    progress.sourceAdded = true
-    clearCardDirContents(paths, slug)
-    await discovery.addSandboxSource(slug)
+    // Only an agent with channels talks to the app through a card, so only it gets a discovery source.
+    if (usesChannelPort(agentId)) {
+      progress.sourceAdded = true
+      clearCardDirContents(paths, slug)
+      await discovery.addSandboxSource(slug)
+    }
 
     // Every failure from here on also removes the discovery source (B-M1).
-    const c = containerName(slug)
+    const c = containerName(slug, agentId)
 
     // 7. docker start.
     try {
@@ -1515,7 +1613,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
       if (err instanceof DockerError && err.subkind === 'port-conflict') {
         log.warn(`[sandbox-manager] docker start failed for ${slug}: ${describeDockerError(err)}`)
         // The UI offers "Recreate with a new port"; recreate() needs the hash of the plan the user confirms.
-        if (specHashForPort) recreatePlans.set(slug, { reason: 'port', specHash: specHashForPort, newHostMounts: [], removedHostMounts: [] })
+        if (specHashForPort) setRecreatePlan(slug, agentId, { reason: 'port', specHash: specHashForPort, newHostMounts: [], removedHostMounts: [] })
         return failPreparing(slug, 'PORT_CONFLICT', true)
       }
       if (err instanceof DockerError) {
@@ -1569,7 +1667,6 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     }
 
     sessionStates.set(slug, 'running')
-    sessionModes.set(slug, { permissionMode, networkMode })
     if (networkMode === 'allowlist') network.sessionStarted(slug)
     lastExitBySlug.delete(slug)
     rejectedCardSlugs.delete(slug)
@@ -1642,8 +1739,26 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     }
   }
 
+  /**
+   * After a *confirmed* stop only (never while the container may still run): lets the agent's handler sweep what the
+   * session left behind. Best effort — a throwing hook is logged by agent and never fails the stop. The hook is a no-op
+   * until an agent defines `afterStop`.
+   */
+  function runAfterStop(slug: string, agentId: AgentId): void {
+    const afterStop = getHandler(agentId).sandbox?.afterStop
+    if (!afterStop) return
+    try {
+      const paths = sandboxPaths(realHome)
+      const outcome = afterStop({ paths, slug, workTree: worktreePath(paths, slug) })
+      if (outcome.quarantined > 0) log.info(`[sandbox-manager] ${agentId} afterStop for ${slug} quarantined ${outcome.quarantined} item(s)`)
+    } catch (err) {
+      log.warn(`[sandbox-manager] ${agentId} afterStop failed for ${slug}: ${String(err)}`)
+    }
+  }
+
   async function runEnding(slug: string, unexpected: { exitCode: number | null } | null): Promise<void> {
-    const c = containerName(slug)
+    const agentId = sessionAgentOf(slug)
+    const c = containerName(slug, agentId)
     network.sessionEnded(slug)
     let stopUnconfirmed = false
     try {
@@ -1674,15 +1789,16 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
       if (confirmed) {
         // 4. auto-detach, 5. rm when a recreate is pending.
         await autoDetachBestEffort(slug)
-        if (observed === 'stopped' && recreatePendingSlugs.has(slug)) {
+        if (observed === 'stopped' && isRecreatePending(slug, agentId)) {
           try {
             await docker.run(rmArgv(c))
-            recreatePendingSlugs.delete(slug)
+            clearRecreatePending(slug, agentId)
           } catch (err) {
             if (!(err instanceof DockerError)) throw err
             log.warn(`[sandbox-manager] docker rm failed for ${slug}: ${describeDockerError(err)}`)
           }
         }
+        runAfterStop(slug, agentId)
       }
 
       // 6. The discovery source stays (only Delete removes it).
@@ -1693,9 +1809,12 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
       }
     } finally {
       // SEC-M2: an unconfirmed stop stays non-idle (the agent may still be running) until the retry confirms it.
+      // The agent stays recorded while the stop is unconfirmed: the retry must address the same container.
       if (stopUnconfirmed) sessionStates.set(slug, 'stop-unconfirmed')
-      else sessionStates.delete(slug)
-      sessionModes.delete(slug)
+      else {
+        sessionStates.delete(slug)
+        sessionModes.delete(slug)
+      }
       endings.delete(slug)
       // 7.
       pushChanged(slug)
@@ -1711,14 +1830,17 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
   async function resolveUnconfirmedStop(slug: string): Promise<boolean> {
     return runSerialized(slug, async () => {
       if (sessionStates.get(slug) !== 'stop-unconfirmed') return true // ended again or cleared elsewhere
-      const c = containerName(slug)
+      const agentId = sessionAgentOf(slug)
+      const c = containerName(slug, agentId)
       let observed = await observeContainer(c)
       if (observed === 'running' || observed === 'unknown') {
         await stopBestEffort(c)
         observed = await observeContainer(c)
       }
       if (observed !== 'stopped' && observed !== 'absent') return false // still running, or the daemon can't say
+      runAfterStop(slug, agentId) // the stop is confirmed only now
       sessionStates.delete(slug)
+      sessionModes.delete(slug)
       pushChanged(slug)
       return true
     })
@@ -1783,7 +1905,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
   async function stopForQuitBody(slug: string): Promise<void> {
     network.sessionEnded(slug)
-    const c = containerName(slug)
+    const agentId = sessionAgentOf(slug)
+    const c = containerName(slug, agentId)
     let stopped = false
     try {
       await docker.run(stopArgv(c, STOP_TIMEOUT_S.quit), { timeoutMs: QUIT_STOP_CAP_MS })
@@ -1803,20 +1926,31 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     } finally {
       clearTimeout(capTimer)
     }
+    runAfterStop(slug, agentId) // a stopped quit: the stop above was confirmed by `docker stop` itself
   }
 
   // ── reconcile, status, summaries, hand off (§3.9.5, §3.13.3) ───────────────
 
-  const CONTAINER_PREFIX = containerName('')
-
-  /** `docker ps` rows for `co.sandbox=1` containers, keyed by slug; empty when Docker can't answer. */
-  async function listSandboxContainers(): Promise<Map<string, { running: boolean }>> {
-    return (await psSandboxContainers()) ?? new Map()
+  /** One `co.sandbox=1` container: its name, the workspace and agent that name parses to, and whether it runs. */
+  interface SandboxContainerRow {
+    name: string
+    slug: string
+    agentId: AgentId
+    running: boolean
   }
 
-  /** null when `docker ps` failed — reconcile must not count that as having run. */
-  async function psSandboxContainers(): Promise<Map<string, { running: boolean }> | null> {
+  /** `docker ps` rows folded to one entry per workspace (running if any of its agents' containers is); empty when Docker can't answer. */
+  async function listSandboxContainers(): Promise<Map<string, { running: boolean }>> {
     const found = new Map<string, { running: boolean }>()
+    for (const row of (await psSandboxContainers()) ?? []) {
+      found.set(row.slug, { running: (found.get(row.slug)?.running ?? false) || row.running })
+    }
+    return found
+  }
+
+  /** null when `docker ps` failed — reconcile must not count that as having run. Names that don't parse (a foreign or malformed suffix) are skipped. */
+  async function psSandboxContainers(): Promise<SandboxContainerRow[] | null> {
+    const found: SandboxContainerRow[] = []
     let result
     try {
       result = await docker.run(psArgv())
@@ -1829,9 +1963,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     }
     for (const line of result.stdout.split('\n')) {
       const [name, state] = line.split('\t')
-      if (!name || !name.startsWith(CONTAINER_PREFIX)) continue
-      const slug = name.slice(CONTAINER_PREFIX.length)
-      if (SANDBOX_SLUG_RE.test(slug)) found.set(slug, { running: state === 'running' })
+      const parsed = name ? parseContainerName(name) : null
+      if (name && parsed) found.push({ name, slug: parsed.slug, agentId: parsed.agentId, running: state === 'running' })
     }
     return found
   }
@@ -1858,19 +1991,22 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     // A stop that was never confirmed (retries ran out earlier) gets another go.
     for (const [slug, state] of sessionStates) if (state === 'stop-unconfirmed') void retryUnconfirmedStop(slug)
 
-    for (const [slug, { running }] of containers) {
+    for (const { name, slug, agentId, running } of containers) {
       if (!running) continue
       // Serialized with startSession and re-checked inside the queue, so a
       // start that begins mid-reconcile is never stopped under itself. Anything
       // with a tracked session (even `preparing`) is not an orphan.
       await runSerialized(slug, async () => {
         if (!sessionIsIdle(slug)) return
-        log.info(`[sandbox-manager] reconcile: stopping orphan container for ${slug}`)
-        await stopBestEffort(containerName(slug))
+        log.info(`[sandbox-manager] reconcile: stopping orphan ${agentId} container for ${slug}`)
+        await stopBestEffort(name)
+        // The agent's after-stop sweep runs only once the container is confirmed down.
+        const observed = await observeContainer(name)
+        if (observed === 'stopped' || observed === 'absent') runAfterStop(slug, agentId)
       })
     }
 
-    const slugs = new Set([...containers.keys(), ...worktreeSlugs()])
+    const slugs = new Set([...containers.map((row) => row.slug), ...worktreeSlugs()])
     for (const slug of slugs) {
       if (appState.getWorkspace(slug) === undefined) continue
       try {
@@ -1896,11 +2032,23 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
   const STATUS_ELIGIBILITY_TTL_MS = 2_000
 
-  function getStatusEligibility(slug: string): Promise<EligibilityResult> {
-    if (sandboxSettings.disabled) return getEligibility(slug) // the kill switch is never served from a cache
+  /** Per agent: `null` when it can start in the sandbox, else its readiness code. An agent with no sandbox half has nothing to be ready for. */
+  function computeAgentReadiness(): Record<AgentId, { code: string } | null> {
+    const paths = sandboxPaths(realHome)
+    return Object.fromEntries(
+      AGENT_IDS.map((id) => {
+        const readiness = getHandler(id).sandbox?.readiness(paths)
+        return [id, readiness && !readiness.ok ? { code: readiness.code } : null]
+      }),
+    ) as Record<AgentId, { code: string } | null>
+  }
+
+  /** Eligibility and per-agent readiness, cached together for the status TTL: one lstat pass per window, one answer for the chooser. */
+  function getStatusEligibility(slug: string): Promise<StatusEligibility> {
+    if (sandboxSettings.disabled) return getEligibility(slug).then((eligibility) => ({ eligibility, agentReadiness: computeAgentReadiness() })) // the kill switch is never served from a cache
     const cached = statusEligibility.get(slug)
     if (cached && cached.generation === summariesGeneration && deps.now() - cached.at < STATUS_ELIGIBILITY_TTL_MS) return cached.result
-    const result = getEligibility(slug)
+    const result = getEligibility(slug).then((eligibility) => ({ eligibility, agentReadiness: computeAgentReadiness() }))
     statusEligibility.set(slug, { generation: summariesGeneration, at: deps.now(), result })
     // A rejected lookup must not stay cached.
     result.catch(() => {
@@ -1909,17 +2057,33 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     return result
   }
 
+  /** One observation per agent's container; every agent reads `unknown` while Docker isn't known to be ok. */
+  async function observeAgentContainers(slug: string): Promise<Record<AgentId, SandboxStatus['container']>> {
+    const containers = Object.fromEntries(AGENT_IDS.map((id) => [id, 'unknown'])) as Record<AgentId, SandboxStatus['container']>
+    if (cachedDockerState?.docker !== 'ok') return containers
+    for (const id of AGENT_IDS) {
+      const observed = await observeContainer(containerName(slug, id))
+      containers[id] = observed === 'absent' ? 'absent' : observed === 'running' ? 'running' : observed === 'stopped' ? 'stopped' : 'unknown'
+    }
+    return containers
+  }
+
+  /** running if any container runs, else stopped if any is stopped, else unknown if any is unknown, else absent. */
+  function aggregateContainer(containers: Record<AgentId, SandboxStatus['container']>): SandboxStatus['container'] {
+    const states = Object.values(containers)
+    for (const state of ['running', 'stopped', 'unknown'] as const) if (states.includes(state)) return state
+    return 'absent'
+  }
+
   async function getStatus(slug: string): Promise<SandboxStatus> {
-    const eligibility = await getStatusEligibility(slug)
+    const { eligibility, agentReadiness } = await getStatusEligibility(slug)
     const workspace = appState.getWorkspace(slug)
     const state = sessionStates.get(slug) ?? 'idle'
-    const modes = sessionModes.get(slug)
+    // The modes exist from `preparing` on, but status reports them only for a live session, as it always did.
+    const modes = state === 'running' || state === 'ending' ? sessionModes.get(slug) : undefined
 
-    let container: SandboxStatus['container'] = 'unknown'
-    if (cachedDockerState?.docker === 'ok') {
-      const observed = await observeContainer(containerName(slug))
-      container = observed === 'absent' ? 'absent' : observed === 'running' ? 'running' : observed === 'stopped' ? 'stopped' : 'unknown'
-    }
+    const containers = await observeAgentContainers(slug)
+    const container = aggregateContainer(containers)
 
     let worktreeState: SandboxStatus['worktree'] = 'absent'
     let gitState: SandboxStatus['git'] = null
@@ -1940,16 +2104,20 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
       eligibility: eligibility.ok ? { ok: true, baseBranch: eligibility.baseBranch, warnings: eligibility.warnings } : { ok: false, reason: eligibility.reason },
       exists: container === 'running' || container === 'stopped' || worktreeState !== 'absent',
       container,
+      containers,
+      agentReadiness,
       worktree: worktreeState,
       session: {
         state,
+        agentId: modes?.agentId ?? null,
         permissionMode: modes && (modes.permissionMode === 'skip' || modes.permissionMode === 'auto') ? modes.permissionMode : null,
         networkMode: modes?.networkMode ?? null,
         lastExit: lastExitBySlug.get(slug) ?? null,
       },
       git: gitState,
-      recreatePending: recreatePendingSlugs.has(slug),
-      recreatePlan: recreatePlans.get(slug) ?? null,
+      recreatePending: anyRecreatePending(slug),
+      recreatePlan: anyRecreatePlan(slug),
+      recreatePlans: allRecreatePlans(slug),
       channel: channelStatus(slug),
       liveUpdate: network.getLiveUpdateStatus(slug),
     }

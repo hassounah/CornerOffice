@@ -52,6 +52,7 @@ export class NotificationService {
   private _idleTimer: ReturnType<typeof setInterval> | null = null
   private _lastActivity = new Map<string, number>() // workspace -> epoch ms
   private _consecutiveIdle = new Map<string, number>() // workspace -> consecutive idle count
+  private _idleSuppressed = new Set<string>() // workspaces whose session has no activity data (setIdleSuppressed)
   private _activePipelines = new Set<string>()      // workspace slugs with active pipeline
 
   constructor(callbacks: NotificationCallbacks) {
@@ -209,6 +210,20 @@ export class NotificationService {
   }
 
   /**
+   * Turns the idle-timer notification off for `workspaceSlug` while its session has no activity data (an agent whose
+   * plugin isn't installed): without events, a session waiting on an approval prompt would be reported as "idle".
+   * Turning it off also forgets the idle counter, so a later session starts from zero.
+   */
+  setIdleSuppressed(workspaceSlug: string, on: boolean): void {
+    if (on) {
+      this._idleSuppressed.add(workspaceSlug)
+      this._consecutiveIdle.delete(workspaceSlug)
+    } else {
+      this._idleSuppressed.delete(workspaceSlug)
+    }
+  }
+
+  /**
    * Raises a notice from the sandbox subsystem with FIXED copy (§3.8.2, §3.12, UX-H1). The
    * inputs are enums and numbers only, so nothing an agent chooses (a domain, stderr) can
    * reach the text. Blocked needs action; the rest are progress-tier.
@@ -307,6 +322,7 @@ export class NotificationService {
   private _checkIdle(): void {
     const now = Date.now()
     for (const workspaceSlug of this._activePipelines) {
+      if (this._idleSuppressed.has(workspaceSlug)) continue
       const consecutiveCount = this._consecutiveIdle.get(workspaceSlug) ?? 0
       if (consecutiveCount >= MAX_CONSECUTIVE_IDLE) continue
 

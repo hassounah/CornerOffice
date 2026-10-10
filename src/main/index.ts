@@ -11,6 +11,7 @@ import { DocsParserService } from './services/docs-parser'
 import { HistoryDifferService } from './services/history-differ'
 import { FileWatcherService } from './services/file-watcher'
 import { configManager } from './services/config-manager'
+import { recordSessionStart } from './services/session-defaults'
 import { stateCacheService } from './services/state-cache'
 import { homunculusParserService } from './services/homunculus-parser'
 import { calculateXP, calculateLevel, buildVelocityData, buildStreakData } from './services/gamification'
@@ -24,6 +25,7 @@ import { PluginDetectorService } from './services/plugin-detector'
 import { ChannelDiscoveryService } from './services/channel-discovery'
 import { ChannelConnectionService, defaultIsAlive } from './services/channel-connection'
 import { TerminalManagerService } from './services/terminal-manager'
+import { createActivityTrackingObserver } from './agents/activity-tracking'
 import { computeRepoRootStatus, resolveCodeRoot } from './services/repo-path'
 import { createGitService } from './services/git-runner'
 import { createRepoService } from './services/git-service'
@@ -35,7 +37,15 @@ import { buildSandboxHandlers, createSandboxPushSenders } from './ipc/sandbox-ha
 import { makeIsAppOrigin, installNavigationLockdown, onCrossDocumentMainFrameNavigation } from './ipc/app-origin'
 import { createQuitGuard } from './services/quit-guard'
 import { runQuitSequence } from './services/quit-sequence'
-import { attributeEventWorkspace, classifySource, hostSessionIdsForWorkspace } from './services/event-attribution'
+import {
+  attributeEventWorkspace,
+  attributeSandboxEventWorkspace,
+  classifySource,
+  hostSessionIdsForWorkspace,
+  listSandboxEventFiles,
+  sandboxEventSlug,
+  sourceByLocation,
+} from './services/event-attribution'
 import type { EventSource } from './services/event-attribution'
 import { createDockerRunner } from './services/docker-runner'
 import { createSandboxImageService, resolveBuildContext } from './services/sandbox-image'
@@ -514,6 +524,10 @@ async function initialize(): Promise<void> {
   // lazily by the watcher callback (never during Phase 9 setup).
   let _ingestEvents: ((filePath: string) => void) | null = null
 
+  // D23: record the cutover BEFORE any watcher starts, so a file written after it is never mistaken for pre-D23 history.
+  const eventsSplitAt = await configManager.ensureEventsSplitAt(new Date())
+  const sandboxStateRoot = sandboxPaths(resolveRealHome()).sandboxStateRoot
+
   const fileWatcher = new FileWatcherService({
     onRixStateChange: (wsPath, _filePath) => {
       const _tw = _isDev ? Date.now() : 0
@@ -586,7 +600,7 @@ async function initialize(): Promise<void> {
         'Consider: sudo sysctl fs.inotify.max_user_watches=524288',
       )
     },
-  })
+  }, { sandboxStateRoot })
 
   for (const ws of appState.workspaces.values()) {
     fileWatcher.addWorkspace(ws.path, ws.docsRoot)
@@ -705,6 +719,7 @@ async function initialize(): Promise<void> {
 
   const eventsDir = path.join(os.homedir(), '.corner-office', 'events')
   const sandboxesRoot = sandboxPaths(resolveRealHome()).sandboxesRoot
+  const inSandboxRoot = (filePath: string): boolean => sandboxEventSlug(sandboxStateRoot, filePath) !== null
 
   /** Host cards inside one workspace: their short ids and session ids (SEC-H1, SEC-H3). */
   function hostSessionIds(slug: string): Set<string> {
@@ -721,6 +736,16 @@ async function initialize(): Promise<void> {
     // initial ingestion replays every historical line.
     const hasSandboxCache = new Map<string, boolean>()
     const hostIdsCache = new Map<string, Set<string>>()
+    // D23: the root a file lives under decides its source; the event's own `agent` field plays no part.
+    const root = inSandboxRoot(filePath) ? 'sandbox' : 'host'
+    let fileMtimeMs: number | null = null
+    if (root === 'host') {
+      try {
+        fileMtimeMs = fs.statSync(filePath).mtimeMs
+      } catch {
+        fileMtimeMs = null
+      }
+    }
     const sourceFor = (slug: string, sessionId: string): EventSource => {
       let hasSandbox = hasSandboxCache.get(slug)
       if (hasSandbox === undefined) {
@@ -732,17 +757,28 @@ async function initialize(): Promise<void> {
         hostIds = hostSessionIds(slug)
         hostIdsCache.set(slug, hostIds)
       }
-      return classifySource({
-        workspaceHasSandbox: hasSandbox,
-        sessionId,
-        hostSessionIds: hostIds,
-        sandboxSessionIds: appState.sandboxManager?.getSandboxSessionIds() ?? new Set<string>(),
+      const workspaceHasSandbox = hasSandbox
+      return sourceByLocation({
+        root,
+        workspaceHasSandbox,
+        eventsSplitAt,
+        fileMtimeMs,
+        legacyClassify: () =>
+          classifySource({
+            workspaceHasSandbox,
+            sessionId,
+            hostSessionIds: hostIds,
+            sandboxSessionIds: appState.sandboxManager?.getSandboxSessionIds() ?? new Set<string>(),
+          }),
       })
     }
 
     for (const event of events) {
       // SEC-H2: the workspace comes from where the file lives, not from the line itself.
-      const attribution = attributeEventWorkspace(eventsDir, filePath, event.workspace)
+      const attribution =
+        root === 'sandbox'
+          ? attributeSandboxEventWorkspace(sandboxStateRoot, filePath, event.workspace)
+          : attributeEventWorkspace(eventsDir, filePath, event.workspace)
       if (!attribution.ok) {
         log.warn(`[EventPipeline] Dropped an event line (${attribution.reason}) from ${path.basename(path.dirname(filePath))}`)
         continue
@@ -882,6 +918,8 @@ async function initialize(): Promise<void> {
         log.warn('[EventPipeline] Failed to read events directory for initial ingestion:', err)
       }
     }
+    // D23: events the containers wrote under their own root (`<state>/<slug>/events`).
+    for (const file of listSandboxEventFiles(sandboxStateRoot)) ingestEvents(file)
   } finally {
     // Reset suppress flags — live events should always fire OS notifications and pushes
     notificationService.suppressOsNotifications = false
@@ -964,6 +1002,8 @@ async function initialize(): Promise<void> {
     appState,
   )
   appState.terminalManager = terminalManager
+  // C6: a session without activity data (the agent's plugin isn't installed) gets no idle notifications.
+  terminalManager.setSessionObserver(createActivityTrackingObserver(notificationService))
 
   // ── Phase 10d: Sandbox sessions (#0029) ───────────────────────────────────
   // No filesystem or Docker access here beyond resolving the real home: the
@@ -1048,6 +1088,7 @@ async function initialize(): Promise<void> {
     },
     workspaceSlugs: () => Array.from(appState.workspaces.keys()),
     noteBuildRequester: buildRequester.note,
+    recordSessionStart: (start) => recordSessionStart(configManager, () => new Set(appState.workspaces.keys()), start),
   })
   swapHandlers(sandboxHandlers)
 

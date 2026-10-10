@@ -414,6 +414,10 @@ const SandboxNoInput = z.object({}).strict()
 
 export const SandboxGetEnvironmentSchema = z.object({ refresh: z.boolean() }).strict()
 export const SandboxGetStatusSchema = SandboxSlugOnly
+/** `session:getDefaults` (#0037 TRD §6): the remembered chooser options for one workspace. */
+export const SessionGetDefaultsSchema = SandboxSlugOnly
+/** `agents:getHostAvailability`; `refresh` is for shape only (there is no cache to bypass). */
+export const AgentsGetHostAvailabilitySchema = z.object({ refresh: z.boolean() }).strict()
 export const SandboxGetSummariesSchema = SandboxNoInput
 export const SandboxStartSessionSchema = z
   .object({
@@ -439,6 +443,8 @@ export const SandboxRecreateSchema = z
     workspaceSlug: SandboxSlugSchema,
     newPort: z.boolean(),
     confirmedSpecHash: z.string().regex(/^[a-f0-9]{64}$/),
+    /** The agent whose container is recreated; absent means the legacy agent. */
+    agentId: AgentIdSchema.default(LEGACY_AGENT_ID),
   })
   .strict()
 export const SandboxBuildImageSchema = z.object({ rebuild: z.boolean(), requestedFor: SandboxSlugSchema.optional() }).strict()

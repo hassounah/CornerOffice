@@ -2,6 +2,10 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { MINIMUM_PLUGIN_VERSION } from '@main/types/channels'
 import type { PluginStatus as PluginStatusType } from '@main/types/channels'
 import { unwrapIpc } from '../../utils/ipc'
+import { AGENT_DESCRIPTORS, LEGACY_AGENT_ID } from '@main/agents/descriptors'
+import type { AgentDescriptor } from '@main/agents/types'
+
+const NOT_INSTALLED: PluginStatusType = { installed: false, meetsMinimumVersion: false, eventsEnabled: false }
 
 type BadgeStyle = { wrapper: string; dot: string; label: string }
 
@@ -46,12 +50,66 @@ function eventsBadgeVariant(status: PluginStatusType): 'green' | 'orange' {
   return status.eventsEnabled ? 'green' : 'orange'
 }
 
+type HostAvailability = Record<string, 'found' | 'not-found'>
+
+interface LoadedStatuses {
+  statuses: Record<string, PluginStatusType>
+  /** `null` when the PATH check failed: then no other agent's row is shown. */
+  availability: HostAvailability | null
+}
+
+async function loadStatuses(): Promise<LoadedStatuses> {
+  const statuses = unwrapIpc(await window.cornerOffice.plugin.getStatus())
+  try {
+    return { statuses, availability: unwrapIpc(await window.cornerOffice.agents.getHostAvailability(false)) }
+  } catch {
+    return { statuses, availability: null }
+  }
+}
+
+/** One row for an agent other than Claude: shown only when the agent is found on the host, because the plugin is only useful then. */
+function AgentPluginRow({ descriptor, status }: { descriptor: AgentDescriptor; status: PluginStatusType }): React.ReactElement {
+  const headingId = `plugin-row-${descriptor.id}`
+  const variant = pluginBadgeVariant(status)
+  const styles = PLUGIN_BADGE_STYLES[variant]
+  return (
+    <div className="mb-4" role="group" aria-labelledby={headingId} data-testid={`plugin-row-${descriptor.id}`}>
+      <h4 id={headingId} className="text-sm font-semibold text-co-text-secondary mb-1">
+        {descriptor.displayName} plugin
+      </h4>
+      <span
+        className={`inline-flex items-center gap-1.5 text-sm font-medium px-2.5 py-1 rounded-full ${styles.wrapper}`}
+        aria-label={`${descriptor.displayName} plugin status: ${styles.label}`}
+      >
+        <span className={`h-1.5 w-1.5 rounded-full ${styles.dot}`} aria-hidden="true" />
+        {styles.label}
+      </span>
+      {status.installed && status.version && <span className="ml-3 text-sm text-co-text-muted">v{status.version}</span>}
+      {!status.installed && (
+        <div className="mt-2">
+          <p className="text-sm text-co-text-muted">
+            No Corner Office plugin for {descriptor.displayName} found. Sessions work, but activity tracking and idle alerts are off for{' '}
+            {descriptor.displayName}.
+          </p>
+          {descriptor.plugin && <p className="text-sm text-co-text-muted mt-1">{descriptor.plugin.nextStep}</p>}
+          {descriptor.plugin?.installCommands.map((command) => (
+            <code key={command} className="block font-mono text-sm text-amber-300 bg-black/30 rounded px-2 py-1.5 mt-1.5">
+              {command}
+            </code>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /**
  * Displays the Corner Office Claude Code plugin installation status.
  * Shows a badge with install guidance and a Refresh button.
  */
 export function PluginStatus(): React.ReactElement {
   const [status, setStatus] = useState<PluginStatusType | null>(null)
+  const [others, setOthers] = useState<LoadedStatuses | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [hooksLoading, setHooksLoading] = useState(false)
@@ -61,8 +119,9 @@ export function PluginStatus(): React.ReactElement {
     setLoading(true)
     setError(null)
     try {
-      const response = await window.cornerOffice.plugin.getStatus()
-      setStatus(unwrapIpc(response))
+      const loaded = await loadStatuses()
+      setStatus(loaded.statuses[LEGACY_AGENT_ID] ?? null)
+      setOthers(loaded)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -73,10 +132,11 @@ export function PluginStatus(): React.ReactElement {
   // Initial load: state is only set from promise callbacks, and only while mounted.
   useEffect(() => {
     let active = true
-    window.cornerOffice.plugin
-      .getStatus()
-      .then((response) => {
-        if (active) setStatus(unwrapIpc(response))
+    loadStatuses()
+      .then((loaded) => {
+        if (!active) return
+        setStatus(loaded.statuses[LEGACY_AGENT_ID] ?? null)
+        setOthers(loaded)
       })
       .catch((e: unknown) => {
         if (active) setError(e instanceof Error ? e.message : String(e))
@@ -121,6 +181,10 @@ export function PluginStatus(): React.ReactElement {
   const pluginStyles = PLUGIN_BADGE_STYLES[pluginVariant]
 
   const showHooksSection = status?.installed && status.meetsMinimumVersion
+
+  const otherAgentRows = loading
+    ? []
+    : AGENT_DESCRIPTORS.filter((d) => d.id !== LEGACY_AGENT_ID && d.plugin !== null && others?.availability?.[d.id] === 'found')
 
   return (
     <section aria-labelledby="plugin-status-heading">
@@ -233,6 +297,11 @@ export function PluginStatus(): React.ReactElement {
           )}
         </div>
       )}
+
+      {/* Other agents' plugins: a row only for an agent that has a plugin and is found on this machine. */}
+      {otherAgentRows.map((descriptor) => (
+        <AgentPluginRow key={descriptor.id} descriptor={descriptor} status={others?.statuses[descriptor.id] ?? NOT_INSTALLED} />
+      ))}
 
       {/* Refresh button */}
       <button

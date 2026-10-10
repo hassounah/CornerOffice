@@ -49,6 +49,44 @@ describe('startSession', () => {
     expect(result).toEqual({ ok: false, code: 'NOT_ELIGIBLE', detail: null })
   })
 
+  it('NOT_ELIGIBLE for an agent whose handler has no sandbox half (Codex), before any Docker call', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    prepareRepo(h)
+    const manager = createSandboxManager(h.makeDeps())
+
+    const result = await manager.startSession(h.opts({ agentId: 'codex' }))
+
+    expect(result).toEqual({ ok: false, code: 'NOT_ELIGIBLE', detail: null })
+    expect(h.terminal.spawnCalls).toHaveLength(0)
+    expect(h.docker.calls.some((c) => c.args[0] === 'create')).toBe(false)
+  })
+
+  it('AGENT_NOT_READY (with the agent and the readiness code) when ~/.claude is missing, before the image step and any session state', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    prepareRepo(h)
+    fs.rmSync(path.join(h.realHome, '.claude.json'), { force: true })
+    const manager = createSandboxManager(h.makeDeps())
+
+    const result = await manager.startSession(h.opts())
+
+    expect(result).toEqual({ ok: false, code: 'AGENT_NOT_READY', detail: null, agentId: 'claude', readiness: 'home-missing' })
+    expect(h.docker.calls.some((c) => ['create', 'start', 'rm', 'image'].includes(c.args[0]))).toBe(false)
+    expect(h.terminal.spawnCalls).toHaveLength(0)
+    expect((await manager.getStatus('myslug')).session.state).toBe('idle')
+  })
+
+  it('AGENT_NOT_READY for a malformed ~/.claude entry reports config-invalid', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    prepareRepo(h)
+    fs.writeFileSync(path.join(h.realHome, '.claude', 'plugins'), 'not a folder')
+    const manager = createSandboxManager(h.makeDeps())
+
+    expect(await manager.startSession(h.opts())).toEqual({ ok: false, code: 'AGENT_NOT_READY', detail: null, agentId: 'claude', readiness: 'config-invalid' })
+  })
+
   it('SESSION_EXISTS when the SandboxTerminalPort reports a session', async () => {
     sandboxSettings.disabled = false
     const h = setup()
@@ -130,7 +168,7 @@ describe('startSession', () => {
     expect(h.discovery.addCalls).toEqual([])
   })
 
-  it('CLAUDE_CONFIG_INVALID (with fixed detail) when ~/.claude/settings.json is not valid JSON; nothing reaches docker and the slug is idle again', async () => {
+  it('AGENT_CONFIG_INVALID (with fixed detail and the agent) when ~/.claude/settings.json is not valid JSON; nothing reaches docker and the slug is idle again', async () => {
     sandboxSettings.disabled = false
     const h = setup()
     prepareRepo(h)
@@ -139,7 +177,7 @@ describe('startSession', () => {
 
     const result = await manager.startSession(h.opts())
 
-    expect(result).toEqual({ ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: claudeConfigDetail('settings.json', 'invalid-json') })
+    expect(result).toEqual({ ok: false, code: 'AGENT_CONFIG_INVALID', detail: claudeConfigDetail('settings.json', 'invalid-json'), agentId: 'claude' })
     expect(h.docker.calls.some((c) => ['create', 'start', 'rm'].includes(c.args[0]))).toBe(false)
     expect(h.terminal.spawnCalls).toHaveLength(0)
     expect((await manager.getStatus('myslug')).session.state).toBe('idle')
@@ -465,7 +503,7 @@ describe('startSession', () => {
         ...h.image.service,
         getImageState: async () => {
           if (fail) throw new Error('image boom')
-          return { state: 'ready', builtAt: null, sizeBytes: null, imageId: IMAGE_ID }
+          return { state: 'ready', builtAt: null, sizeBytes: null, imageId: IMAGE_ID, agents: ['claude', 'codex'] }
         },
       }
       const manager = createSandboxManager(h.makeDeps({ image }))
@@ -564,7 +602,7 @@ describe('startSession', () => {
           firstImageReadStarted = true
           await gate
         }
-        return { state: 'ready', builtAt: null, sizeBytes: null, imageId: IMAGE_ID }
+        return { state: 'ready', builtAt: null, sizeBytes: null, imageId: IMAGE_ID, agents: ['claude', 'codex'] }
       },
       build: async () => ({ ok: true, imageId: IMAGE_ID, recreatePendingNames: [] }),
       cancel: () => {},
@@ -606,7 +644,7 @@ describe('startSession', () => {
           firstImageReadStarted = true
           await gate
         }
-        return { state: 'ready', builtAt: null, sizeBytes: null, imageId: IMAGE_ID }
+        return { state: 'ready', builtAt: null, sizeBytes: null, imageId: IMAGE_ID, agents: ['claude', 'codex'] }
       },
       build: async () => ({ ok: true, imageId: IMAGE_ID, recreatePendingNames: [] }),
       cancel: () => {},
@@ -696,6 +734,7 @@ describe('startSession', () => {
     const h = setup()
     prepareRepo(h)
     const { worktree, ensureSpy, release } = gatedWorktree('remove')
+    h.docker.script(['ps'], { result: { stdout: `${containerName('myslug')}\n`, stderr: '', exitCode: 0 } })
     const manager = createSandboxManager(h.makeDeps({ worktree }))
 
     const deletePromise = manager.delete('myslug', true)

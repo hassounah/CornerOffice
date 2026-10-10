@@ -49,6 +49,7 @@ export interface SandboxConfig {
   toolchains: { node: boolean; go: boolean; buildBase: boolean }; // defaults: all true
   globalAllowlist: string[];                                      // user additions only
   workspaces: Record<string, SandboxWorkspaceConfig>;              // key: sandbox slug
+  eventsSplitAt?: string | null;                                  // ISO time containers started writing events to their own root (D23); null/absent = not recorded yet
 }
 
 // ---------------------------------------------------------------------------

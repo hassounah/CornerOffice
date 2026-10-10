@@ -55,6 +55,8 @@ function resetStore() {
     overlayVisible: {},
     spawnError: {},
     sessionKind: {},
+    sessionAgent: {},
+    lastSpawnOpts: {},
     spawnFailure: {},
     buildPrompt: {},
     recreatePrompt: {},
@@ -98,6 +100,31 @@ describe('terminal-store', () => {
       mockSpawn.mockResolvedValue(ok({ workspaceSlug: 'my-ws' }))
       await getState().spawn('my-ws')
       expect(mockSpawn).toHaveBeenCalledWith('my-ws', 80, 24)
+    })
+
+    it('with no options records the legacy agent and default host options', async () => {
+      mockSpawn.mockResolvedValue(ok({ workspaceSlug: 'my-ws' }))
+      await getState().spawn('my-ws')
+      expect(getState().sessionAgent['my-ws']).toBe('claude')
+      expect(getState().lastSpawnOpts['my-ws']).toEqual({ kind: 'host', agentId: 'claude', permissionMode: 'default' })
+    })
+
+    it('passes host options and fallbackFields through, and remembers them for Retry', async () => {
+      mockSpawn.mockResolvedValue(ok({ workspaceSlug: 'my-ws' }))
+      const opts = { kind: 'host' as const, agentId: 'claude' as const, permissionMode: 'auto' as const, fallbackFields: ['location' as const] }
+      await getState().spawn('my-ws', opts)
+      expect(mockSpawn).toHaveBeenCalledWith('my-ws', 80, 24, { agentId: 'claude', permissionMode: 'auto', fallbackFields: ['location'] })
+      expect(getState().sessionKind['my-ws']).toBe('host')
+      expect(getState().sessionAgent['my-ws']).toBe('claude')
+      expect(getState().lastSpawnOpts['my-ws']).toEqual(opts)
+    })
+
+    it('keeps lastSpawnOpts after a failed host start', async () => {
+      mockSpawn.mockResolvedValue(err('spawn failed'))
+      const opts = { kind: 'host' as const, agentId: 'claude' as const, permissionMode: 'default' as const }
+      await getState().spawn('my-ws', opts)
+      expect(getState().sessions['my-ws']).toBe('none')
+      expect(getState().lastSpawnOpts['my-ws']).toEqual(opts)
     })
 
     it('sets none + spawnError on IPC failure (A4)', async () => {
@@ -268,6 +295,117 @@ describe('terminal-store', () => {
   })
 })
 
+// ─── exit-127 banner (C4) ───────────────────────────────────────────────────
+
+describe('exit 127 banner', () => {
+  const NOT_FOUND = "`codex` may not be installed"
+  const stops: (() => void)[] = []
+
+  function exitedListener(): (payload: unknown) => void {
+    stops.push(getState().initListeners())
+    const call = mockOn.mock.calls.find((c) => (c as unknown[])[0] === 'terminal:exited') as unknown[]
+    return call[1] as (payload: unknown) => void
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    resetStore()
+    useTerminalStore.setState({ exitBanner: {} })
+    mockSpawn.mockResolvedValue(ok({ workspaceSlug: 'my-ws' }))
+  })
+
+  afterEach(() => {
+    for (const stop of stops.splice(0)) stop()
+    vi.useRealTimers()
+  })
+
+  async function startCodex(): Promise<void> {
+    await getState().spawn('my-ws', { kind: 'host', agentId: 'codex', permissionMode: 'auto' })
+  }
+
+  it('exit 127 within 10 s keeps the overlay open and shows the agent copy', async () => {
+    await startCodex()
+    vi.advanceTimersByTime(9_000)
+    exitedListener()({ workspaceSlug: 'my-ws', exitCode: 127 })
+
+    expect(getState().sessions['my-ws']).toBe('none')
+    expect(getState().overlayVisible['my-ws']).toBe(true)
+    expect(getState().exitBanner['my-ws']).toContain(NOT_FOUND)
+  })
+
+  it('uses the Claude copy for a Claude session', async () => {
+    await getState().spawn('my-ws')
+    exitedListener()({ workspaceSlug: 'my-ws', exitCode: 127 })
+    expect(getState().exitBanner['my-ws']).toBe('claude command not found. Is Claude Code installed?')
+  })
+
+  it('exit 127 after 10 s is an ordinary exit', async () => {
+    await startCodex()
+    vi.advanceTimersByTime(10_001)
+    exitedListener()({ workspaceSlug: 'my-ws', exitCode: 127 })
+
+    expect(getState().overlayVisible['my-ws']).toBe(false)
+    expect(getState().exitBanner['my-ws'] ?? null).toBeNull()
+  })
+
+  it('another exit code inside the window is an ordinary exit', async () => {
+    await startCodex()
+    exitedListener()({ workspaceSlug: 'my-ws', exitCode: 1 })
+
+    expect(getState().overlayVisible['my-ws']).toBe(false)
+    expect(getState().exitBanner['my-ws'] ?? null).toBeNull()
+  })
+
+  it('a sandbox session never shows the banner', async () => {
+    useTerminalStore.setState({ sessions: { 'my-ws': 'running' }, sessionKind: { 'my-ws': 'sandbox' }, overlayVisible: { 'my-ws': true } })
+    exitedListener()({ workspaceSlug: 'my-ws', exitCode: 127 })
+    expect(getState().exitBanner['my-ws'] ?? null).toBeNull()
+  })
+
+  it('Retry spawns again with the last options and clears the banner', async () => {
+    await startCodex()
+    exitedListener()({ workspaceSlug: 'my-ws', exitCode: 127 })
+    mockSpawn.mockClear()
+
+    await getState().retryExited('my-ws')
+
+    expect(mockSpawn).toHaveBeenCalledWith('my-ws', 80, 24, expect.objectContaining({ agentId: 'codex', permissionMode: 'auto' }))
+    expect(getState().exitBanner['my-ws']).toBeNull()
+    expect(getState().sessions['my-ws']).toBe('running')
+  })
+
+  it('Change agent closes the overlay, clears the banner and requests the chooser', async () => {
+    await startCodex()
+    exitedListener()({ workspaceSlug: 'my-ws', exitCode: 127 })
+
+    getState().changeAgent('my-ws')
+
+    expect(getState().overlayVisible['my-ws']).toBe(false)
+    expect(getState().exitBanner['my-ws']).toBeNull()
+    expect(useSandboxStore.getState().chooserRequest).toBe('my-ws')
+  })
+
+  it('hiding the overlay dismisses the banner', async () => {
+    await startCodex()
+    exitedListener()({ workspaceSlug: 'my-ws', exitCode: 127 })
+    getState().hideOverlay('my-ws')
+    expect(getState().exitBanner['my-ws']).toBeNull()
+  })
+
+  it('a spawn ENOENT surfaces the agent copy', async () => {
+    mockSpawn.mockRejectedValue(new Error('spawn ENOENT'))
+    await startCodex()
+    expect(getState().spawnError['my-ws']).toContain(NOT_FOUND)
+  })
+
+  it('a spawn EACCES names the agent binary', async () => {
+    mockSpawn.mockRejectedValue(new Error('spawn EACCES'))
+    await startCodex()
+    expect(getState().spawnError['my-ws']).toBe('Permission denied launching codex.')
+  })
+})
+
 // ─── sandbox sessions ───────────────────────────────────────────────────────
 
 const SANDBOX = { kind: 'sandbox', permissionMode: 'skip', networkMode: 'allowlist' } as const
@@ -308,6 +446,20 @@ describe('terminal-store — sandbox sessions', () => {
       expect(getState().sessions['my-ws']).toBe('running')
       expect(getState().sessionKind['my-ws']).toBe('sandbox')
       expect(getState().overlayVisible['my-ws']).toBe(true)
+    })
+
+    it('passes agentId and fallbackFields, and records the session agent and options', async () => {
+      mockStartSession.mockResolvedValue(ok({ ok: true, workspaceSlug: 'my-ws', kind: 'sandbox' }))
+      const opts = { ...SANDBOX, agentId: 'claude' as const, fallbackFields: ['permissionMode' as const] }
+
+      await getState().spawn('my-ws', opts)
+
+      expect(mockStartSession).toHaveBeenCalledWith('my-ws', 80, 24, SANDBOX.permissionMode, SANDBOX.networkMode, {
+        agentId: 'claude',
+        fallbackFields: ['permissionMode'],
+      })
+      expect(getState().sessionAgent['my-ws']).toBe('claude')
+      expect(getState().lastSpawnOpts['my-ws']).toEqual(opts)
     })
 
     it('is "starting" while the start is in flight', async () => {
@@ -364,15 +516,31 @@ describe('terminal-store — sandbox sessions', () => {
       expect(getState().spawnError['my-ws']).toBe(SANDBOX_UNAVAILABLE_COPY)
     })
 
-    it('NOT_ELIGIBLE shows the eligibility reason copy from the status, including claude-home-missing (§14.5)', async () => {
+    it('NOT_ELIGIBLE shows the eligibility reason copy from the status', async () => {
       mockStartSession.mockResolvedValue(ok({ ok: false, code: 'NOT_ELIGIBLE', detail: null }))
-      mockGetStatus.mockResolvedValue(ok(sandboxStatus({ reason: 'claude-home-missing' })))
+      mockGetStatus.mockResolvedValue(ok(sandboxStatus({ reason: 'docker-daemon-down' })))
+
+      await getState().spawn('my-ws', SANDBOX)
+
+      expect(getState().spawnError['my-ws']).toBe(ELIGIBILITY_COPY['docker-daemon-down'])
+      expect(getState().spawnFailure['my-ws']).toBe('NOT_ELIGIBLE')
+    })
+
+    it('AGENT_NOT_READY shows the agent readiness copy from its descriptor, including Claude home-missing (§14.5)', async () => {
+      mockStartSession.mockResolvedValue(ok({ ok: false, code: 'AGENT_NOT_READY', detail: null, agentId: 'claude', readiness: 'home-missing' }))
 
       await getState().spawn('my-ws', SANDBOX)
 
       expect(getState().spawnError['my-ws']).toBe('Run Claude Code on this machine once first, then try again.')
-      expect(getState().spawnError['my-ws']).toBe(ELIGIBILITY_COPY['claude-home-missing'])
-      expect(getState().spawnFailure['my-ws']).toBe('NOT_ELIGIBLE')
+      expect(getState().spawnFailure['my-ws']).toBe('AGENT_NOT_READY')
+    })
+
+    it('AGENT_CONFIG_INVALID prefixes the handler detail', async () => {
+      mockStartSession.mockResolvedValue(ok({ ok: false, code: 'AGENT_CONFIG_INVALID', detail: '~/.claude/commands exists but isn\'t a folder.', agentId: 'claude' }))
+
+      await getState().spawn('my-ws', SANDBOX)
+
+      expect(getState().spawnError['my-ws']).toMatch(/^~\/\.claude\/commands exists but isn't a folder\. Your Claude Code configuration/)
     })
 
     it('NOT_ELIGIBLE with no known reason uses a generic line', async () => {

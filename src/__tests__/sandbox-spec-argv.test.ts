@@ -86,6 +86,8 @@ describe('buildArgv', () => {
       home,
       buildHash: 'abc123',
       ctx,
+      codex: { version: '0.162.1', sha512: { x64: 'a'.repeat(128), arm64: 'b'.repeat(128) } },
+      agents: ['claude', 'codex'],
     }
   }
 
@@ -104,11 +106,33 @@ describe('buildArgv', () => {
       '--build-arg', 'AGENT_UID=1000',
       '--build-arg', 'AGENT_GID=1000',
       '--build-arg', `AGENT_HOME=${home}`,
+      '--build-arg', 'CODEX_VERSION=0.162.1',
+      '--build-arg', `CODEX_SHA512_X64=${'a'.repeat(128)}`,
+      '--build-arg', `CODEX_SHA512_ARM64=${'b'.repeat(128)}`,
       '--label', `${LABEL.build}=abc123`,
       '--label', `${LABEL.toolchains}=node,build-base`,
+      '--label', `${LABEL.agents}=claude,codex`,
       '--file', path.join(ctx, 'Dockerfile'),
       ctx,
     ])
+  })
+
+  it.each([
+    ['an empty version', { version: '', sha512: { x64: 'a'.repeat(128), arm64: 'b'.repeat(128) } }],
+    ['a version with shell metacharacters', { version: '1.0;rm', sha512: { x64: 'a'.repeat(128), arm64: 'b'.repeat(128) } }],
+    ['an empty x64 hash', { version: '0.162.1', sha512: { x64: '', arm64: 'b'.repeat(128) } }],
+    ['a short arm64 hash', { version: '0.162.1', sha512: { x64: 'a'.repeat(128), arm64: 'b'.repeat(127) } }],
+    ['an upper-case hash', { version: '0.162.1', sha512: { x64: 'A'.repeat(128), arm64: 'b'.repeat(128) } }],
+  ])('refuses %s (fail closed)', (_label, codex) => {
+    const home = mkTmp('co-argv-home-')
+    const ctx = mkTmp('co-argv-ctx-')
+    expect(() => buildArgv({ ...baseOpts(home, ctx), codex })).toThrow(/Codex/)
+  })
+
+  it.each([[[]], [['Claude']], [['a,b']]])('refuses an invalid agents label %j', (agents) => {
+    const home = mkTmp('co-argv-home-')
+    const ctx = mkTmp('co-argv-ctx-')
+    expect(() => buildArgv({ ...baseOpts(home, ctx), agents })).toThrow(/agents label/)
   })
 
   it('adds --no-cache only when rebuild is true (D15)', () => {
@@ -233,6 +257,7 @@ describe('createArgv', () => {
       '--name', 'co-sandbox-my-ws', '--hostname', 'co-sandbox-my-ws',
       '--label', `${LABEL.sandbox}=1`,
       '--label', `${LABEL.workspace}=my-ws`,
+      '--label', `${LABEL.agent}=claude`,
       '--label', `${LABEL.spec}=deadbeef`,
       '--init',
       '--user', '1000:1000',
@@ -251,6 +276,27 @@ describe('createArgv', () => {
       '--workdir', '/home/agent/.corner-office/sandboxes/my-ws',
       SANDBOX_IMAGE,
     ])
+  })
+
+  it.each([null, undefined])('refuses a missing port (%s) for an agent with channels, so Claude can never lose its channel', (port) => {
+    const opts = makeBaseOpts()
+    expect(() => createArgv({ ...opts, port })).toThrow(/uses channels but createArgv got no port/)
+    expect(() => createArgv({ ...opts, port, agentId: 'claude' })).toThrow(/channels/)
+  })
+
+  it.each([null, undefined])('publishes no port and sets no channel env when the port is %s (an agent without channels)', (port) => {
+    const opts = makeBaseOpts()
+    const argv = createArgv({ ...opts, port, agentId: 'codex', c: 'co-sandbox-my-ws.codex' })
+    expect(argv).not.toContain('--publish')
+    expect(argv.join(' ')).not.toContain('CORNER_OFFICE_CHANNEL_PORT')
+    expect(argv.join(' ')).not.toContain('127.0.0.1')
+    expect(argv).toContain('CORNER_OFFICE_BASE_BRANCH=main')
+  })
+
+  it('labels the container with its agent, defaulting to the legacy agent', () => {
+    const opts = makeBaseOpts()
+    expect(createArgv(opts)).toContain(`${LABEL.agent}=claude`)
+    expect(createArgv({ ...opts, agentId: 'codex', c: 'co-sandbox-my-ws.codex' })).toContain(`${LABEL.agent}=codex`)
   })
 
   it('--publish is always loopback-pinned', () => {

@@ -28,6 +28,7 @@ function fakeSandboxPaths(sandboxesRoot: string): SandboxPaths {
     sandboxesRoot,
     sandboxStateRoot: path.join(sandboxesRoot, '..', 'state'),
     claudeDir: '/dev/null',
+    codexDir: '/dev/null',
     claudeJson: '/dev/null',
     claudeSettings: '/dev/null',
     claudeMd: '/dev/null',

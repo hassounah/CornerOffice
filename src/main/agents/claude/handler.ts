@@ -1,5 +1,7 @@
+import fs from 'fs'
 import path from 'path'
 import { defineAgent } from '../handler'
+import { CLAUDE_DESCRIPTOR } from './descriptor'
 import type { AgentConfigResult, AgentMountSpec, SandboxCtx } from '../handler'
 import { pluginDetectorService } from '../../services/plugin-detector'
 import {
@@ -51,8 +53,15 @@ export const CLAUDE_HANDLER = defineAgent('claude', {
       if (!checkClaudeConfigSources(paths).ok) return { ok: false, code: 'config-invalid' }
       return { ok: true }
     },
-    prepare: (ctx, phase) =>
-      toAgentResult(phase === 'plan' ? prepareClaudeConfig(ctx.paths, ctx.slug) : seedClaudeJson(ctx.paths, ctx.slug)),
+    prepare: (ctx, phase) => {
+      if (phase === 'create') return toAgentResult(seedClaudeJson(ctx.paths, ctx.slug))
+      // `~/.claude` itself is never created: without it there is nothing to prepare.
+      if (!claudeHomeOk(ctx.paths)) return { ok: false, detail: CLAUDE_DESCRIPTOR.copy.readiness['home-missing'].message }
+      // SEC-M3: the channel card directory is a mount target inside the `~/.claude` bind mount. It is created here, as the
+      // user, because dockerd would otherwise create it root-owned on the real host path.
+      fs.mkdirSync(path.join(ctx.paths.claudeDir, 'channels'), { recursive: true, mode: 0o700 })
+      return toAgentResult(prepareClaudeConfig(ctx.paths, ctx.slug))
+    },
     // The order is part of the mount-plan hash: keep it identical to sandbox-spec's 4cbd703 entries.
     mounts: ({ paths, slug }: SandboxCtx): readonly AgentMountSpec[] => [
       { source: paths.claudeDir, target: paths.claudeDir, readonly: false },

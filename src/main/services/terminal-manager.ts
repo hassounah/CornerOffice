@@ -87,6 +87,11 @@ function timeout(ms: number): Promise<void> {
 // WARNING: Accesses xterm private API (_core._renderService.dimensions).
 // Pin @xterm/xterm version. Verify on upgrade.
 
+export interface HostSessionObserver {
+  started(workspaceSlug: string, agentId: AgentId): void
+  ended(workspaceSlug: string): void
+}
+
 /**
  * Manages PTY lifecycle for terminal sessions.
  *
@@ -99,6 +104,7 @@ export class TerminalManagerService {
   private readonly _appState: AppState
   /** Setter-injected (breaks the construction cycle with sandbox-manager, §3.12). Null until index.ts wires it (step 3.9). */
   private _delegate: SandboxSessionDelegate | null = null
+  private _sessionObserver: HostSessionObserver | null = null
 
   constructor(getMainWindow: () => BrowserWindow | null, appState: AppState) {
     this._getMainWindow = getMainWindow
@@ -109,6 +115,11 @@ export class TerminalManagerService {
 
   setSandboxDelegate(delegate: SandboxSessionDelegate): void {
     this._delegate = delegate
+  }
+
+  /** Told when an agent's host session starts and ends (not shells or sandbox sessions); wired once by index.ts. */
+  setSessionObserver(observer: HostSessionObserver): void {
+    this._sessionObserver = observer
   }
 
   spawn(options: TerminalSpawnOptions): TerminalSpawnResult {
@@ -146,6 +157,7 @@ export class TerminalManagerService {
     env.TERM = 'xterm-256color'
 
     this._spawnPty(workspaceSlug, 'host', USER_SHELL, ['--login', '-i', '-c', argv.join(' ')], cwd, env, cols, rows, agentId)
+    this._sessionObserver?.started(workspaceSlug, agentId)
     return { workspaceSlug }
   }
 
@@ -499,6 +511,8 @@ export class TerminalManagerService {
       session.exitResolve?.()
 
       this._cleanup(key)
+
+      if (kind === 'host' && agentId !== undefined) this._sessionObserver?.ended(key)
 
       // §3.12: notifies the manager so it can run `ending` if it wasn't
       // already underway, and surface a notification on an unexpected exit.

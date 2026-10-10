@@ -29,3 +29,13 @@ runtime plugin loading.
 `defineAgent` fails at module load with a message naming the agent and the fix
 when the descriptor and handler disagree (for example sandbox modes without a
 `sandbox` handler, or a host argv token containing shell metacharacters).
+
+## Worked example: Codex (host only)
+
+Codex is the smallest real agent, and the one to copy first:
+
+- `codex/descriptor.ts`: host modes `[default, auto]`, an empty sandbox mode list, no `homeEntries`, no channels, and copy for "not found", the first-run note and "activity tracking off".
+- `codex/handler.ts`: argv `codex --no-alt-screen --no-daemon [--approve-for-me]`, `envAllow` of `OPENAI_API_KEY`, `CODEX_API_KEY` and `CODEX_ACCESS_TOKEN`, and no `sandbox` half. An agent without one is never offered in the sandbox: the start schema and the manager both refuse it.
+- Registered with one line in `descriptors.ts` and one in `registry.ts`.
+
+A sandbox half arrives later and must bring its own pinned install, mounts and tests (steps 5 to 7 above).

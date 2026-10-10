@@ -1,6 +1,7 @@
 import type { AgentHandler } from './handler'
 import type { AgentId } from './descriptors'
 import { CLAUDE_HANDLER } from './claude/handler'
+import { CODEX_HANDLER } from './codex/handler'
 
 // ---------------------------------------------------------------------------
 // registry.ts — handlers by agent id (TRD §4.1). Registration step (2): one
@@ -9,6 +10,7 @@ import { CLAUDE_HANDLER } from './claude/handler'
 
 export const HANDLERS: Record<AgentId, AgentHandler> = {
   claude: CLAUDE_HANDLER,
+  codex: CODEX_HANDLER,
 }
 
 export function getHandler(id: AgentId): AgentHandler {

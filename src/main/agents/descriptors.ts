@@ -1,13 +1,14 @@
 import { z } from 'zod'
 import type { AgentDescriptor } from './types'
 import { CLAUDE_DESCRIPTOR } from './claude/descriptor'
+import { CODEX_DESCRIPTOR } from './codex/descriptor'
 
 // ---------------------------------------------------------------------------
 // descriptors.ts — the pure agent registry (TRD §4.2). Registration step (1):
 // add a descriptor to AGENT_DESCRIPTORS; handlers register in registry.ts.
 // ---------------------------------------------------------------------------
 
-export const AGENT_DESCRIPTORS = [CLAUDE_DESCRIPTOR] as const
+export const AGENT_DESCRIPTORS = [CLAUDE_DESCRIPTOR, CODEX_DESCRIPTOR] as const
 
 export type AgentId = (typeof AGENT_DESCRIPTORS)[number]['id']
 export const AGENT_IDS = AGENT_DESCRIPTORS.map((d) => d.id) as [AgentId, ...AgentId[]]

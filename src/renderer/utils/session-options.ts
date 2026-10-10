@@ -1,5 +1,5 @@
 import { AGENT_DESCRIPTORS, LEGACY_AGENT_ID } from '@main/agents/descriptors'
-import type { AgentDescriptor, AppPermissionMode, SessionLocation } from '@main/agents/types'
+import type { AgentDescriptor, AppPermissionMode, PermissionChoice, SessionLocation } from '@main/agents/types'
 import type { SessionChoice } from '@main/types/config'
 
 // ---------------------------------------------------------------------------
@@ -117,7 +117,7 @@ export function resolveSessionChoice(remembered: RememberedChoices | null, ctx: 
   // 4. A PATH miss never replaces anything: the chooser shows an inline warning instead.
 
   // 5. Permission mode not offered for the effective agent and location -> its first mode.
-  const offered = descriptor.permissionModes[choice.location]
+  const offered: readonly PermissionChoice[] = descriptor.permissionModes[choice.location]
   const modeKey = choice.location === 'host' ? 'hostPermissionMode' : 'sandboxPermissionMode'
   const current: string = choice[modeKey]
   if (offered.length > 0 && !offered.some((c) => c.mode === current)) {

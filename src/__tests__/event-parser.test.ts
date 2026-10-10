@@ -396,18 +396,17 @@ describe('EventParserService', () => {
     })
 
     it('parses an Interrupt line written with the aliases and an agent field', () => {
-      // The agent enum only holds registered agents ('codex' joins it in C2), so this uses 'claude'.
       const line = JSON.stringify({
         timestamp: '2026-03-01T10:00:00Z',
         hook_event_name: 'Interrupt',
         workspace: 'my-project',
         session_id: 'codex-1',
-        agent: 'claude',
+        agent: 'codex',
       })
       mockRegularFile(Buffer.from(line + '\n'))
       const result = parser.parseFromOffset('/path/events.jsonl', 0)
       expect(result.events).toHaveLength(1)
-      expect(result.events[0]).toMatchObject({ event: 'Interrupt', sessionId: 'codex-1', agent: 'claude' })
+      expect(result.events[0]).toMatchObject({ event: 'Interrupt', sessionId: 'codex-1', agent: 'codex' })
     })
 
     it('prefers new-format event field over hook_event_name', () => {

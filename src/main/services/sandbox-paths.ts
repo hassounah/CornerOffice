@@ -44,6 +44,8 @@ export interface SandboxPaths {
   sandboxStateRoot: string
   /** `<realHome>/.claude` — read-write mount source shared with every sandbox. */
   claudeDir: string
+  /** `<realHome>/.codex` — Codex's home (`H`), read-write mount source for a Codex sandbox (#0037 D6/D8). */
+  codexDir: string
   /** `<realHome>/.claude.json` — single-file read-write bind mount. */
   claudeJson: string
   /** `<realHome>/.claude/settings.json` — host original; a sanitized per-sandbox copy is mounted over it read-only. */
@@ -93,6 +95,7 @@ export function sandboxPaths(realHome: string): SandboxPaths {
   const sandboxesRoot = path.join(realHome, '.corner-office', 'sandboxes')
   const sandboxStateRoot = path.join(realHome, '.corner-office', 'sandbox')
   const claudeDir = path.join(realHome, '.claude')
+  const codexDir = path.join(realHome, '.codex')
   const claudeJson = path.join(realHome, '.claude.json')
   const claudeSettings = path.join(claudeDir, 'settings.json')
   const claudeMd = path.join(claudeDir, 'CLAUDE.md')
@@ -105,6 +108,7 @@ export function sandboxPaths(realHome: string): SandboxPaths {
     sandboxesRoot,
     sandboxStateRoot,
     claudeDir,
+    codexDir,
     claudeJson,
     claudeSettings,
     claudeMd,

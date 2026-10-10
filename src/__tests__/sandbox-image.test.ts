@@ -12,6 +12,9 @@ const mockLog = vi.hoisted(() => ({
 vi.mock('electron-log/main', () => ({ default: mockLog }))
 
 import {
+  CODEX_SHA512,
+  CODEX_VERSION,
+  IMAGE_AGENTS,
   resolveBuildContext,
   computeBuildHash,
   buildHashSignature,
@@ -90,12 +93,19 @@ function makeCtx(overrides: Record<string, string> = {}): string {
 const IDENTITY: SandboxImageIdentity = { uid: 1000, gid: 1000, home: mkTmp('co-image-home-') }
 const TOOLCHAINS: SandboxImageToolchains = { node: true, go: false, buildBase: true }
 
-function imageInspectJson(opts: { id?: string; created?: string; size?: number; buildHash?: string | null } = {}): string {
+function imageInspectJson(
+  opts: { id?: string; created?: string; size?: number; buildHash?: string | null; agents?: string } = {},
+): string {
   return JSON.stringify({
     Id: opts.id ?? 'sha256:new-image-id',
     Created: opts.created ?? '2026-01-01T00:00:00.000Z',
     Size: opts.size ?? 123456,
-    Config: { Labels: opts.buildHash === null ? null : { [LABEL.build]: opts.buildHash ?? 'placeholder-hash' } },
+    Config: {
+      Labels:
+        opts.buildHash === null
+          ? null
+          : { [LABEL.build]: opts.buildHash ?? 'placeholder-hash', ...(opts.agents === undefined ? {} : { [LABEL.agents]: opts.agents }) },
+    },
   })
 }
 
@@ -297,7 +307,19 @@ describe('getImageState', () => {
     const { service, docker } = await makeService()
     docker.script(['image', 'inspect'], { error: { kind: 'failed', exitCode: 1 } })
     const state = await service.getImageState()
-    expect(state).toEqual({ state: 'absent', builtAt: null, sizeBytes: null, imageId: null })
+    expect(state).toEqual({ state: 'absent', builtAt: null, sizeBytes: null, imageId: null, agents: [] })
+  })
+
+  it('reads the agents label, and treats a missing label as claude only (a pre-Codex image)', async () => {
+    const { service, docker } = await makeService()
+    docker.script(['image', 'inspect'], { result: { stdout: imageInspectJson({ buildHash: 'h', agents: 'claude,codex' }), stderr: '', exitCode: 0 } })
+    expect((await service.getImageState()).agents).toEqual(['claude', 'codex'])
+
+    docker.script(['image', 'inspect'], { result: { stdout: imageInspectJson({ buildHash: 'h' }), stderr: '', exitCode: 0 } })
+    expect((await service.getImageState()).agents).toEqual(['claude'])
+
+    docker.script(['image', 'inspect'], { result: { stdout: imageInspectJson({ buildHash: null }), stderr: '', exitCode: 0 } })
+    expect((await service.getImageState()).agents).toEqual(['claude'])
   })
 
   it('is ready when the label matches the current build hash', async () => {
@@ -345,6 +367,37 @@ describe('getImageState', () => {
     const { service, docker } = await makeService()
     vi.spyOn(docker, 'run').mockRejectedValueOnce(new Error('not a DockerError'))
     await expect(service.getImageState()).rejects.toThrow('not a DockerError')
+  })
+})
+
+describe('build(): Codex pins and agents label (D11, SL-1)', () => {
+  it('pins a version and hex sha512 values for both architectures', () => {
+    expect(CODEX_VERSION).toMatch(/^\d+\.\d+\.\d+$/)
+    expect(CODEX_SHA512.x64).toMatch(/^[0-9a-f]{128}$/)
+    expect(CODEX_SHA512.arm64).toMatch(/^[0-9a-f]{128}$/)
+    expect(CODEX_SHA512.x64).not.toBe(CODEX_SHA512.arm64)
+  })
+
+  it('passes the pins as build args and labels the image with the installed agents', async () => {
+    const { service, docker } = await makeService()
+    docker.script(['image', 'inspect'], { result: { stdout: imageInspectJson(), stderr: '', exitCode: 0 } })
+
+    await service.build({ rebuild: false })
+
+    const args = docker.calls.find((c) => c.args[0] === 'build')?.args ?? []
+    expect(args).toContain(`CODEX_VERSION=${CODEX_VERSION}`)
+    expect(args).toContain(`CODEX_SHA512_X64=${CODEX_SHA512.x64}`)
+    expect(args).toContain(`CODEX_SHA512_ARM64=${CODEX_SHA512.arm64}`)
+    expect(args).toContain(`${LABEL.agents}=${IMAGE_AGENTS.join(',')}`)
+    expect(IMAGE_AGENTS).toEqual(['claude', 'codex'])
+  })
+
+  it('the pins feed the cache signature, so a pin bump invalidates a cached build hash', async () => {
+    const ctx = makeCtx()
+    const signature = await buildHashSignature(ctx, IDENTITY, TOOLCHAINS)
+    expect(signature).toContain(CODEX_VERSION)
+    expect(signature).toContain(CODEX_SHA512.x64)
+    expect(signature).toContain(CODEX_SHA512.arm64)
   })
 })
 

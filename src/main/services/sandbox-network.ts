@@ -37,6 +37,8 @@ export interface SandboxNetworkDeps {
   onLiveUpdateStatus: (slug: string, status: LiveUpdateStatus) => void
   /** The poller gave up on a vanished container or a dead daemon (B-L2): the manager should re-check Docker. */
   onPollerStopped: (slug: string) => void
+  /** The container serving `slug`'s session (one per workspace and agent); defaults to the legacy agent's. */
+  containerFor?: (slug: string) => string
 }
 
 export interface SandboxNetworkService {
@@ -67,6 +69,7 @@ interface NotifyState {
 
 export function createSandboxNetwork(deps: SandboxNetworkDeps): SandboxNetworkService {
   const { docker, now } = deps
+  const containerFor = deps.containerFor ?? ((slug: string): string => containerName(slug))
 
   const updateTimers = new Map<string, NodeJS.Timeout>()
   /** One live update at a time per workspace; a change during a run asks for exactly one more. */
@@ -88,7 +91,7 @@ export function createSandboxNetwork(deps: SandboxNetworkDeps): SandboxNetworkSe
     if (!deps.isLiveAllowlistSession(slug)) return
     const list = deps.effectiveAllowlist(slug)
     try {
-      await docker.run(firewallInitArgv(containerName(slug), 'allowlist'), { stdin: list.join('\n'), timeoutMs: FIREWALL_INIT_TIMEOUT_MS })
+      await docker.run(firewallInitArgv(containerFor(slug), 'allowlist'), { stdin: list.join('\n'), timeoutMs: FIREWALL_INIT_TIMEOUT_MS })
     } catch (err) {
       if (!(err instanceof DockerError)) throw err
       // A failure before the script touches any rule leaves the previous rules active. Past that point DNS
@@ -222,7 +225,7 @@ export function createSandboxNetwork(deps: SandboxNetworkDeps): SandboxNetworkSe
     let stdout: string
     const epoch = poller.epoch
     try {
-      const result = await docker.run(blockedPollArgv(containerName(slug), poller.offset), { maxBuffer: POLL_MAX_BUFFER })
+      const result = await docker.run(blockedPollArgv(containerFor(slug), poller.offset), { maxBuffer: POLL_MAX_BUFFER })
       stdout = result.stdout
     } catch (err) {
       if (!(err instanceof DockerError)) throw err

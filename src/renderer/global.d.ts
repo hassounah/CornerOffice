@@ -6,6 +6,7 @@
 import type { IpcResponse } from '../main/types/ipc'
 import type { DocTreeResponse, DocFileResponse, DocWriteResponse } from '../main/types/docs'
 import type { PluginStatus } from '../main/types/channels'
+import type { SessionDefaultsView } from '../main/services/session-defaults'
 import type {
   CodeStatusResponse,
   CodeListDirResponse,
@@ -73,7 +74,12 @@ interface CornerOfficeAPI {
     sendPermissionVerdict: (shortId: string, requestId: string, behavior: 'allow' | 'deny') => Promise<unknown>
   }
   terminal: {
-    spawn: (workspaceSlug: string, cols: number, rows: number) => Promise<IpcResponse<{ workspaceSlug: string }>>
+    spawn: (
+      workspaceSlug: string,
+      cols: number,
+      rows: number,
+      opts?: { agentId?: string; permissionMode?: string; fallbackFields?: readonly string[] },
+    ) => Promise<IpcResponse<{ workspaceSlug: string }>>
     write: (workspaceSlug: string, data: string) => Promise<IpcResponse<{ written: true }>>
     resize: (workspaceSlug: string, cols: number, rows: number) => Promise<IpcResponse<{ resized: true }>>
     kill: (workspaceSlug: string) => Promise<IpcResponse<{ killed: true }>>
@@ -85,7 +91,8 @@ interface CornerOfficeAPI {
     openExternal: (url: string, sessionKey: string) => Promise<IpcResponse<{ opened: true }>>
   }
   plugin: {
-    getStatus: () => Promise<IpcResponse<PluginStatus>>
+    /** One status per agent, keyed by agent id. */
+    getStatus: () => Promise<IpcResponse<Record<string, PluginStatus>>>
     installHooks: () => Promise<IpcResponse<{ installed: true }>>
     uninstallHooks: () => Promise<IpcResponse<{ uninstalled: true }>>
   }
@@ -106,6 +113,12 @@ interface CornerOfficeAPI {
     watch: (workspaceSlug: string, gen: number, openFile: string | null, expandedDirs: string[], root?: 'workspace' | 'sandbox') => Promise<IpcResponse<CodeWatchResponse>>
     unwatch: (workspaceSlug: string, gen: number, root?: 'workspace' | 'sandbox') => Promise<IpcResponse<{ ok: true }>>
   }
+  agents: {
+    getHostAvailability: (refresh: boolean) => Promise<IpcResponse<Record<string, 'found' | 'not-found'>>>
+  }
+  session: {
+    getDefaults: (workspaceSlug: string) => Promise<IpcResponse<SessionDefaultsView>>
+  }
   sandbox: {
     getEnvironment: (refresh: boolean) => Promise<IpcResponse<SandboxEnvironment>>
     getStatus: (workspaceSlug: string) => Promise<IpcResponse<SandboxStatus>>
@@ -116,11 +129,12 @@ interface CornerOfficeAPI {
       rows: number,
       permissionMode: 'skip' | 'auto',
       networkMode: 'allowlist' | 'open',
+      opts?: { agentId?: string; fallbackFields?: readonly string[] },
     ) => Promise<IpcResponse<StartResult>>
     handOff: (workspaceSlug: string, allowDirty: boolean) => Promise<IpcResponse<HandOffResult>>
     previewDelete: (workspaceSlug: string) => Promise<IpcResponse<DeletePreview>>
     delete: (workspaceSlug: string, acknowledgeDirty: boolean) => Promise<IpcResponse<DeleteResult>>
-    recreate: (workspaceSlug: string, newPort: boolean, confirmedSpecHash: string) => Promise<IpcResponse<RecreateResult>>
+    recreate: (workspaceSlug: string, newPort: boolean, confirmedSpecHash: string, agentId?: string) => Promise<IpcResponse<RecreateResult>>
     buildImage: (rebuild: boolean, requestedFor?: string) => Promise<IpcResponse<BuildImageResult>>
     cancelBuild: () => Promise<IpcResponse<{ ok: true }>>
     getSettings: () => Promise<IpcResponse<SandboxSettingsView>>

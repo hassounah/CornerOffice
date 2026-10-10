@@ -17,6 +17,7 @@ import {
   stopArgv,
   rmArgv,
   cardDir,
+  sandboxEventsDir,
   worktreePath,
   worktreePin,
   STOP_TIMEOUT_S,
@@ -293,6 +294,7 @@ export async function createSandboxRig(d: DockerRunner, identity: TestIdentity, 
   fs.mkdirSync(path.join(repo, '.git', 'hooks'), { recursive: true })
   fs.mkdirSync(path.join(repo, '.git', 'modules'), { recursive: true })
   fs.mkdirSync(eventsDir, { recursive: true })
+  fs.mkdirSync(sandboxEventsDir(paths, slug), { recursive: true }) // D23: the container's events mount source
   fs.mkdirSync(path.join(paths.claudeDir, 'channels'), { recursive: true, mode: 0o700 })
   // #0030: the read-only Claude config sources, the settings copy and the first `claude.json` seed, as the manager does.
   const claudeConfig = prepareClaudeConfig(paths, slug)

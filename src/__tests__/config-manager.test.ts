@@ -311,6 +311,7 @@ describe('ConfigManager', () => {
     toolchains: { node: true, go: true, buildBase: true },
     globalAllowlist: [],
     workspaces: {},
+    eventsSplitAt: null,
   }
 
   describe('getSandboxConfig', () => {
@@ -409,7 +410,7 @@ describe('ConfigManager', () => {
       mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
       const result = manager.loadConfig()
       expect(result).not.toBeNull()
-      expect(result!.sandbox).toEqual(stored)
+      expect(result!.sandbox).toEqual({ ...stored, eventsSplitAt: null }) // the schema default fills the D23 split
     })
 
     it('rejects a workspace key that fails SANDBOX_SLUG_RE, falling back to defaults', () => {
@@ -505,7 +506,7 @@ describe('ConfigManager', () => {
 
       const result = await manager.updateConfig(partial)
       expect(result.companyName).toBe('New Name')
-      expect(result.sandbox).toEqual(storedSandbox)
+      expect(result.sandbox).toEqual({ ...storedSandbox, eventsSplitAt: null })
     })
   })
 

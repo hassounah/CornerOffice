@@ -4,6 +4,7 @@ import { TerminalPanel } from './TerminalPanel'
 import type { TerminalPanelHandle } from './TerminalPanel'
 import { ShimmerOverlay } from './ShimmerOverlay'
 import { SandboxBadge } from '../sandbox/SandboxBadge'
+import { ActivityTrackingNote } from '../shared/ActivityTrackingNote'
 import { unwrapIpc } from '../../utils/ipc'
 import type { TerminalWindowBounds } from '@main/types/config'
 
@@ -18,6 +19,8 @@ const MIN_HEIGHT_PX = 600
 const HEADER_HEIGHT_PX = 41
 const RESIZE_HANDLE_PX = 8
 const SEARCH_DEBOUNCE_MS = 150
+/** The exit banner's buttons are inline-styled, so the visible keyboard focus ring comes from a class. */
+const BANNER_BUTTON_FOCUS = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#fbbf24]'
 
 type ResizeEdge =
   | 'n' | 's' | 'e' | 'w'
@@ -84,7 +87,9 @@ export function TerminalOverlay({
   onHide,
 }: TerminalOverlayProps): React.ReactElement {
   const sessionState = useTerminalStore((s) => s.sessions[workspaceSlug] ?? 'none')
-  const { kill } = useTerminalStore()
+  const { kill, retryExited, changeAgent } = useTerminalStore()
+  const exitBanner = useTerminalStore((s) => s.exitBanner[workspaceSlug] ?? null)
+  const retryButtonRef = useRef<HTMLButtonElement | null>(null)
   const isSandboxSession = useTerminalStore((s) => s.sessionKind[workspaceSlug] === 'sandbox')
   const [shimmerVisible, setShimmerVisible] = useState(true)
 
@@ -205,6 +210,14 @@ export function TerminalOverlay({
     container.addEventListener('keydown', handleKeyDown, { capture: true })
     return () => container.removeEventListener('keydown', handleKeyDown, { capture: true })
   }, [searchVisible, searchQuery])
+
+  // The exit-127 banner offers the next step, so keyboard users land on Retry when it appears. Focus waits a
+  // frame so the alert is announced first instead of being pre-empted by the focus change.
+  useEffect(() => {
+    if (!exitBanner) return
+    const frame = requestAnimationFrame(() => retryButtonRef.current?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [exitBanner])
 
   // Auto-focus search input when search bar opens
   useEffect(() => {
@@ -584,6 +597,8 @@ export function TerminalOverlay({
           <div style={{ display: 'flex', gap: '8px', flexShrink: 0, alignItems: 'center' }}>
             {/* A compact sandbox badge before End Session / Hide: label, branch, +ahead, Review and the degraded states. */}
             {isSandboxSession && <SandboxBadge slug={workspaceSlug} skin="office" compact />}
+            {/* "{Agent} running · activity tracking off" while the agent's plugin is unavailable (C6). */}
+            <ActivityTrackingNote slug={workspaceSlug} className="text-xs text-amber-300/80" />
             <button
               onClick={handleEndSession}
               onMouseDown={(e) => e.stopPropagation()}
@@ -620,6 +635,59 @@ export function TerminalOverlay({
             </button>
           </div>
         </div>
+
+        {/* Exit 127 right after a host start: the agent's command wasn't found. Persistent until acted on. */}
+        {exitBanner && (
+          <div
+            role="alert"
+            data-testid="exit-banner"
+            style={{
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              padding: '8px 12px',
+              backgroundColor: 'rgba(245,158,11,0.12)',
+              borderBottom: '1px solid rgba(245,158,11,0.4)',
+              color: '#fbbf24',
+              fontSize: '13px',
+            }}
+          >
+            <span id={`${workspaceSlug}-exit-banner-text`} style={{ flex: 1, minWidth: 0 }}>{exitBanner}</span>
+            <button
+              ref={retryButtonRef}
+              aria-describedby={`${workspaceSlug}-exit-banner-text`}
+              className={BANNER_BUTTON_FOCUS}
+              onClick={() => void retryExited(workspaceSlug)}
+              style={{
+                padding: '4px 10px',
+                fontSize: '12px',
+                borderRadius: '4px',
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: '#f59e0b',
+                color: '#18181b',
+              }}
+            >
+              Retry
+            </button>
+            <button
+              className={BANNER_BUTTON_FOCUS}
+              onClick={() => changeAgent(workspaceSlug)}
+              style={{
+                padding: '4px 10px',
+                fontSize: '12px',
+                borderRadius: '4px',
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: '#27272a',
+                color: '#e4e4e7',
+              }}
+            >
+              Change agent
+            </button>
+          </div>
+        )}
 
         {/* Search bar — between header and terminal */}
         {searchVisible && (

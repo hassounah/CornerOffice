@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { FileWatcherService } from '../main/services/file-watcher'
+import { FileWatcherService, isSandboxEventPathCandidate } from '../main/services/file-watcher'
 
 // ---------------------------------------------------------------------------
 // Mock chokidar
@@ -79,6 +79,7 @@ describe('FileWatcherService', () => {
     vi.clearAllMocks()
     mockFs.existsSync = vi.fn().mockReturnValue(true)
     mockFs.readFileSync = vi.fn().mockReturnValue('524288')
+    mockFs.mkdirSync = vi.fn()
   })
 
   afterEach(() => {
@@ -330,6 +331,75 @@ describe('FileWatcherService', () => {
       eventWatcher.emit('change', '/home/test/.corner-office/events/my-ws.jsonl')
       await new Promise((r) => setTimeout(r, 150))
       expect(callbacks.onEventStreamChange).toHaveBeenCalledWith('/home/test/.corner-office/events/my-ws.jsonl')
+    })
+  })
+
+  describe('sandbox event watcher (D23)', () => {
+    const STATE_ROOT = '/home/test/.corner-office/sandbox'
+
+    function startWithSandboxRoot(callbacks = makeCallbacks()) {
+      const svc = new FileWatcherService(callbacks, { sandboxStateRoot: STATE_ROOT })
+      svc.startGlobal()
+      const watcher = mockWatcherInstances[mockWatcherInstances.length - 1]
+      return { callbacks, svc, watcher }
+    }
+
+    it('does not start without a sandbox state root', () => {
+      new FileWatcherService(makeCallbacks()).startGlobal()
+      expect(mockWatcherInstances).toHaveLength(2) // homunculus + host events only
+    })
+
+    it('watches the state root with symlinks off, depth 2 and a path filter', () => {
+      startWithSandboxRoot()
+      const call = vi.mocked(chokidar.watch).mock.calls.find((c) => c[0] === STATE_ROOT)
+      expect(call?.[1]).toMatchObject({ followSymlinks: false, depth: 2, ignoreInitial: true })
+      expect(call?.[1]).toHaveProperty('ignored')
+    })
+
+    it('forwards a changed <slug>/events/<name>.jsonl file', async () => {
+      const { callbacks, watcher } = startWithSandboxRoot()
+      watcher.emit('change', `${STATE_ROOT}/my-ws/events/s1.jsonl`)
+      await new Promise((r) => setTimeout(r, 150))
+      expect(callbacks.onEventStreamChange).toHaveBeenCalledWith(`${STATE_ROOT}/my-ws/events/s1.jsonl`)
+    })
+
+    it.each([
+      ['a channel card', `${STATE_ROOT}/my-ws/channels/card.jsonl`],
+      ['a Claude config copy', `${STATE_ROOT}/my-ws/claude.json`],
+      ['a nested events file', `${STATE_ROOT}/my-ws/events/sub/s1.jsonl`],
+      ['a non-jsonl events file', `${STATE_ROOT}/my-ws/events/notes.txt`],
+      ['a file outside the root', '/tmp/my-ws/events/s1.jsonl'],
+    ])('never forwards %s', async (_label, filePath) => {
+      const { callbacks, watcher } = startWithSandboxRoot()
+      watcher.emit('add', filePath)
+      watcher.emit('change', filePath)
+      await new Promise((r) => setTimeout(r, 150))
+      expect(callbacks.onEventStreamChange).not.toHaveBeenCalled()
+    })
+
+    it('closes with the other watchers on destroy', () => {
+      const { svc, watcher } = startWithSandboxRoot()
+      svc.destroy()
+      expect(watcher.close).toHaveBeenCalled()
+    })
+  })
+
+  describe('isSandboxEventPathCandidate (D23)', () => {
+    const root = '/s'
+
+    it.each([
+      [root, true],
+      [`${root}/ws`, true],
+      [`${root}/ws/events`, true],
+      [`${root}/ws/events/a.jsonl`, true],
+      [`${root}/ws/channels`, false],
+      [`${root}/ws/claude-shadow`, false],
+      [`${root}/ws/claude.json`, false],
+      [`${root}/ws/events/sub/a.jsonl`, false],
+      [`${root}/w s`, false],
+      ['/elsewhere/ws/events', false],
+    ])('%s -> %s', (candidate, expected) => {
+      expect(isSandboxEventPathCandidate(root, candidate)).toBe(expected)
     })
   })
 
