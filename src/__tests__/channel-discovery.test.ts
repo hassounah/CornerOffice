@@ -692,9 +692,9 @@ describe('ChannelDiscoveryService', () => {
 
       const sandboxPath = writeCard(sandboxCardDir('my-ws'), 'shared-id', { pid: 222 })
       mockWatcherInstances[0].emit('add', sandboxPath)
-      await new Promise((r) => setTimeout(r, 20))
+      // Wait for the rejection itself: a fixed sleep races the async card read under load.
+      await vi.waitFor(() => expect(resolver.onSandboxCardRejected).toHaveBeenCalledWith('my-ws'))
 
-      expect(resolver.onSandboxCardRejected).toHaveBeenCalledWith('my-ws')
       expect(onUpdated).not.toHaveBeenCalled()
       expect(svc.getSessions()).toHaveLength(1)
       expect(svc.getSessions()[0].pid).toBe(111) // untouched — still the host card
@@ -714,9 +714,8 @@ describe('ChannelDiscoveryService', () => {
 
       const bPath = writeCard(sandboxCardDir('ws-b'), 'shared-id')
       mockWatcherInstances[0].emit('add', bPath)
-      await new Promise((r) => setTimeout(r, 20))
+      await vi.waitFor(() => expect(resolver.onSandboxCardRejected).toHaveBeenCalledWith('ws-b'))
 
-      expect(resolver.onSandboxCardRejected).toHaveBeenCalledWith('ws-b')
       expect(svc.getSessions()).toHaveLength(1)
       expect(svc.getSessions()[0].sandboxSlug).toBe('ws-a')
     })
