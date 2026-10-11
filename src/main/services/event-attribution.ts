@@ -1,3 +1,4 @@
+import fs from 'fs'
 import path from 'path'
 
 // ---------------------------------------------------------------------------
@@ -25,6 +26,90 @@ export function workspaceFromEventPath(eventsRoot: string, filePath: string): st
   if (parts.length !== 2) return null
   const [workspace] = parts
   return WORKSPACE_DIR_RE.test(workspace) ? workspace : null
+}
+
+/**
+ * D23: the workspace a container-written event file belongs to, from its location alone:
+ * `<stateRoot>/<slug>/events/<name>.jsonl`. `null` for anything else (a deeper path, another directory in the slug's
+ * state, a non-`.jsonl` name, a path outside the root), so the second watcher root accepts nothing but event files.
+ */
+export function sandboxEventSlug(sandboxStateRoot: string, filePath: string): string | null {
+  const relative = path.relative(sandboxStateRoot, filePath)
+  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) return null
+  const parts = relative.split(path.sep)
+  if (parts.length !== 3) return null
+  const [slug, dir, name] = parts
+  if (dir !== 'events' || !WORKSPACE_DIR_RE.test(slug) || !name.endsWith('.jsonl') || name === '.jsonl') return null
+  return slug
+}
+
+/**
+ * D23: attributes one line of a container-written file. The workspace is the slug in the path; a line claiming a
+ * different one is dropped, exactly as for the host root.
+ */
+export function attributeSandboxEventWorkspace(sandboxStateRoot: string, filePath: string, claimedWorkspace: string): EventAttribution {
+  const fromPath = sandboxEventSlug(sandboxStateRoot, filePath)
+  if (fromPath === null) return { ok: false, reason: 'bad-location' }
+  return fromPath === claimedWorkspace ? { ok: true, workspace: fromPath } : { ok: false, reason: 'workspace-mismatch' }
+}
+
+/** `*.jsonl` regular files in `<stateRoot>/<slug>/events/` for every slug (no symlinks), for the initial ingestion. */
+export function listSandboxEventFiles(sandboxStateRoot: string): string[] {
+  const files: string[] = []
+  let slugs: string[]
+  try {
+    slugs = fs.readdirSync(sandboxStateRoot)
+  } catch {
+    return files
+  }
+  for (const slug of slugs) {
+    if (!WORKSPACE_DIR_RE.test(slug)) continue
+    const dir = path.join(sandboxStateRoot, slug, 'events')
+    let names: string[]
+    try {
+      names = fs.readdirSync(dir)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      const file = path.join(dir, name)
+      if (sandboxEventSlug(sandboxStateRoot, file) === null) continue
+      try {
+        if (fs.lstatSync(file).isFile()) files.push(file)
+      } catch {
+        // vanished between the listing and the stat
+      }
+    }
+  }
+  return files
+}
+
+export interface LocationSourceInput {
+  /** Which watched root the file came from. */
+  root: 'host' | 'sandbox'
+  /** The workspace has a sandbox: its worktree exists or its card source is registered. */
+  workspaceHasSandbox: boolean
+  /** `sandbox.eventsSplitAt` (ISO), or `null` when it was never recorded. */
+  eventsSplitAt: string | null
+  /** The file's mtime, or `null` when it could not be read. */
+  fileMtimeMs: number | null
+  /** The legacy card rule (SEC-H3), evaluated lazily because it reads the card caches. */
+  legacyClassify: () => EventSource
+}
+
+/**
+ * D23: provenance by location. The sandbox root is `sandbox` and the host root is `host`, for every agent, and the
+ * event's own `agent` field plays no part. The one exception is history written before the cutover: in a workspace
+ * that has a sandbox, a host-root file whose mtime is at or before `eventsSplitAt` (or any host-root file when the
+ * split was never recorded, or its mtime is unknown) keeps the old card rule, so old sandbox-written events are not
+ * relabeled as host. After the cutover a container can no longer write to the host root.
+ */
+export function sourceByLocation(input: LocationSourceInput): EventSource {
+  if (input.root === 'sandbox') return 'sandbox'
+  if (!input.workspaceHasSandbox) return 'host'
+  const split = input.eventsSplitAt === null ? Number.NaN : Date.parse(input.eventsSplitAt)
+  const legacy = Number.isNaN(split) || input.fileMtimeMs === null || input.fileMtimeMs <= split
+  return legacy ? input.legacyClassify() : 'host'
 }
 
 export interface ClassifySourceInput {

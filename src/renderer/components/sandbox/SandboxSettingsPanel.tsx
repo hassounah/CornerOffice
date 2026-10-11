@@ -9,6 +9,7 @@ import { SandboxActions } from './SandboxActions'
 import { isDomainAllowed } from '../../utils/allowlist-validate'
 import { LIVE_UPDATE_FAILURE_COPY, STOP_UNCONFIRMED_CHIP, dockerStateCopy, isSessionStopping } from '../../utils/sandbox-copy'
 import type { SandboxSettingsView } from '@main/types/sandbox'
+import { AGENT_DESCRIPTORS } from '@main/agents/descriptors'
 
 // ---------------------------------------------------------------------------
 // SandboxSettingsPanel — Sandbox settings (TRD §3.15.2). This file holds the
@@ -76,7 +77,8 @@ const BUILD_STATUS_COPY: Record<BuildPhase, string> = {
 const LOCKED_TOOLCHAINS: readonly { label: string; reason: string }[] = [
   { label: 'Core tools', reason: 'Always included' },
   { label: 'GitHub CLI (gh)', reason: 'Always included' },
-  { label: 'Claude Code', reason: 'Always included' },
+  // Every registered agent is in the one image (D11), so each gets a row named from its descriptor.
+  ...AGENT_DESCRIPTORS.map((d) => ({ label: d.displayName, reason: 'Always included' })),
   { label: 'Python 3.12 + uv + bun', reason: 'Required by the corner-office plugin' },
 ]
 

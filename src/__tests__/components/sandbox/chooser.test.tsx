@@ -5,8 +5,16 @@ import { StartSessionChooser } from '../../../renderer/components/sandbox/StartS
 import { RecreateDialog } from '../../../renderer/components/sandbox/RecreateDialog'
 import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
 import { useTerminalStore } from '../../../renderer/stores/terminal-store'
+import { CLAUDE_DESCRIPTOR } from '@main/agents/claude/descriptor'
+import { AGENT_DESCRIPTORS } from '@main/agents/descriptors'
+import { CODEX_DESCRIPTOR } from '@main/agents/codex/descriptor'
+import { builtinChoice } from '../../../renderer/utils/session-options'
+import { expectNoAxeViolations } from '../../helpers/a11y'
+import type { AgentDescriptor } from '@main/agents/types'
+import type { SessionChoice } from '@main/types/config'
 import {
   ELIGIBILITY_COPY,
+  agentReadinessMessage,
   WARNING_COPY,
   START_FAILURE_COPY,
   RECREATE_FAILURE_COPY,
@@ -22,6 +30,7 @@ import {
   forSkin,
   RECREATED_COPY,
   STATUS_CHECK_TIMEOUT_MS,
+  SANDBOX_CHOICE_WAIT_MS,
 } from '../../../renderer/utils/sandbox-copy'
 import type { SandboxStatus, RecreatePlan, EligibilityReason, EligibilityWarning } from '@main/types/sandbox'
 
@@ -37,27 +46,46 @@ const api = {
   buildImage: vi.fn(),
   recreate: vi.fn(),
 }
-Object.defineProperty(window, 'cornerOffice', { value: { sandbox: api, terminal: {}, on: vi.fn(() => vi.fn()) }, writable: true, configurable: true })
+const terminalSpawn = vi.fn()
+const getDefaults = vi.fn()
+const getHostAvailability = vi.fn()
+Object.defineProperty(window, 'cornerOffice', {
+  value: { sandbox: api, terminal: { spawn: terminalSpawn }, session: { getDefaults }, agents: { getHostAvailability }, on: vi.fn(() => vi.fn()) },
+  writable: true,
+  configurable: true,
+})
 
 const ok = <T,>(data: T) => ({ data, error: null })
 const HASH = 'a'.repeat(64)
 const HASH2 = 'b'.repeat(64)
 
 function plan(overrides: Partial<RecreatePlan> = {}): RecreatePlan {
-  return { reason: 'mount-plan', specHash: HASH, newHostMounts: [], removedHostMounts: [], ...overrides }
+  return { reason: 'mount-plan', specHash: HASH, newHostMounts: [], removedHostMounts: [], agentId: 'claude', ...overrides }
 }
 
-function status(opts: { reason?: EligibilityReason; warnings?: EligibilityWarning[]; state?: SandboxStatus['session']['state']; plan?: RecreatePlan | null } = {}): SandboxStatus {
+function status(
+  opts: {
+    reason?: EligibilityReason
+    warnings?: EligibilityWarning[]
+    state?: SandboxStatus['session']['state']
+    plan?: RecreatePlan | null
+    /** Per-agent readiness; every agent is ready unless listed. */
+    readiness?: NonNullable<SandboxStatus['agentReadiness']>
+  } = {},
+): SandboxStatus {
   return {
     workspaceSlug: 'ws',
     eligibility: opts.reason ? { ok: false, reason: opts.reason } : { ok: true, baseBranch: 'main', warnings: opts.warnings ?? [] },
+    agentReadiness: { claude: null, codex: null, ...opts.readiness },
     exists: false,
     container: 'absent',
     worktree: 'absent',
-    session: { state: opts.state ?? 'idle', permissionMode: null, networkMode: null, lastExit: null },
+    session: { state: opts.state ?? 'idle', agentId: null, permissionMode: null, networkMode: null, lastExit: null },
     git: null,
     recreatePending: false,
     recreatePlan: opts.plan ?? null,
+    containers: {},
+    recreatePlans: [],
     channel: 'none',
   }
 }
@@ -73,33 +101,46 @@ beforeEach(() => {
   api.startSession.mockResolvedValue(ok({ ok: true, workspaceSlug: 'ws', kind: 'sandbox' }))
   api.buildImage.mockResolvedValue(ok({ ok: true }))
   api.recreate.mockResolvedValue(ok({ ok: true }))
-  useTerminalStore.setState({ sessions: {}, overlayVisible: {}, spawnError: {}, sessionKind: {}, spawnFailure: {}, buildPrompt: {}, recreatePrompt: {} })
+  terminalSpawn.mockReset()
+  terminalSpawn.mockResolvedValue(ok({ workspaceSlug: 'ws' }))
+  getDefaults.mockReset()
+  getDefaults.mockResolvedValue(ok({ choice: null, source: 'builtin' }))
+  getHostAvailability.mockReset()
+  getHostAvailability.mockResolvedValue(ok({ claude: 'found', codex: 'found' }))
+  useTerminalStore.setState({ sessions: {}, overlayVisible: {}, spawnError: {}, sessionKind: {}, sessionAgent: {}, lastSpawnOpts: {}, spawnFailure: {}, buildPrompt: {}, recreatePrompt: {} })
   setup()
 })
 
+// Most tests exercise one agent, so the Agent row (shown only when several are registered) stays out of the way.
+const ONE_AGENT = [CLAUDE_DESCRIPTOR]
+// ...and start from a pre-resolved built-in choice, so they don't wait for the open-time resolution (those tests pass `initial: undefined`).
+const BUILTIN_INITIAL = { choice: builtinChoice(), source: 'builtin' as const }
+
 function renderChooser(props: Partial<React.ComponentProps<typeof StartSessionChooser>> = {}) {
-  const onStartHost = vi.fn()
   const onClose = vi.fn()
-  const view = render(<StartSessionChooser slug="ws" onStartHost={onStartHost} onClose={onClose} {...props} />)
-  return { onStartHost, onClose, ...view }
+  const view = render(<StartSessionChooser slug="ws" agents={ONE_AGENT} initial={BUILTIN_INITIAL} onClose={onClose} {...props} />)
+  return { onClose, hostSpawn: terminalSpawn, ...view }
 }
 
 const radio = (name: string) => screen.getByRole('radio', { name })
 
 describe('StartSessionChooser — choices', () => {
-  it('is a dialog with Host selected and no sandbox toggles by default', () => {
+  it('is a dialog with Host selected, Default permissions and no network row by default', () => {
     renderChooser()
     expect(screen.getByRole('dialog', { name: 'Start a session' })).toBeInTheDocument()
     expect(radio('Host')).toHaveAttribute('aria-checked', 'true')
     expect(radio('Sandbox')).toHaveAttribute('aria-checked', 'false')
-    expect(screen.queryByRole('radiogroup', { name: 'Permissions' })).toBeNull()
+    expect(within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Default' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('permission-note')).toHaveTextContent('Uses your Claude Code settings.')
     expect(screen.queryByRole('radiogroup', { name: 'Network' })).toBeNull()
   })
 
-  it('Start on Host calls onStartHost and closes, without touching the sandbox', async () => {
-    const { onStartHost, onClose } = renderChooser()
+  it('Start on Host starts through the terminal store with the chosen mode and closes, without touching the sandbox', async () => {
+    const { hostSpawn, onClose } = renderChooser()
+    await userEvent.click(radio('Auto mode'))
     await userEvent.click(screen.getByRole('button', { name: 'Start' }))
-    expect(onStartHost).toHaveBeenCalledTimes(1)
+    expect(hostSpawn).toHaveBeenCalledTimes(1)
+    expect(hostSpawn).toHaveBeenCalledWith('ws', 80, 24, expect.objectContaining({ agentId: 'claude', permissionMode: 'auto' }))
     expect(onClose).toHaveBeenCalledTimes(1)
     expect(api.startSession).not.toHaveBeenCalled()
   })
@@ -114,7 +155,7 @@ describe('StartSessionChooser — choices', () => {
   it('refreshes the status and environment on open', async () => {
     renderChooser()
     await vi.waitFor(() => expect(api.getStatus).toHaveBeenCalledWith('ws'))
-    expect(api.getEnvironment).toHaveBeenCalledWith(false)
+    expect(api.getEnvironment).toHaveBeenCalledWith(true)
   })
 
   it('selecting Sandbox reveals Permissions and Network with Skip permissions and Allowlist as the defaults', async () => {
@@ -167,6 +208,202 @@ describe('StartSessionChooser — choices', () => {
   })
 })
 
+// Codex has a sandbox half now (D10); these tests are about an agent that does not, so they use a host-only stand-in.
+const HOST_ONLY_CODEX: AgentDescriptor = {
+  ...CODEX_DESCRIPTOR,
+  permissionModes: { host: CODEX_DESCRIPTOR.permissionModes.host, sandbox: [] },
+}
+const WITH_HOST_ONLY_CODEX: readonly AgentDescriptor[] = [CLAUDE_DESCRIPTOR, HOST_ONLY_CODEX]
+
+describe('StartSessionChooser — agent, permissions, "Will start" and Reset (B6)', () => {
+  const REMEMBERED: { choice: SessionChoice; source: 'workspace' | 'last' } = {
+    choice: { agentId: 'claude', location: 'sandbox', hostPermissionMode: 'auto', sandboxPermissionMode: 'auto', networkMode: 'open' },
+    source: 'workspace',
+  }
+
+  it('hides the Agent row with one agent and shows it with several', () => {
+    const { unmount } = renderChooser()
+    expect(screen.queryByRole('radiogroup', { name: 'Agent' })).toBeNull()
+    unmount()
+
+    renderChooser({ agents: AGENT_DESCRIPTORS })
+    const group = screen.getByRole('radiogroup', { name: 'Agent' })
+    expect(within(group).getByRole('radio', { name: 'Claude Code' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(group).getByRole('radio', { name: 'Codex' })).toBeInTheDocument()
+  })
+
+  it('selecting an agent without a sandbox half leaves the sandbox, and explains why Sandbox is unavailable', async () => {
+    setup(status())
+    renderChooser({ agents: WITH_HOST_ONLY_CODEX, initial: { choice: { ...REMEMBERED.choice }, source: 'last' } })
+    expect(radio('Sandbox')).toHaveAttribute('aria-checked', 'true')
+
+    await userEvent.click(radio('Codex'))
+
+    expect(radio('Host')).toHaveAttribute('aria-checked', 'true')
+    expect(radio('Sandbox')).toHaveAttribute('aria-checked', 'false')
+    await userEvent.click(radio('Sandbox'))
+    expect(radio('Host')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText("Codex isn't available in the sandbox yet.")).toBeInTheDocument()
+  })
+
+  it('changing the agent never silently leaves the sandbox: it is announced, reported as a fallback, and Start is not focused', async () => {
+    setup(status())
+    renderChooser({ agents: WITH_HOST_ONLY_CODEX, initial: { choice: { ...REMEMBERED.choice }, source: 'last' } })
+
+    await userEvent.click(radio('Codex'))
+
+    expect(screen.getByTestId('notices-region')).toHaveTextContent("Codex doesn't run in the sandbox yet, so Host is selected.")
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start' })).not.toHaveFocus()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start' }))
+    expect(terminalSpawn).toHaveBeenCalledWith(
+      'ws',
+      80,
+      24,
+      expect.objectContaining({ agentId: 'codex', fallbackFields: ['location'] }),
+    )
+  })
+
+  it('shows the warning tone as a symbol and a screen-reader prefix, not only as weight', async () => {
+    renderChooser()
+    expect(screen.getByTestId('will-start')).not.toHaveTextContent('Warning:')
+
+    await userEvent.click(radio('Sandbox'))
+    const summary = screen.getByTestId('will-start')
+    expect(summary).toHaveTextContent('Warning: Will start:')
+    expect(summary.querySelector('[aria-hidden="true"]')).toHaveTextContent('⚠')
+  })
+
+  it('Start is also described by the Unrestricted warning when it applies', async () => {
+    renderChooser()
+    await userEvent.click(radio('Sandbox'))
+    expect(screen.getByRole('button', { name: 'Start' })).toHaveAccessibleDescription(/Will start/)
+    await userEvent.click(radio('Unrestricted'))
+    expect(screen.getByRole('button', { name: 'Start' })).toHaveAccessibleDescription(/Unrestricted network/)
+  })
+
+  it('Reset is named "Reset" and described by its tooltip text', () => {
+    renderChooser()
+    const reset = screen.getByRole('button', { name: 'Reset' })
+    expect(reset).toHaveAccessibleDescription('Resets these choices. Nothing is saved until you start.')
+  })
+
+  it('takes the permission modes and the selected mode note from the descriptor, per location', async () => {
+    renderChooser()
+    expect(screen.getByTestId('permission-note')).toHaveTextContent('Uses your Claude Code settings.')
+    await userEvent.click(radio('Auto mode'))
+    expect(screen.getByTestId('permission-note')).toHaveTextContent('Claude decides when to ask.')
+
+    await userEvent.click(radio('Sandbox'))
+    const group = screen.getByRole('radiogroup', { name: 'Permissions' })
+    expect(within(group).getByRole('radio', { name: 'Skip permissions' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('permission-note')).toHaveTextContent('Never asks. The sandbox is the boundary.')
+  })
+
+  it('renders a single offered mode as a static line, not a radio group', () => {
+    const single = {
+      ...CLAUDE_DESCRIPTOR,
+      permissionModes: { host: [{ mode: 'default', label: 'Default', note: 'Uses your settings.' }], sandbox: CLAUDE_DESCRIPTOR.permissionModes.sandbox },
+    } as unknown as AgentDescriptor
+    renderChooser({ agents: [single] })
+
+    expect(screen.queryByRole('radiogroup', { name: 'Permissions' })).toBeNull()
+    expect(screen.getByTestId('permission-static')).toHaveTextContent('Permissions')
+    expect(screen.getByTestId('permission-static')).toHaveTextContent('Default')
+    expect(screen.getByTestId('permission-static')).toHaveTextContent('Uses your settings.')
+  })
+
+  it('shows the Network row for the sandbox only, and the per-location first-run note', async () => {
+    renderChooser()
+    expect(screen.queryByRole('radiogroup', { name: 'Network' })).toBeNull()
+    expect(screen.queryByText(TRUST_PROMPT_COPY)).toBeNull()
+
+    await userEvent.click(radio('Sandbox'))
+    expect(screen.getByRole('radiogroup', { name: 'Network' })).toBeInTheDocument()
+    expect(screen.getByText(TRUST_PROMPT_COPY)).toBeInTheDocument()
+  })
+
+  it('shows the host first-run note for an agent that has one', () => {
+    renderChooser({ agents: AGENT_DESCRIPTORS, initial: { choice: { ...REMEMBERED.choice, agentId: 'codex', location: 'host' }, source: 'last' } })
+    expect(screen.getByText(/Codex asks to trust this folder/)).toBeInTheDocument()
+  })
+
+  it('"Will start" summarizes the choice, and Start is described by it', async () => {
+    renderChooser()
+    const summary = screen.getByTestId('will-start')
+    expect(summary).toHaveTextContent('Will start: Claude Code · Host · Default')
+    expect(screen.getByRole('button', { name: 'Start' }).getAttribute('aria-describedby')).toContain(summary.id)
+
+    await userEvent.click(radio('Sandbox'))
+    expect(summary).toHaveTextContent('Will start: Claude Code · Sandbox · Skip permissions · Allowlist')
+  })
+
+  it('"Will start" is in warning style for Skip permissions and Unrestricted only', async () => {
+    renderChooser()
+    const summary = screen.getByTestId('will-start')
+    expect(summary).toHaveAttribute('data-tone', 'neutral')
+
+    await userEvent.click(radio('Sandbox'))
+    expect(summary).toHaveAttribute('data-tone', 'warning')
+
+    await userEvent.click(radio('Auto mode'))
+    expect(summary).toHaveAttribute('data-tone', 'neutral')
+
+    await userEvent.click(radio('Unrestricted'))
+    expect(summary).toHaveAttribute('data-tone', 'warning')
+    expect(summary).toHaveTextContent('Unrestricted')
+  })
+
+  it('Start keeps the Will start description alongside a disabled reason', async () => {
+    setup(status({ state: 'ending' }))
+    renderChooser()
+    await userEvent.click(radio('Sandbox'))
+    const describedBy = screen.getByRole('button', { name: 'Start' }).getAttribute('aria-describedby') ?? ''
+    expect(describedBy.split(' ')).toHaveLength(2)
+    expect(describedBy).toContain(screen.getByTestId('will-start').id)
+  })
+
+  it('shows a visible helper label for where the choice came from, with a Reset that explains itself', () => {
+    const { unmount } = renderChooser({ initial: REMEMBERED })
+    expect(screen.getByTestId('choice-source')).toHaveTextContent('Remembered for this workspace')
+    const reset = screen.getByRole('button', { name: /^Reset/ })
+    expect(reset).not.toHaveAttribute('title') // a visible hint, not a hover-only tooltip (UX-M6)
+    expect(screen.getByText('Resets these choices. Nothing is saved until you start.')).toBeVisible()
+    expect(reset).toHaveAccessibleDescription('Resets these choices. Nothing is saved until you start.')
+    unmount()
+
+    renderChooser({ initial: { ...REMEMBERED, source: 'last' } })
+    expect(screen.getByTestId('choice-source')).toHaveTextContent('Last used')
+  })
+
+  it('starts from the remembered choice', () => {
+    renderChooser({ initial: REMEMBERED })
+    expect(radio('Sandbox')).toHaveAttribute('aria-checked', 'true')
+    expect(radio('Unrestricted')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('will-start')).toHaveTextContent('Claude Code · Sandbox · Auto mode · Unrestricted')
+  })
+
+  it('Reset returns every row to the built-in choice, clears the label and saves nothing', async () => {
+    renderChooser({ initial: REMEMBERED })
+    await userEvent.click(screen.getByRole('button', { name: /^Reset/ }))
+
+    expect(radio('Host')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('choice-source')).toBeEmptyDOMElement()
+    expect(screen.getByTestId('will-start')).toHaveTextContent('Will start: Claude Code · Host · Default')
+    await userEvent.click(radio('Sandbox'))
+    expect(screen.getByRole('radio', { name: 'Skip permissions' })).toHaveAttribute('aria-checked', 'true')
+    expect(radio('Allowlist')).toHaveAttribute('aria-checked', 'true')
+    expect(api.startSession).not.toHaveBeenCalled()
+    expect(terminalSpawn).not.toHaveBeenCalled()
+  })
+
+  it('a remembered mode the agent no longer offers falls back to its first mode', () => {
+    renderChooser({ initial: { choice: { ...REMEMBERED.choice, location: 'host', hostPermissionMode: 'skip' }, source: 'last' } })
+    expect(screen.getByTestId('will-start')).toHaveTextContent('Claude Code · Host · Default')
+  })
+})
+
 describe('StartSessionChooser — Sandbox eligibility (UX-C2)', () => {
   const reasons = Object.keys(ELIGIBILITY_COPY) as EligibilityReason[]
 
@@ -185,11 +422,40 @@ describe('StartSessionChooser — Sandbox eligibility (UX-C2)', () => {
     expect(radio('Host')).toHaveAttribute('aria-checked', 'true')
   })
 
-  it('includes the §14.5 reason: "Run Claude Code on this machine once first"', () => {
-    setup(status({ reason: 'claude-home-missing' }))
+  it('includes the §14.5 reason, from the agent readiness: "Run Claude Code on this machine once first"', () => {
+    setup(status({ readiness: { claude: { code: 'home-missing' } } }))
     renderChooser()
     fireEvent.focus(radio('Sandbox'))
     expect(screen.getByRole('tooltip')).toHaveTextContent('Run Claude Code on this machine once first, then try again.')
+  })
+
+  it('a malformed ~/.claude is explained the same way, and Sandbox stays unselectable', async () => {
+    setup(status({ readiness: { claude: { code: 'config-invalid' } } }))
+    renderChooser()
+    fireEvent.focus(radio('Sandbox'))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(agentReadinessMessage('claude', 'config-invalid') as string)
+    await userEvent.click(radio('Sandbox'))
+    expect(radio('Host')).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it("another agent's readiness does not disable Sandbox for this one", () => {
+    setup(status({ readiness: { codex: { code: 'home-missing' } } }))
+    renderChooser()
+    fireEvent.focus(radio('Sandbox'))
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('the workspace being ineligible wins over the agent not being ready', () => {
+    setup(status({ reason: 'not-git', readiness: { claude: { code: 'home-missing' } } }))
+    renderChooser()
+    fireEvent.focus(radio('Sandbox'))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(ELIGIBILITY_COPY['not-git'])
+  })
+
+  it('a workspace is eligible when only ~/.claude is missing: the workspace reason is not shown', () => {
+    setup(status({ readiness: { claude: { code: 'home-missing' } } }))
+    renderChooser()
+    expect(useSandboxStore.getState().status.ws.eligibility.ok).toBe(true)
   })
 
   it('an eligible workspace has no tooltip and shows its warnings in the eligibility tone', () => {
@@ -226,7 +492,7 @@ describe('StartSessionChooser — starting a sandbox session', () => {
   }
 
   it('Start calls startSession with the chosen modes and closes on success', async () => {
-    const { onClose, onStartHost } = renderChooser()
+    const { onClose, hostSpawn } = renderChooser()
     await chooseSandbox()
     await userEvent.click(radio('Auto mode'))
     await userEvent.click(radio('Unrestricted'))
@@ -234,8 +500,8 @@ describe('StartSessionChooser — starting a sandbox session', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Start' }))
 
     await vi.waitFor(() => expect(onClose).toHaveBeenCalled())
-    expect(api.startSession).toHaveBeenCalledExactlyOnceWith('ws', 80, 24, 'auto', 'open')
-    expect(onStartHost).not.toHaveBeenCalled()
+    expect(api.startSession).toHaveBeenCalledExactlyOnceWith('ws', 80, 24, 'auto', 'open', expect.objectContaining({ agentId: 'claude' }))
+    expect(hostSpawn).not.toHaveBeenCalled()
   })
 
   it('never calls startSession before Start is pressed', async () => {
@@ -293,12 +559,21 @@ describe('StartSessionChooser — starting a sandbox session', () => {
     api.startSession.mockResolvedValue(ok({ ok: false, code: 'NOT_ELIGIBLE', detail: null }))
     // Eligible when the chooser opens; the world changes before Start.
     api.getStatus.mockResolvedValueOnce(ok(status()))
-    api.getStatus.mockResolvedValue(ok(status({ reason: 'claude-home-missing' })))
+    api.getStatus.mockResolvedValue(ok(status({ reason: 'not-git' })))
     renderChooser()
     await chooseSandbox()
     await userEvent.click(screen.getByRole('button', { name: 'Start' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(ELIGIBILITY_COPY['claude-home-missing'])
+    expect(await screen.findByRole('alert')).toHaveTextContent(ELIGIBILITY_COPY['not-git'])
+  })
+
+  it('shows the agent readiness copy when the start is refused as AGENT_NOT_READY', async () => {
+    api.startSession.mockResolvedValue(ok({ ok: false, code: 'AGENT_NOT_READY', detail: null, agentId: 'claude', readiness: 'home-missing' }))
+    renderChooser()
+    await chooseSandbox()
+    await userEvent.click(screen.getByRole('button', { name: 'Start' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Run Claude Code on this machine once first, then try again.')
   })
 
   it('shows the unavailable copy when main is not ready', async () => {
@@ -312,7 +587,7 @@ describe('StartSessionChooser — starting a sandbox session', () => {
 
 describe.each(['office', 'realm'] as const)('StartSessionChooser — Check again for Docker reasons (UX-H3, skin=%s)', (skin) => {
   const dockerReasons: EligibilityReason[] = ['docker-not-installed', 'docker-daemon-down', 'docker-no-permission', 'docker-unsupported-daemon', 'docker-too-old', 'docker-rootless', 'docker-podman']
-  const otherReasons: EligibilityReason[] = ['not-git', 'no-base-branch', 'claude-home-missing', 'repo-unsafe']
+  const otherReasons: EligibilityReason[] = ['not-git', 'no-base-branch', 'repo-unsafe']
 
   it.each(dockerReasons)('%s shows a Check again button', (reason) => {
     setup(status({ reason }))
@@ -440,7 +715,7 @@ describe('StartSessionChooser — trust prompt, Unrestricted announcement and st
       await act(async () => { vi.advanceTimersByTime(STATUS_CHECK_TIMEOUT_MS) })
       expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
 
-      rerender(<StartSessionChooser slug="other" onStartHost={vi.fn()} onClose={vi.fn()} />)
+      rerender(<StartSessionChooser slug="other" agents={ONE_AGENT} initial={BUILTIN_INITIAL} onClose={vi.fn()} />)
       expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
       fireEvent.focus(radio('Sandbox'))
       expect(screen.getByRole('tooltip')).toHaveTextContent(CHECKING_COPY)
@@ -504,7 +779,7 @@ describe('StartSessionChooser — build flow (UX-C)', () => {
   it('Cancel on the confirm builds nothing and returns to the chooser', async () => {
     await startIntoMissingImage()
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(screen.getByRole('radiogroup', { name: 'Run Claude Code' })).toBeInTheDocument()
+    expect(screen.getByRole('radiogroup', { name: 'Where' })).toBeInTheDocument()
     expect(api.buildImage).not.toHaveBeenCalled()
   })
 
@@ -513,7 +788,7 @@ describe('StartSessionChooser — build flow (UX-C)', () => {
     api.buildImage.mockReturnValue(new Promise((r) => { finish = r }))
     const { rerender } = await startIntoMissingImage()
     const onShowLog = vi.fn()
-    rerender(<StartSessionChooser slug="ws" onStartHost={vi.fn()} onClose={vi.fn()} onShowLog={onShowLog} />)
+    rerender(<StartSessionChooser slug="ws" agents={ONE_AGENT} onClose={vi.fn()} onShowLog={onShowLog} />)
 
     await userEvent.click(screen.getByRole('button', { name: 'Build' }))
     expect(api.buildImage).toHaveBeenCalledWith(false, 'ws')
@@ -553,7 +828,7 @@ describe('StartSessionChooser — build flow (UX-C)', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Start' }))
 
     await vi.waitFor(() => expect(api.startSession).toHaveBeenCalledTimes(2))
-    expect(api.startSession).toHaveBeenLastCalledWith('ws', 80, 24, 'auto', 'open')
+    expect(api.startSession).toHaveBeenLastCalledWith('ws', 80, 24, 'auto', 'open', expect.objectContaining({ agentId: 'claude' }))
     await vi.waitFor(() => expect(screen.queryByText(/Image ready/)).toBeNull())
   })
 
@@ -592,7 +867,7 @@ describe('StartSessionChooser — recreate flows', () => {
     expect(dialog).toHaveTextContent('/work/docs')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Recreate' }))
 
-    expect(api.recreate).toHaveBeenCalledWith('ws', false, HASH)
+    expect(api.recreate).toHaveBeenCalledWith('ws', false, HASH, 'claude')
     expect(await screen.findByText(RECREATED_COPY)).toBeInTheDocument()
     expect(api.startSession).toHaveBeenCalledTimes(1)
   })
@@ -626,7 +901,7 @@ describe('StartSessionChooser — recreate flows', () => {
     expect(dialog).toHaveTextContent("The sandbox's channel port changed.")
     await userEvent.click(within(dialog).getByRole('button', { name: 'Recreate' }))
 
-    expect(api.recreate).toHaveBeenCalledWith('ws', true, HASH)
+    expect(api.recreate).toHaveBeenCalledWith('ws', true, HASH, 'claude')
     await vi.waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
     expect(screen.getByText(RECREATED_COPY)).toBeInTheDocument()
     expect(screen.queryByText(START_FAILURE_COPY.PORT_CONFLICT as string)).toBeNull()
@@ -702,7 +977,11 @@ describe('StartSessionChooser — focus and skins', () => {
       const input = document.createElement('textarea')
       overlay.appendChild(input)
       // The terminal takes its own focus as the session starts, before the chooser looks.
-      renderChooser({ skin, onStartHost: () => input.focus() })
+      terminalSpawn.mockImplementation(async () => {
+        input.focus()
+        return ok({ workspaceSlug: 'ws' })
+      })
+      renderChooser({ skin })
       await userEvent.click(screen.getByRole('button', { name: 'Start' }))
       await vi.waitFor(() => expect(api.getStatus).toHaveBeenCalled())
       expect(input).toHaveFocus()
@@ -732,12 +1011,13 @@ describe('StartSessionChooser — focus and skins', () => {
     it('finds a terminal overlay that mounts a tick later', async () => {
       let overlay: HTMLElement | null = null
       // The host spawn mounts the overlay on the next tick, after the chooser first looked for it.
-      const onStartHost = vi.fn(() => {
+      terminalSpawn.mockImplementation(async () => {
         setTimeout(() => {
           overlay = addOverlay()
         }, 0)
+        return ok({ workspaceSlug: 'ws' })
       })
-      const { unmount } = renderChooser({ skin, onStartHost })
+      const { unmount } = renderChooser({ skin })
       await userEvent.click(screen.getByRole('button', { name: 'Start' }))
       await vi.waitFor(() => expect(overlay).not.toBeNull())
       await vi.waitFor(() => expect(overlay).toHaveFocus())
@@ -810,13 +1090,30 @@ describe('RecreateDialog', () => {
   const ro = (path: string, source: 'settings' | 'memory.md' | 'app' = 'app') => ({ path, readonly: true, source })
 
   it.each([
-    ['image', 'The sandbox image changed.'],
+    ['image', 'The sandbox image was updated.'],
     ['mount-plan', 'The folders shared with the sandbox changed.'],
     ['port', "The sandbox's channel port changed."],
     ['new-container', "This sandbox doesn't exist yet. Nothing will be removed."],
   ] as const)('shows one reason line for %s', (reason, line) => {
     renderDialog(plan({ reason }))
     expect(screen.getByRole('alertdialog')).toHaveTextContent(line)
+  })
+
+  it('names the agent whose container it changes, and recreates that agent\'s container', async () => {
+    renderDialog(plan({ reason: 'image', agentId: 'codex' }))
+    const dialog = screen.getByRole('alertdialog')
+    expect(dialog).toHaveTextContent('Recreate the Codex sandbox?')
+    expect(dialog).toHaveTextContent('The sandbox image was updated.')
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Recreate' }))
+    expect(api.recreate).toHaveBeenCalledWith('ws', false, expect.any(String), 'codex')
+  })
+
+  it('a Claude plan names the Claude Code sandbox and recreates that agent\'s container', async () => {
+    renderDialog(plan({ reason: 'mount-plan' }))
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Recreate the Claude Code sandbox?')
+    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Recreate' }))
+    expect(api.recreate).toHaveBeenCalledWith('ws', false, expect.any(String), 'claude')
   })
 
   it('a plan with only an added read-only overlay says "Only read-only protections were added" and lists no path', () => {
@@ -870,14 +1167,14 @@ describe('RecreateDialog', () => {
     expect(dialog).toHaveTextContent('No longer shared with the sandbox:')
     expect(dialog).toHaveTextContent('/old/docs')
     expect(dialog).toHaveTextContent('Container caches will be reset.')
-    expect(screen.getByRole('heading')).toHaveTextContent('Recreate the sandbox?')
+    expect(screen.getByRole('heading')).toHaveTextContent('Recreate the Claude Code sandbox?')
   })
 
   it('a new-container plan reads "Create", shows its copy, no removed section and no cache-reset line', () => {
     renderDialog(plan({ reason: 'new-container', newHostMounts: [rw('/home/u/docs', 'memory.md')], removedHostMounts: ['/should/not/show'] }))
 
     const dialog = screen.getByRole('alertdialog')
-    expect(screen.getByRole('heading')).toHaveTextContent('Create the sandbox?')
+    expect(screen.getByRole('heading')).toHaveTextContent('Create the Claude Code sandbox?')
     expect(within(dialog).getByRole('button', { name: 'Create' })).toBeInTheDocument()
     expect(dialog).not.toHaveTextContent('No longer shared')
     expect(dialog).not.toHaveTextContent('/should/not/show')
@@ -913,7 +1210,7 @@ describe('RecreateDialog', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Recreate' }))
 
-    expect(api.recreate).toHaveBeenCalledExactlyOnceWith('ws', false, HASH)
+    expect(api.recreate).toHaveBeenCalledExactlyOnceWith('ws', false, HASH, 'claude')
     await vi.waitFor(() => expect(onRecreated).toHaveBeenCalledTimes(1))
     expect(api.startSession).not.toHaveBeenCalled()
   })
@@ -921,7 +1218,7 @@ describe('RecreateDialog', () => {
   it('passes newPort through', async () => {
     renderDialog(plan({ reason: 'port' }), { newPort: true })
     await userEvent.click(screen.getByRole('button', { name: 'Recreate' }))
-    expect(api.recreate).toHaveBeenCalledWith('ws', true, HASH)
+    expect(api.recreate).toHaveBeenCalledWith('ws', true, HASH, 'claude')
   })
 
   it('PLAN_CHANGED reopens with the new plan and the §3.15.3 line, and the next confirm uses the NEW hash', async () => {
@@ -937,7 +1234,7 @@ describe('RecreateDialog', () => {
     expect(onRecreated).not.toHaveBeenCalled()
 
     await userEvent.click(screen.getByRole('button', { name: 'Recreate' }))
-    expect(api.recreate).toHaveBeenLastCalledWith('ws', false, HASH2)
+    expect(api.recreate).toHaveBeenLastCalledWith('ws', false, HASH2, 'claude')
     await vi.waitFor(() => expect(onRecreated).toHaveBeenCalled())
   })
 
@@ -1000,7 +1297,7 @@ describe('RecreateDialog', () => {
   it('renders in the realm skin with the same copy', () => {
     renderDialog(plan({ reason: 'new-container', newHostMounts: [rw('/home/u/docs', 'memory.md')] }), { skin: 'realm' })
     const dialog = screen.getByRole('alertdialog')
-    expect(dialog).toHaveTextContent('Create the sandbox?')
+    expect(dialog).toHaveTextContent('Create the Claude Code sandbox?')
     expect(dialog).toHaveTextContent(".rix/memory.md, which the sandbox agent can edit")
   })
 })
@@ -1057,11 +1354,11 @@ describe('StartSessionChooser — dialog behaviour (5.4 UX fix)', () => {
     })
 
     it('a double click on the Host Start starts the host once', () => {
-      const { onStartHost } = renderChooser()
+      const { hostSpawn } = renderChooser()
       const start = screen.getByRole('button', { name: 'Start' })
       fireEvent.click(start)
       fireEvent.click(start)
-      expect(onStartHost).toHaveBeenCalledTimes(1)
+      expect(hostSpawn).toHaveBeenCalledTimes(1)
     })
 
     it('a double click on Build starts one build', async () => {
@@ -1090,9 +1387,9 @@ describe('StartSessionChooser — dialog behaviour (5.4 UX fix)', () => {
   })
 
   describe('focus', () => {
-    it('focuses the selected radio on open', () => {
+    it('focuses Start on open when nothing was replaced', () => {
       renderChooser()
-      expect(radio('Host')).toHaveFocus()
+      expect(screen.getByRole('button', { name: 'Start' })).toHaveFocus()
     })
 
     it('focuses Cancel when the panel swaps to the build confirm', async () => {
@@ -1100,10 +1397,10 @@ describe('StartSessionChooser — dialog behaviour (5.4 UX fix)', () => {
       expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus()
     })
 
-    it('puts focus back on the selected radio when the build confirm is cancelled', async () => {
+    it('puts focus back on Start when the build confirm is cancelled', async () => {
       await startIntoMissingImage()
       await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-      expect(radio('Sandbox')).toHaveFocus()
+      expect(screen.getByRole('button', { name: 'Start' })).toHaveFocus()
     })
 
     it('hands focus to the recreate dialog, and takes it back when that closes', async () => {
@@ -1113,7 +1410,7 @@ describe('StartSessionChooser — dialog behaviour (5.4 UX fix)', () => {
       expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus()
 
       await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
-      expect(radio('Host')).toHaveFocus()
+      expect(screen.getByRole('button', { name: 'Start' })).toHaveFocus()
     })
 
     it('is a modal dialog and traps Tab in both directions', () => {
@@ -1123,9 +1420,11 @@ describe('StartSessionChooser — dialog behaviour (5.4 UX fix)', () => {
       const start = screen.getByRole('button', { name: 'Start' })
       start.focus()
       fireEvent.keyDown(start, { key: 'Tab' })
-      expect(radio('Host')).toHaveFocus()
+      // Reset sits in the header row, so it is the first tab stop.
+      const reset = screen.getByRole('button', { name: /^Reset/ })
+      expect(reset).toHaveFocus()
 
-      fireEvent.keyDown(radio('Host'), { key: 'Tab', shiftKey: true })
+      fireEvent.keyDown(reset, { key: 'Tab', shiftKey: true })
       expect(screen.getByRole('button', { name: 'Start' })).toHaveFocus()
     })
 
@@ -1259,5 +1558,576 @@ describe('StartSessionChooser — dialog behaviour (5.4 UX fix)', () => {
       expect(useTerminalStore.getState().buildPrompt.ws).toBeNull()
       expect(useTerminalStore.getState().spawnError.ws).toBeNull()
     })
+  })
+})
+
+// ── B7: resolve before render, notices, focus, Check again, axe ───────────────
+
+describe.each(['office', 'realm'] as const)('StartSessionChooser — open-time resolution (B7, skin=%s)', (skin) => {
+  const REMEMBERED_SANDBOX: SessionChoice = {
+    agentId: 'claude',
+    location: 'sandbox',
+    hostPermissionMode: 'default',
+    sandboxPermissionMode: 'auto',
+    networkMode: 'open',
+  }
+
+  function remember(choice: SessionChoice | null, source: 'workspace' | 'last' = 'workspace'): void {
+    getDefaults.mockResolvedValue(ok({ choice, source: choice ? source : 'builtin' }))
+  }
+
+  /** Opens the chooser the way the app does: no pre-resolved choice, status only from the (mocked) IPC. */
+  function open(s: SandboxStatus | null = status(), props: Partial<React.ComponentProps<typeof StartSessionChooser>> = {}) {
+    useSandboxStore.setState({ status: {}, environment: null })
+    if (s) api.getStatus.mockResolvedValue(ok(s))
+    else api.getStatus.mockReturnValue(new Promise(() => {}))
+    const onClose = vi.fn()
+    const view = render(<StartSessionChooser slug="ws" skin={skin} agents={ONE_AGENT} onClose={onClose} {...props} />)
+    return { onClose, ...view }
+  }
+
+  const startButton = () => screen.getByRole('button', { name: 'Start' })
+
+  it('shows a skeleton and an empty live region until the fetch settles, then the form', async () => {
+    open(null)
+
+    expect(screen.getByTestId('chooser-skeleton')).toHaveTextContent(CHECKING_COPY)
+    expect(screen.getByTestId('notices-region')).toHaveAttribute('aria-live', 'polite')
+    expect(screen.getByTestId('notices-region')).toBeEmptyDOMElement()
+    expect(screen.queryByRole('radio', { name: 'Host' })).toBeNull()
+  })
+
+  it('keeps the same live region node when the form replaces the skeleton', async () => {
+    let settle: (v: unknown) => void = () => {}
+    api.getStatus.mockReturnValue(new Promise((resolve) => { settle = resolve }))
+    useSandboxStore.setState({ status: {}, environment: null })
+    render(<StartSessionChooser slug="ws" skin={skin} agents={ONE_AGENT} onClose={vi.fn()} />)
+    const region = screen.getByTestId('notices-region')
+
+    settle(ok(status()))
+    await screen.findByRole('radio', { name: 'Host' })
+
+    expect(screen.getByTestId('notices-region')).toBe(region)
+  })
+
+  it('fetches status, a fresh environment and the remembered options together on every open', async () => {
+    open()
+    await screen.findByRole('radio', { name: 'Host' })
+    expect(api.getStatus).toHaveBeenCalledWith('ws')
+    expect(api.getEnvironment).toHaveBeenCalledWith(true)
+    expect(getDefaults).toHaveBeenCalledWith('ws')
+  })
+
+  it('with nothing replaced, Start is the initial focus and there is no banner', async () => {
+    open()
+    await screen.findByRole('radio', { name: 'Host' })
+    // Focus moves in a passive effect after the form mounts.
+    await vi.waitFor(() => expect(startButton()).toHaveFocus())
+    expect(screen.queryByTestId('notices')).toBeNull()
+    expect(screen.getByTestId('notices-region')).toBeEmptyDOMElement()
+  })
+
+  it('starts from the remembered choice and labels where it came from', async () => {
+    remember(REMEMBERED_SANDBOX, 'last')
+    open()
+    await screen.findByRole('radio', { name: 'Sandbox' })
+    expect(radio('Sandbox')).toHaveAttribute('aria-checked', 'true')
+    expect(radio('Unrestricted')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('choice-source')).toHaveTextContent('Last used')
+    expect(screen.queryByTestId('notices')).toBeNull()
+  })
+
+  it('a replaced field gets a persistent banner, focus on that control, and one Enter does not start', async () => {
+    remember(REMEMBERED_SANDBOX)
+    open(status({ reason: 'docker-daemon-down' }))
+    await screen.findByTestId('notices')
+
+    expect(screen.getByTestId('notices')).toHaveTextContent("Sandbox isn't available")
+    expect(screen.getByTestId('notices-region')).toContainElement(screen.getByTestId('notices'))
+    expect(radio('Host')).toHaveAttribute('aria-checked', 'true')
+    await vi.waitFor(() => expect(radio('Host')).toHaveFocus())
+    expect(startButton()).not.toHaveFocus()
+
+    await userEvent.keyboard('{Enter}')
+    expect(terminalSpawn).not.toHaveBeenCalled()
+    expect(api.startSession).not.toHaveBeenCalled()
+    expect(screen.getByTestId('notices')).toBeInTheDocument()
+  })
+
+  it('Reset clears the notices and the recheck outcome, and Start takes the autofocus again (UX-M5)', async () => {
+    remember(REMEMBERED_SANDBOX)
+    open(status({ reason: 'docker-daemon-down' }))
+    await screen.findByTestId('notices')
+
+    await userEvent.click(screen.getByRole('button', { name: /^Reset/ }))
+
+    expect(screen.queryByTestId('notices')).toBeNull()
+    expect(screen.queryByTestId('notices-outcome')).toBeNull()
+    expect(startButton()).toHaveAttribute('data-autofocus', 'true')
+  })
+
+  it('an unregistered remembered agent is replaced with a notice naming both agents', async () => {
+    remember({ ...REMEMBERED_SANDBOX, agentId: 'ghost', location: 'host' })
+    open()
+    await screen.findByTestId('notices')
+    expect(screen.getByTestId('notices')).toHaveTextContent("ghost was last used but isn't available in this version, so Claude Code is selected.")
+  })
+
+  it('reports an untouched replaced field as a fallback when starting', async () => {
+    remember(REMEMBERED_SANDBOX)
+    open(status({ reason: 'docker-daemon-down' }))
+    await screen.findByTestId('notices')
+
+    await userEvent.click(startButton())
+
+    expect(terminalSpawn).toHaveBeenCalledWith('ws', 80, 24, expect.objectContaining({ fallbackFields: ['location'] }))
+  })
+
+  it('touching a replaced control removes it from fallbackFields, even when the value is unchanged', async () => {
+    remember(REMEMBERED_SANDBOX)
+    open(status({ reason: 'docker-daemon-down' }))
+    await screen.findByTestId('notices')
+
+    await userEvent.click(radio('Host'))
+    await userEvent.click(startButton())
+
+    expect(terminalSpawn).toHaveBeenCalledWith('ws', 80, 24, expect.objectContaining({ fallbackFields: [] }))
+  })
+
+  it('Check again re-resolves the fields the user has not touched', async () => {
+    remember(REMEMBERED_SANDBOX)
+    open(status({ reason: 'docker-daemon-down' }))
+    await screen.findByTestId('notices')
+    api.getStatus.mockResolvedValue(ok(status()))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Check again' }))
+
+    await vi.waitFor(() => expect(radio('Sandbox')).toHaveAttribute('aria-checked', 'true'))
+    expect(screen.queryByTestId('notices')).toBeNull()
+    expect(getDefaults).toHaveBeenCalledTimes(2)
+  })
+
+  it('Check again keeps a selection the user made', async () => {
+    remember(REMEMBERED_SANDBOX)
+    open(status({ reason: 'docker-daemon-down' }))
+    await screen.findByTestId('notices')
+    await userEvent.click(radio('Host'))
+    api.getStatus.mockResolvedValue(ok(status()))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Check again' }))
+
+    await vi.waitFor(() => expect(api.getStatus).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(screen.queryByTestId('notices')).toBeNull())
+    expect(radio('Host')).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('on timeout renders what has arrived, with the status-unknown notice and no autofocus on Start', async () => {
+    vi.useFakeTimers()
+    try {
+      remember(REMEMBERED_SANDBOX)
+      open(null)
+      // The remembered options arrive quickly; only the status never does.
+      await act(async () => {})
+      await act(async () => { vi.advanceTimersByTime(STATUS_CHECK_TIMEOUT_MS) })
+
+      expect(screen.getByTestId('notices')).toHaveTextContent("Couldn't check your sandbox status, so Host is selected.")
+      expect(radio('Host')).toHaveAttribute('aria-checked', 'true')
+      expect(startButton()).not.toHaveFocus()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a Host or built-in choice opens at once while Docker is still hung: Start is usable and Sandbox says Checking… (UX-H1)', async () => {
+    api.getEnvironment.mockReturnValue(new Promise(() => {}))
+    open(null)
+
+    expect(await screen.findByRole('radio', { name: 'Host' })).toHaveAttribute('aria-checked', 'true')
+    expect(startButton()).toBeEnabled()
+    await vi.waitFor(() => expect(startButton()).toHaveFocus())
+    fireEvent.focus(radio('Sandbox'))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(CHECKING_COPY)
+  })
+
+  it('a remembered Host choice with an agent other than the default also opens at once', async () => {
+    api.getEnvironment.mockReturnValue(new Promise(() => {}))
+    remember({ ...REMEMBERED_SANDBOX, location: 'host', hostPermissionMode: 'auto' })
+    open(null)
+
+    expect(await screen.findByRole('radio', { name: 'Host' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('choice-source')).toHaveTextContent('Remembered for this workspace')
+  })
+
+  it('a remembered Sandbox choice waits for the status for 3 s, not 10 s, then falls back as for an unknown status', async () => {
+    vi.useFakeTimers()
+    try {
+      remember(REMEMBERED_SANDBOX)
+      open(null)
+      await act(async () => {})
+      await act(async () => { vi.advanceTimersByTime(SANDBOX_CHOICE_WAIT_MS - 1) })
+      expect(screen.getByTestId('chooser-skeleton')).toBeInTheDocument()
+
+      await act(async () => { vi.advanceTimersByTime(1) })
+
+      expect(screen.queryByTestId('chooser-skeleton')).toBeNull()
+      expect(screen.getByTestId('notices')).toHaveTextContent("Couldn't check your sandbox status, so Host is selected.")
+      expect(radio('Host')).toHaveAttribute('aria-checked', 'true')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a remembered Sandbox choice that gets its status in time is honored, with no fallback', async () => {
+    remember(REMEMBERED_SANDBOX)
+    open()
+    await screen.findByRole('radio', { name: 'Sandbox' })
+    expect(radio('Sandbox')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByTestId('notices')).toBeNull()
+  })
+
+  it('a readiness problem shows Check again, and pressing it asks for a fresh environment and status', async () => {
+    remember({ ...REMEMBERED_SANDBOX, agentId: 'codex', location: 'host' })
+    open(status({ readiness: { codex: { code: 'not-signed-in' } } }), { agents: AGENT_DESCRIPTORS })
+    await screen.findByTestId('readiness-message')
+    api.getEnvironment.mockClear()
+    api.getStatus.mockClear()
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Check again' }))
+
+    expect(api.getEnvironment).toHaveBeenCalledWith(true)
+    await vi.waitFor(() => expect(api.getStatus).toHaveBeenCalledWith('ws'))
+  })
+
+  it('shows no Check again when the agent is ready and Docker is fine', async () => {
+    open()
+    await screen.findByRole('radio', { name: 'Host' })
+    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
+  })
+
+  it('falls back to the built-in choice when the remembered options cannot be read', async () => {
+    getDefaults.mockRejectedValue(new Error('main unreachable'))
+    open()
+    await screen.findByRole('radio', { name: 'Host' })
+    expect(radio('Host')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('choice-source')).toBeEmptyDOMElement()
+    await vi.waitFor(() => expect(startButton()).toHaveFocus())
+  })
+
+  it('resolution runs once per fetch: later interaction never re-resolves', async () => {
+    remember(REMEMBERED_SANDBOX)
+    open()
+    await screen.findByRole('radio', { name: 'Sandbox' })
+    await userEvent.click(radio('Host'))
+    await userEvent.click(radio('Auto mode'))
+    expect(radio('Host')).toHaveAttribute('aria-checked', 'true')
+    expect(getDefaults).toHaveBeenCalledTimes(1)
+  })
+
+  describe('host availability (C3)', () => {
+    const CODEX_HOST: SessionChoice = { ...REMEMBERED_SANDBOX, agentId: 'codex', location: 'host' }
+
+    function openWithCodex(): ReturnType<typeof open> {
+      return open(status(), { agents: AGENT_DESCRIPTORS })
+    }
+
+    it('asks for fresh availability on every open', async () => {
+      openWithCodex()
+      await screen.findByRole('radio', { name: 'Host' })
+      expect(getHostAvailability).toHaveBeenCalledWith()
+    })
+
+    it('flags a missing binary on the option and inline, without swapping the agent', async () => {
+      getHostAvailability.mockResolvedValue(ok({ claude: 'found', codex: 'not-found' }))
+      remember(CODEX_HOST)
+      openWithCodex()
+
+      const option = await screen.findByRole('radio', { name: 'Codex (may not be installed)' })
+      expect(option).toHaveAttribute('aria-checked', 'true')
+      expect(screen.getByTestId('path-warning')).toHaveTextContent(
+        "codex wasn't found on your PATH, so it may not be installed. Start may still work if your shell finds it.",
+      )
+      expect(screen.queryByTestId('notices')).toBeNull()
+      expect(screen.getByTestId('will-start')).toHaveTextContent('Will start: Codex')
+    })
+
+    it('warns, without blocking, when the host binary sits in a folder sandbox sessions can write, with the path and a reinstall command (SEC-M3)', async () => {
+      getHostAvailability.mockResolvedValue(ok({ claude: 'found', codex: 'found-in-writable-root:/home/u/.codex/packages/standalone/bin/codex' }))
+      remember(CODEX_HOST)
+      openWithCodex()
+
+      const warning = await screen.findByTestId('writable-install-warning')
+      expect(warning).toHaveTextContent('/home/u/.codex/packages/standalone/bin/codex')
+      expect(within(warning).getByRole('button', { name: 'Copy command pnpm add -g @openai/codex' })).toBeInTheDocument()
+      expect(screen.queryByTestId('path-warning')).toBeNull()
+      expect(screen.getByRole('radio', { name: 'Codex' })).toHaveAttribute('aria-checked', 'true') // it counts as found
+      await userEvent.click(startButton())
+      expect(terminalSpawn).toHaveBeenCalledWith('ws', 80, 24, expect.objectContaining({ agentId: 'codex' }))
+    })
+
+    it('stays selectable and Start still starts it', async () => {
+      getHostAvailability.mockResolvedValue(ok({ claude: 'found', codex: 'not-found' }))
+      openWithCodex()
+      await userEvent.click(await screen.findByRole('radio', { name: 'Codex (may not be installed)' }))
+
+      await userEvent.click(startButton())
+
+      expect(terminalSpawn).toHaveBeenCalledWith('ws', 80, 24, expect.objectContaining({ agentId: 'codex' }))
+    })
+
+    it('says nothing for a found binary, and nothing when availability cannot be read', async () => {
+      remember(CODEX_HOST)
+      const { unmount } = openWithCodex()
+      await screen.findByRole('radio', { name: 'Codex' })
+      expect(screen.queryByTestId('path-warning')).toBeNull()
+      unmount()
+
+      getHostAvailability.mockRejectedValue(new Error('unreachable'))
+      openWithCodex()
+      await screen.findByRole('radio', { name: 'Codex' })
+      expect(screen.queryByTestId('path-warning')).toBeNull()
+    })
+
+    it('Check again re-reads availability', async () => {
+      getHostAvailability.mockResolvedValue(ok({ claude: 'found', codex: 'not-found' }))
+      // A remembered sandbox choice that can't be honored leaves a notice, which brings Check again.
+      remember({ ...CODEX_HOST, location: 'sandbox' })
+      open(status({ reason: 'docker-daemon-down' }), { agents: AGENT_DESCRIPTORS })
+      await screen.findByTestId('path-warning')
+      getHostAvailability.mockResolvedValue(ok({ claude: 'found', codex: 'found' }))
+
+      await userEvent.click(screen.getByRole('button', { name: 'Check again' }))
+
+      await vi.waitFor(() => expect(screen.queryByTestId('path-warning')).toBeNull())
+      expect(getHostAvailability).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  describe('review fixes (B7)', () => {
+    it('when Check again clears every notice, the banner says so instead of vanishing, and Check again stays', async () => {
+      remember(REMEMBERED_SANDBOX)
+      open(status({ reason: 'docker-daemon-down' }))
+      await screen.findByTestId('notices')
+      api.getStatus.mockResolvedValue(ok(status()))
+
+      await userEvent.click(screen.getByRole('button', { name: 'Check again' }))
+
+      expect(await screen.findByTestId('notices-outcome')).toHaveTextContent('Checked again: nothing is blocking your choices now.')
+      expect(screen.queryByTestId('notices')).toBeNull()
+      expect(screen.getByTestId('notices-region')).toContainElement(screen.getByTestId('notices-outcome'))
+      expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
+    })
+
+    it('with a notice but no replaced control on screen, focus goes to Check again', async () => {
+      // The remembered agent is gone, but with one agent there is no Agent row to land on.
+      remember({ ...REMEMBERED_SANDBOX, agentId: 'ghost', location: 'host' })
+      open()
+      await screen.findByTestId('notices')
+      await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Check again' })).toHaveFocus())
+      expect(startButton()).not.toHaveFocus()
+    })
+
+    it('a different workspace is a new opening: the skeleton shows again and the touched fields are forgotten', async () => {
+      const { rerender } = open()
+      await screen.findByRole('radio', { name: 'Host' })
+      await userEvent.click(radio('Host'))
+
+      rerender(<StartSessionChooser slug="other" skin={skin} agents={ONE_AGENT} onClose={vi.fn()} />)
+
+      expect(screen.getByTestId('chooser-skeleton')).toBeInTheDocument()
+      expect(getDefaults).toHaveBeenCalledWith('other')
+    })
+
+    it('Check again is bounded like the open: a status that never answers does not leave it busy forever', async () => {
+      vi.useFakeTimers()
+      try {
+        open(status({ reason: 'docker-daemon-down' }))
+        await act(async () => {})
+        expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
+        api.getStatus.mockReturnValue(new Promise(() => {}))
+
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Check again' })) })
+        expect(screen.getByRole('button', { name: 'Checking…' })).toBeInTheDocument()
+        await act(async () => { vi.advanceTimersByTime(STATUS_CHECK_TIMEOUT_MS) })
+
+        expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('a re-render with a new agents array does not refetch or re-resolve', async () => {
+      const { rerender } = open()
+      await screen.findByRole('radio', { name: 'Host' })
+      await userEvent.click(radio('Host'))
+
+      rerender(<StartSessionChooser slug="ws" skin={skin} agents={[CLAUDE_DESCRIPTOR]} onClose={vi.fn()} />)
+      rerender(<StartSessionChooser slug="ws" skin={skin} agents={[CLAUDE_DESCRIPTOR]} onClose={vi.fn()} />)
+
+      expect(getDefaults).toHaveBeenCalledTimes(1)
+      expect(api.getStatus).toHaveBeenCalledTimes(1)
+    })
+
+    it('a Check again that is still running when the chooser closes changes nothing afterwards', async () => {
+      remember(REMEMBERED_SANDBOX)
+      const { unmount } = open(status({ reason: 'docker-daemon-down' }))
+      await screen.findByTestId('notices')
+      let release: (v: unknown) => void = () => {}
+      api.getEnvironment.mockReturnValue(new Promise((resolve) => { release = resolve }))
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+      fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+      unmount()
+      await act(async () => { release(ok(null)) })
+
+      expect(errors).not.toHaveBeenCalled()
+      errors.mockRestore()
+    })
+  })
+
+  describe('axe', () => {
+    it('has no violations in the resolved default state', async () => {
+      const { container } = open()
+      await screen.findByRole('radio', { name: 'Host' })
+      await expectNoAxeViolations(container)
+    })
+
+    it('has no violations in the sandbox state with Unrestricted selected', async () => {
+      remember(REMEMBERED_SANDBOX)
+      const { container } = open()
+      await screen.findByRole('radio', { name: 'Sandbox' })
+      await expectNoAxeViolations(container)
+    })
+
+    it('has no violations with notices and Check again showing', async () => {
+      remember(REMEMBERED_SANDBOX)
+      const { container } = open(status({ reason: 'docker-daemon-down' }))
+      await screen.findByTestId('notices')
+      await expectNoAxeViolations(container)
+    })
+
+    it('has no violations while the skeleton shows', async () => {
+      const { container } = open(null)
+      await expectNoAxeViolations(container)
+    })
+  })
+})
+
+// ── D11: the readiness command, with a copy button ──────────────────────────
+
+describe.each(['office', 'realm'] as const)('StartSessionChooser — readiness command and Codex sandbox note (D11, skin=%s)', (skin) => {
+  const CODEX_HOST = { choice: { ...builtinChoice(), agentId: 'codex' }, source: 'last' as const }
+
+  function open(readinessCode: string | null, extra: Parameters<typeof status>[0] = {}) {
+    setup(status({ ...extra, readiness: { codex: readinessCode ? { code: readinessCode } : null } }))
+    return renderChooser({ skin, agents: AGENT_DESCRIPTORS, initial: CODEX_HOST })
+  }
+
+  it('shows the fix as a command with a named copy button when Codex is not signed in', () => {
+    open('not-signed-in')
+    const row = screen.getByTestId('readiness-command')
+    expect(row).toHaveTextContent('codex login')
+    expect(within(row).getByRole('button', { name: 'Copy command codex login' })).toBeInTheDocument()
+  })
+
+  it('shows the readiness message inline, with the command after it (UX-H3)', () => {
+    open('not-signed-in')
+    const message = screen.getByTestId('readiness-message')
+    expect(message).toHaveTextContent('Sign in to Codex on this computer. Run: codex login')
+  })
+
+  it('for a keyring sign-in, the message carries the real step (no raw backticks) and the command reads "After that, run:"', () => {
+    open('keyring')
+    const message = screen.getByTestId('readiness-message')
+    expect(message.textContent).not.toContain('`')
+    expect(message.querySelector('code')).toHaveTextContent('cli_auth_credentials_store = "file"')
+    expect(message).toHaveTextContent('then sign in again. After that, run: codex login')
+  })
+
+  it('shows the message alone for a problem with no command', () => {
+    open('config-invalid')
+    expect(screen.getByTestId('readiness-message')).toHaveTextContent('An entry in ~/.codex is a symbolic link or the wrong type.')
+    expect(screen.queryByTestId('readiness-command')).toBeNull()
+  })
+
+  it('"Couldn\'t copy" is announced when the clipboard refuses (L12)', async () => {
+    const user = userEvent.setup()
+    open('not-signed-in')
+    vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValueOnce(new Error('denied'))
+
+    await user.click(screen.getByRole('button', { name: 'Copy command codex login' }))
+
+    expect(await screen.findByTestId('copy-confirmation')).toHaveTextContent("Couldn't copy")
+  })
+
+  it('copies the command and confirms politely with "Copied", in a live region that exists beforehand', async () => {
+    const user = userEvent.setup()
+    open('not-signed-in')
+    const confirmation = screen.getByTestId('copy-confirmation')
+    expect(confirmation).toHaveAttribute('aria-live', 'polite')
+    expect(confirmation).toHaveTextContent('')
+
+    await user.click(screen.getByRole('button', { name: 'Copy command codex login' }))
+
+    expect(await navigator.clipboard.readText()).toBe('codex login')
+    expect(screen.getByTestId('copy-confirmation')).toHaveTextContent('Copied')
+  })
+
+  it('offers the plain `codex` command for a first run', () => {
+    open('never-run')
+    expect(screen.getByRole('button', { name: 'Copy command codex' })).toBeInTheDocument()
+  })
+
+  it('shows no command for a problem that has none (a bad ~/.codex entry), and none when Codex is ready', () => {
+    open('config-invalid')
+    expect(screen.queryByTestId('readiness-command')).toBeNull()
+    cleanup()
+    open(null)
+    expect(screen.queryByTestId('readiness-command')).toBeNull()
+  })
+
+  it('shows no command when Docker or the workspace is what blocks the sandbox', () => {
+    open('not-signed-in', { reason: 'docker-daemon-down' })
+    expect(screen.queryByTestId('readiness-command')).toBeNull()
+  })
+
+  it('still gives the Sandbox option the readiness message as its reason', () => {
+    open('keyring')
+    fireEvent.focus(radio('Sandbox'))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(agentReadinessMessage('codex', 'keyring') as string)
+  })
+
+  it('shows the Codex sandbox first-run note when Codex and Sandbox are chosen', async () => {
+    open(null)
+    expect(screen.queryByText(/can use and replace your Codex sign-in/)).toBeNull()
+    await userEvent.click(radio('Sandbox'))
+    expect(screen.getByText(/The sandbox agent can use and replace your Codex sign-in/)).toBeInTheDocument()
+  })
+
+  it('has no axe violations with the command showing', async () => {
+    const { container } = open('not-signed-in')
+    await expectNoAxeViolations(container)
+  })
+})
+
+describe('StartSessionChooser — build prompt for an agent the image predates (D11)', () => {
+  it('adds the one-time-rebuild line for Codex when an image already exists, and not for Claude or a missing image', async () => {
+    const prompt = (agentId: 'claude' | 'codex') => ({
+      ws: { kind: 'sandbox' as const, agentId, permissionMode: 'skip' as const, networkMode: 'allowlist' as const },
+    })
+    useSandboxStore.setState({ environment: { docker: 'ok', dockerVersion: '28.0.1', image: { state: 'stale', builtAt: null, sizeBytes: null } } as never })
+    useTerminalStore.setState({ buildPrompt: prompt('codex') })
+    const { unmount } = renderChooser({ agents: AGENT_DESCRIPTORS })
+    expect(screen.getByText('The sandbox image was updated to include Codex. This is a one-time rebuild of a few minutes.')).toBeInTheDocument()
+    unmount()
+
+    useTerminalStore.setState({ buildPrompt: prompt('claude') })
+    const second = renderChooser({ agents: AGENT_DESCRIPTORS })
+    expect(screen.queryByText(/was updated to include/)).toBeNull()
+    second.unmount()
+
+    useSandboxStore.setState({ environment: { docker: 'ok', dockerVersion: '28.0.1', image: { state: 'absent', builtAt: null, sizeBytes: null } } as never })
+    useTerminalStore.setState({ buildPrompt: prompt('codex') })
+    renderChooser({ agents: AGENT_DESCRIPTORS })
+    expect(screen.queryByText(/was updated to include/)).toBeNull()
   })
 })

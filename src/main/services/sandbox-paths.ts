@@ -1,6 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { AGENT_DESCRIPTORS } from '../agents/descriptors'
 
 // ---------------------------------------------------------------------------
 // sandbox-paths.ts — the single source of every sandbox-related host path
@@ -22,6 +23,20 @@ import path from 'path'
 // touches `fs` when a caller actually invokes it.
 // ---------------------------------------------------------------------------
 
+/**
+ * The hidden first segments under `$HOME` a sandbox mount may use (assertMountSafe
+ * rule 4): `.corner-office` plus every agent's `homeEntries`. Snapshot-pinned, so a
+ * new agent's entries show up in a security review.
+ */
+export function hiddenHomeSegments(): readonly string[] {
+  return ['.corner-office', ...AGENT_DESCRIPTORS.flatMap((d) => d.homeEntries)].filter(
+    (segment, i, all) => all.indexOf(segment) === i,
+  )
+}
+
+/** A `homeEntries` entry with an extension (`.claude.json`) is a single-file mount, not a directory root. */
+const isFileEntry = (entry: string): boolean => path.extname(entry) !== ''
+
 export interface SandboxPaths {
   /** `<realHome>/.corner-office/sandboxes` — SANDBOXES_ROOT (TRD §3.2, Q2). One persistent git worktree per workspace. */
   sandboxesRoot: string
@@ -29,6 +44,8 @@ export interface SandboxPaths {
   sandboxStateRoot: string
   /** `<realHome>/.claude` — read-write mount source shared with every sandbox. */
   claudeDir: string
+  /** `<realHome>/.codex` — Codex's home (`H`), read-write mount source for a Codex sandbox (#0037 D6/D8). */
+  codexDir: string
   /** `<realHome>/.claude.json` — single-file read-write bind mount. */
   claudeJson: string
   /** `<realHome>/.claude/settings.json` — host original; a sanitized per-sandbox copy is mounted over it read-only. */
@@ -78,6 +95,7 @@ export function sandboxPaths(realHome: string): SandboxPaths {
   const sandboxesRoot = path.join(realHome, '.corner-office', 'sandboxes')
   const sandboxStateRoot = path.join(realHome, '.corner-office', 'sandbox')
   const claudeDir = path.join(realHome, '.claude')
+  const codexDir = path.join(realHome, '.codex')
   const claudeJson = path.join(realHome, '.claude.json')
   const claudeSettings = path.join(claudeDir, 'settings.json')
   const claudeMd = path.join(claudeDir, 'CLAUDE.md')
@@ -90,6 +108,7 @@ export function sandboxPaths(realHome: string): SandboxPaths {
     sandboxesRoot,
     sandboxStateRoot,
     claudeDir,
+    codexDir,
     claudeJson,
     claudeSettings,
     claudeMd,
@@ -97,6 +116,13 @@ export function sandboxPaths(realHome: string): SandboxPaths {
     claudeRoDirs,
     claudeShadowDirs,
     eventsRoot,
-    rwMountRoots: [claudeDir, sandboxesRoot, sandboxStateRoot, eventsRoot],
+    rwMountRoots: [
+      ...AGENT_DESCRIPTORS.flatMap((d) => d.homeEntries)
+        .filter((entry) => !isFileEntry(entry))
+        .map((entry) => path.join(realHome, entry)),
+      sandboxesRoot,
+      sandboxStateRoot,
+      eventsRoot,
+    ],
   }
 }

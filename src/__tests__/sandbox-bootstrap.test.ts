@@ -135,9 +135,26 @@ describe('onImageBuildDone', () => {
 
     onImageBuildDone({ ok: true, imageId: 'sha256:x', recreatePendingNames: ['co-sandbox-a', 'co-sandbox-b', 'other'] }, manager, hooks)
 
-    expect(manager.markRecreatePending.mock.calls).toEqual([['a'], ['b']])
+    expect(manager.markRecreatePending.mock.calls).toEqual([['a', 'claude'], ['b', 'claude']])
     expect(hooks.onImageReady).toHaveBeenCalledTimes(1)
     expect(hooks.onChanged).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks a Codex container by its own agent, and skips names it cannot parse', () => {
+    const manager = { markRecreatePending: vi.fn() }
+    const hooks = { onChanged: vi.fn(), onImageReady: vi.fn() }
+
+    onImageBuildDone(
+      {
+        ok: true,
+        imageId: 'sha256:x',
+        recreatePendingNames: ['co-sandbox-a.codex', 'co-sandbox-a', 'co-sandbox-b.claude', 'co-sandbox-c.nope', 'co-sandbox-'],
+      },
+      manager,
+      hooks,
+    )
+
+    expect(manager.markRecreatePending.mock.calls).toEqual([['a', 'codex'], ['a', 'claude']])
   })
 
   it('only signals a change for a failed or cancelled build, with no ready notice', () => {

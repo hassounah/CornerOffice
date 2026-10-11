@@ -1,3 +1,5 @@
+import type { AgentId } from '../agents/descriptors'
+
 export type HookEventName =
   | 'SessionStart'
   | 'SessionEnd'
@@ -20,13 +22,16 @@ export type HookEventName =
   | 'PreCompact'
   | 'PostCompact'
   | 'Elicitation'
-  | 'ElicitationResult';
+  | 'ElicitationResult'
+  | 'Interrupt';
 
 export interface HookEvent {
   timestamp: string;               // ISO 8601
   event: HookEventName;
   workspace: string;               // Workspace slug (derived from cwd basename)
   sessionId: string;
+  /** Emitting agent; absent = claude. Advisory only: never drives capability gating or provenance (D14). */
+  agent?: AgentId;
 
   // Legacy wrapper — older plugin versions nested fields here.
   // Current plugin keeps fields at top level. Parser checks both.

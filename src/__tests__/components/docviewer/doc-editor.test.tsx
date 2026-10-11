@@ -31,6 +31,9 @@ vi.mock('../../../renderer/stores/docviewer-store', () => ({
 // ---------------------------------------------------------------------------
 
 import { DocEditor } from '../../../renderer/components/docviewer/DocEditor'
+// Static, so the barrel's heavy module graph loads at collection time rather
+// than inside a 5 s test body when the whole suite is running in parallel.
+import * as docviewerIndex from '../../../renderer/components/docviewer/index'
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -94,8 +97,7 @@ describe('DocEditor', () => {
     expect(textarea.value).toBe('')
   })
 
-  it('is exported from the docviewer index', async () => {
-    const mod = await import('../../../renderer/components/docviewer/index')
-    expect(typeof mod.DocEditor).toBe('function')
+  it('is exported from the docviewer index', () => {
+    expect(typeof docviewerIndex.DocEditor).toBe('function')
   })
 })

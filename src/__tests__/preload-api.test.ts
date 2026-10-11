@@ -452,6 +452,53 @@ describe('api invoke methods', () => {
   })
 })
 
+describe('spawn option forwarding', () => {
+  it('terminal.spawn sends only the base payload without options', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: null })
+    await api.terminal.spawn('my-ws', 80, 24)
+    expect(mockInvoke).toHaveBeenCalledWith('terminal:spawn', { workspaceSlug: 'my-ws', cols: 80, rows: 24 })
+  })
+
+  it('terminal.spawn and sandbox.startSession forward the agent options', async () => {
+    mockInvoke.mockResolvedValue({ data: null, error: null })
+    await api.terminal.spawn('my-ws', 80, 24, { agentId: 'claude', permissionMode: 'auto', fallbackFields: ['location'] })
+    expect(mockInvoke).toHaveBeenCalledWith('terminal:spawn', {
+      workspaceSlug: 'my-ws',
+      cols: 80,
+      rows: 24,
+      agentId: 'claude',
+      permissionMode: 'auto',
+      fallbackFields: ['location'],
+    })
+    await api.sandbox.startSession('my-ws', 80, 24, 'skip', 'open', { agentId: 'claude', fallbackFields: [] })
+    expect(mockInvoke).toHaveBeenCalledWith('sandbox:startSession', {
+      workspaceSlug: 'my-ws',
+      cols: 80,
+      rows: 24,
+      permissionMode: 'skip',
+      networkMode: 'open',
+      agentId: 'claude',
+      fallbackFields: [],
+    })
+  })
+})
+
+describe('agents preload API', () => {
+  it('agents.getHostAvailability invokes agents:getHostAvailability with no input', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: null })
+    await api.agents.getHostAvailability()
+    expect(mockInvoke).toHaveBeenCalledWith('agents:getHostAvailability', {})
+  })
+})
+
+describe('session preload API', () => {
+  it('session.getDefaults invokes session:getDefaults with the workspace slug', async () => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: null })
+    await api.session.getDefaults('my-ws')
+    expect(mockInvoke).toHaveBeenCalledWith('session:getDefaults', { workspaceSlug: 'my-ws' })
+  })
+})
+
 describe('sandbox preload API', () => {
   const calls: [string, () => Promise<unknown>, string, unknown][] = [
     ['getEnvironment', () => api.sandbox.getEnvironment(true), 'sandbox:getEnvironment', { refresh: true }],

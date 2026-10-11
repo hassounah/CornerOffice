@@ -15,7 +15,6 @@ import {
   SANDBOX_IMAGE,
   LABEL,
   STOP_TIMEOUT_S,
-  PERM_FLAGS,
   versionArgv,
   infoArgv,
   imageInspectArgv,
@@ -23,7 +22,7 @@ import {
   createArgv,
   startArgv,
   firewallInitArgv,
-  sessionExecArgv,
+  sessionExecArgv as sessionExecArgvRaw,
   stopArgv,
   rmArgv,
   inspectArgv,
@@ -32,6 +31,8 @@ import {
   parseInspect,
 } from '../main/services/sandbox-spec'
 import type { Mount, BuildArgvOptions, CreateArgvOptions } from '../main/services/sandbox-spec'
+import { PERM_FLAGS } from '../main/agents/claude/handler'
+import { claudeSessionExecArgv as sessionExecArgv } from './helpers/claude-mounts'
 
 // ---------------------------------------------------------------------------
 // sandbox-spec-argv.test.ts (TRD §3.5, §10.9, C1, L1, X5, SEC-L1, SEC-L9)
@@ -75,6 +76,8 @@ describe('versionArgv / infoArgv / imageInspectArgv', () => {
   })
 })
 
+const PINS = { codex: { CODEX_VERSION: '0.162.1', CODEX_SHA512_X64: 'a'.repeat(128), CODEX_SHA512_ARM64: 'b'.repeat(128) } }
+
 describe('buildArgv', () => {
   function baseOpts(home: string, ctx: string): BuildArgvOptions {
     return {
@@ -85,6 +88,8 @@ describe('buildArgv', () => {
       home,
       buildHash: 'abc123',
       ctx,
+      installPins: PINS,
+      agents: ['claude', 'codex'],
     }
   }
 
@@ -103,11 +108,48 @@ describe('buildArgv', () => {
       '--build-arg', 'AGENT_UID=1000',
       '--build-arg', 'AGENT_GID=1000',
       '--build-arg', `AGENT_HOME=${home}`,
+      '--build-arg', 'CODEX_VERSION=0.162.1',
+      '--build-arg', `CODEX_SHA512_X64=${'a'.repeat(128)}`,
+      '--build-arg', `CODEX_SHA512_ARM64=${'b'.repeat(128)}`,
       '--label', `${LABEL.build}=abc123`,
       '--label', `${LABEL.toolchains}=node,build-base`,
+      '--label', `${LABEL.agents}=claude,codex`,
       '--file', path.join(ctx, 'Dockerfile'),
       ctx,
     ])
+  })
+
+  it.each([
+    ['an empty version', { ...PINS.codex, CODEX_VERSION: '' }],
+    ['a version with shell metacharacters', { ...PINS.codex, CODEX_VERSION: '1.0;rm' }],
+    ['an empty x64 hash', { ...PINS.codex, CODEX_SHA512_X64: '' }],
+    ['a short arm64 hash', { ...PINS.codex, CODEX_SHA512_ARM64: 'b'.repeat(127) }],
+    ['an upper-case hash', { ...PINS.codex, CODEX_SHA512_X64: 'A'.repeat(128) }],
+    ['a lower-case pin name', { ...PINS.codex, codex_version: '1.0.0' }],
+  ])('refuses %s (fail closed)', (_label, codex) => {
+    const home = mkTmp('co-argv-home-')
+    const ctx = mkTmp('co-argv-ctx-')
+    expect(() => buildArgv({ ...baseOpts(home, ctx), installPins: { codex } })).toThrow(/install pin/)
+  })
+
+  it('refuses pins for an agent that is not in the image', () => {
+    const home = mkTmp('co-argv-home-')
+    const ctx = mkTmp('co-argv-ctx-')
+    expect(() => buildArgv({ ...baseOpts(home, ctx), agents: ['claude'], installPins: PINS })).toThrow(/not in the image/)
+  })
+
+  it('passes any agent\'s pins in order, and none for an agent without any', () => {
+    const home = mkTmp('co-argv-home-')
+    const ctx = mkTmp('co-argv-ctx-')
+    const argv = buildArgv({ ...baseOpts(home, ctx), agents: ['claude', 'codex', 'gemini'], installPins: { ...PINS, gemini: { GEMINI_VERSION: '1.2.3' } } })
+    const buildArgs = argv.filter((_, i) => argv[i - 1] === '--build-arg')
+    expect(buildArgs.slice(-4)).toEqual(['CODEX_VERSION=0.162.1', `CODEX_SHA512_X64=${'a'.repeat(128)}`, `CODEX_SHA512_ARM64=${'b'.repeat(128)}`, 'GEMINI_VERSION=1.2.3'])
+  })
+
+  it.each([[[]], [['Claude']], [['a,b']]])('refuses an invalid agents label %j', (agents) => {
+    const home = mkTmp('co-argv-home-')
+    const ctx = mkTmp('co-argv-ctx-')
+    expect(() => buildArgv({ ...baseOpts(home, ctx), agents })).toThrow(/agents label/)
   })
 
   it('adds --no-cache only when rebuild is true (D15)', () => {
@@ -232,6 +274,7 @@ describe('createArgv', () => {
       '--name', 'co-sandbox-my-ws', '--hostname', 'co-sandbox-my-ws',
       '--label', `${LABEL.sandbox}=1`,
       '--label', `${LABEL.workspace}=my-ws`,
+      '--label', `${LABEL.agent}=claude`,
       '--label', `${LABEL.spec}=deadbeef`,
       '--init',
       '--user', '1000:1000',
@@ -250,6 +293,27 @@ describe('createArgv', () => {
       '--workdir', '/home/agent/.corner-office/sandboxes/my-ws',
       SANDBOX_IMAGE,
     ])
+  })
+
+  it.each([null, undefined])('refuses a missing port (%s) for an agent with channels, so Claude can never lose its channel', (port) => {
+    const opts = makeBaseOpts()
+    expect(() => createArgv({ ...opts, port })).toThrow(/uses channels but createArgv got no port/)
+    expect(() => createArgv({ ...opts, port, agentId: 'claude' })).toThrow(/channels/)
+  })
+
+  it.each([null, undefined])('publishes no port and sets no channel env when the port is %s (an agent without channels)', (port) => {
+    const opts = makeBaseOpts()
+    const argv = createArgv({ ...opts, port, agentId: 'codex', c: 'co-sandbox-my-ws.codex' })
+    expect(argv).not.toContain('--publish')
+    expect(argv.join(' ')).not.toContain('CORNER_OFFICE_CHANNEL_PORT')
+    expect(argv.join(' ')).not.toContain('127.0.0.1')
+    expect(argv).toContain('CORNER_OFFICE_BASE_BRANCH=main')
+  })
+
+  it('labels the container with its agent, defaulting to the legacy agent', () => {
+    const opts = makeBaseOpts()
+    expect(createArgv(opts)).toContain(`${LABEL.agent}=claude`)
+    expect(createArgv({ ...opts, agentId: 'codex', c: 'co-sandbox-my-ws.codex' })).toContain(`${LABEL.agent}=codex`)
   })
 
   it('--publish is always loopback-pinned', () => {
@@ -409,6 +473,30 @@ describe('sessionExecArgv', () => {
     })
     expect(argv).toEqual(expect.arrayContaining(['--permission-mode', 'auto']))
     expect(argv).not.toContain('--dangerously-skip-permissions')
+  })
+
+  describe('agent-supplied env and argv (#0037 A5)', () => {
+    const base = { c: 'co-sandbox-my-ws', uid: 1000, gid: 1000, workTree: '/wt', gitIdentity: null }
+
+    it('passes agentEnv as --env flags before the container and agentArgv after it', () => {
+      const argv = sessionExecArgvRaw({ ...base, agentEnv: ['CODEX_HOME=/home/a/.codex'], agentArgv: ['codex', '--x'] })
+      const c = argv.indexOf('co-sandbox-my-ws')
+      expect(argv.slice(c)).toEqual(['co-sandbox-my-ws', 'codex', '--x'])
+      const e = argv.indexOf('CODEX_HOME=/home/a/.codex')
+      expect(argv[e - 1]).toBe('--env')
+      expect(e).toBeLessThan(c)
+    })
+
+    it.each([
+      ['a malformed env entry', ['NOEQUALS'], ['x']],
+      ['a lower-case env name', ['bad=1'], ['x']],
+      ['a reserved env name', ['NODE_OPTIONS=--x'], ['x']],
+      ['a control character in an env value', ['FOO=a\nb'], ['x']],
+      ['an empty argv', [], []],
+      ['a control character in an argv token', [], ['x\u0000']],
+    ])('fails closed on %s', (_label, agentEnv, agentArgv) => {
+      expect(() => sessionExecArgvRaw({ ...base, agentEnv, agentArgv })).toThrow()
+    })
   })
 
   it('--user is always uid:gid, never root', () => {

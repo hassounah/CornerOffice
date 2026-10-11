@@ -6,6 +6,7 @@ import { useWorkspaceStore } from '../../../stores/workspace-store'
 import { useDocViewerStore } from '../../../stores/docviewer-store'
 import { useChannelsStore } from '../../../stores/channels-store'
 import { ChatPanel } from '../../channels/ChatPanel'
+import { useSessionAgent } from '../../../hooks/useSessionAgent'
 import { PermissionScroll } from '../../channels/PermissionScroll'
 import { RealmDocViewer } from './RealmDocViewer'
 import { useSettingsStore } from '../../../stores/settings-store'
@@ -622,6 +623,8 @@ export function WizardsStudy({ workspaceSlug }: { workspaceSlug: string | null }
     const normalizedPath = workspace.path.replace(/\/+$/, '')
     return s.sessions.some((sess) => sess.workspaceDir.replace(/\/+$/, '') === normalizedPath)
   })
+  // C6: an agent without channels has no chat; the empty state says why instead of "No active sessions".
+  const { chatUnavailableReason } = useSessionAgent(workspaceSlug ?? '')
   const dialogRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -641,8 +644,9 @@ export function WizardsStudy({ workspaceSlug }: { workspaceSlug: string | null }
   // Terminal session controls
   const sessionState = useTerminalStore((s) => s.sessions[workspaceSlug ?? ''] ?? 'none')
   const terminalOverlayVisible = useTerminalStore((s) => s.overlayVisible[workspaceSlug ?? ''] ?? false)
+  const hasExitBanner = useTerminalStore((s) => Boolean(s.exitBanner[workspaceSlug ?? '']))
   const spawnError = useTerminalStore((s) => s.spawnError[workspaceSlug ?? ''] ?? null)
-  const { spawn, kill, showOverlay, hideOverlay, clearSpawnError } = useTerminalStore()
+  const { kill, showOverlay, hideOverlay, clearSpawnError } = useTerminalStore()
   const terminalFontSize = useSettingsStore((s) => s.config?.terminal?.fontSize ?? 14)
   const terminalWorkspaceBounds = useSettingsStore((s) => s.config?.terminal?.windowBounds?.workspace)
   const updateConfig = useSettingsStore((s) => s.updateConfig)
@@ -820,7 +824,6 @@ export function WizardsStudy({ workspaceSlug }: { workspaceSlug: string | null }
                       <StartSessionChooser
                         slug={workspaceSlug}
                         skin="realm"
-                        onStartHost={() => void spawn(workspaceSlug)}
                         onClose={closeChooser}
                         onShowLog={() => {
                           // The build log lives in the Armory: ask for it with this workspace selected, then open the chamber.
@@ -1012,7 +1015,7 @@ export function WizardsStudy({ workspaceSlug }: { workspaceSlug: string | null }
                     />
                   </svg>
                   <span style={{ fontSize: 12, fontFamily: 'serif', textAlign: 'center', lineHeight: 1.4, padding: '0 12px' }}>
-                    No active sessions
+                    {chatUnavailableReason ?? 'No active sessions'}
                   </span>
                 </div>
               )}
@@ -1097,7 +1100,7 @@ export function WizardsStudy({ workspaceSlug }: { workspaceSlug: string | null }
       )}
 
       {/* TerminalOverlay — mounts when overlay is visible and session is active */}
-      {workspaceSlug && terminalOverlayVisible && (sessionState === 'starting' || sessionState === 'running') && (
+      {workspaceSlug && terminalOverlayVisible && (sessionState === 'starting' || sessionState === 'running' || hasExitBanner) && (
         <TerminalOverlay
           workspaceSlug={workspaceSlug}
           workspaceName={displayName}

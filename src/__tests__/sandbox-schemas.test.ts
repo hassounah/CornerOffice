@@ -110,11 +110,26 @@ describe('request schemas', () => {
     expect(SandboxStartSessionSchema.safeParse({ ...base, cols: 1, rows: 1000, permissionMode: 'auto', networkMode: 'open' }).success).toBe(true)
   })
 
+  it('startSession defaults agentId and fallbackFields, and rejects unknown agents and extra keys', () => {
+    const base = VALID[SANDBOX_CHANNELS.START_SESSION].input as object
+    expect(SandboxStartSessionSchema.parse(base)).toMatchObject({ agentId: 'claude', fallbackFields: [] })
+    for (const patch of [{ agentId: 'nope' }, { fallbackFields: ['bogus'] }, { extra: 1 }, { permissionMode: 'default' }]) {
+      expect(SandboxStartSessionSchema.safeParse({ ...base, ...patch }).success).toBe(false)
+    }
+  })
+
   it('recreate requires a 64-char lowercase hex confirmedSpecHash', () => {
     const base = { workspaceSlug: SLUG, newPort: true }
     for (const bad of ['', 'A'.repeat(64), 'g'.repeat(64), 'a'.repeat(63), 'a'.repeat(65)]) {
       expect(SandboxRecreateSchema.safeParse({ ...base, confirmedSpecHash: bad }).success).toBe(false)
     }
+  })
+
+  it('recreate carries an agentId that defaults to claude and rejects unknown agents (D4)', () => {
+    const base = { workspaceSlug: SLUG, newPort: false, confirmedSpecHash: HASH }
+    expect(SandboxRecreateSchema.parse(base)).toMatchObject({ agentId: 'claude' })
+    expect(SandboxRecreateSchema.parse({ ...base, agentId: 'codex' })).toMatchObject({ agentId: 'codex' })
+    expect(SandboxRecreateSchema.safeParse({ ...base, agentId: 'nope' }).success).toBe(false)
   })
 
   it('updateSettings validates allowlist entries and caps both lists at 200', () => {

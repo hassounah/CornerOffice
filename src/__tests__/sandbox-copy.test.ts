@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import {
   ELIGIBILITY_COPY,
+  agentReadinessMessage,
   APP_LOG_HINT,
   dockerStateCopy,
   WARNING_COPY,
@@ -17,6 +18,12 @@ import {
   isSessionStopping,
   startFailureMessage,
   recreateFailureMessage,
+  agentDisplayName,
+  agentReadinessCommand,
+  agentReadinessCommandLead,
+  recreateTitle,
+  deleteConfirmCopy,
+  imageUpdatedForAgentCopy,
   describeRecreatePlan,
   READ_ONLY_PROTECTIONS_COPY,
   unmergedLine,
@@ -38,8 +45,6 @@ import { CLAUDE_CONFIG_LABELS, CLAUDE_CONFIG_PROBLEMS, claudeConfigDetail } from
 
 const ALL_REASONS: Record<EligibilityReason, true> = {
   'sandbox-disabled': true,
-  'claude-home-missing': true,
-  'claude-config-invalid': true,
   'docker-not-installed': true,
   'docker-daemon-down': true,
   'docker-no-permission': true,
@@ -70,11 +75,12 @@ const ALL_START: Record<StartFailureCode, true> = {
   DOCKER_UNAVAILABLE: true,
   FIREWALL_FAILED: true,
   SPAWN_FAILED: true,
-  CLAUDE_CONFIG_INVALID: true,
+  AGENT_CONFIG_INVALID: true,
+  AGENT_NOT_READY: true,
 }
 const ALL_HANDOFF: Record<HandOffFailureCode, true> = { DIRTY: true, NOT_ON_BRANCH: true, NO_WORKTREE: true, LOCKED: true, SESSION_ENDING: true }
 const ALL_DELETE: Record<DeleteFailureCode, true> = { SESSION_RUNNING: true, DIRTY_NOT_ACKNOWLEDGED: true, FAILED: true }
-const ALL_RECREATE: Record<RecreateFailureCode, true> = { SESSION_RUNNING: true, PLAN_CHANGED: true, FAILED: true, DOCKER_UNAVAILABLE: true, CLAUDE_CONFIG_INVALID: true }
+const ALL_RECREATE: Record<RecreateFailureCode, true> = { SESSION_RUNNING: true, PLAN_CHANGED: true, FAILED: true, DOCKER_UNAVAILABLE: true, AGENT_CONFIG_INVALID: true }
 const ALL_CHANNEL: Record<SandboxStatus['channel'], true> = { connected: true, connecting: true, 'plugin-outdated': true, none: true, unavailable: true }
 const ALL_PLAN_REASONS: Record<RecreatePlan['reason'], true> = { image: true, 'mount-plan': true, port: true, 'new-container': true }
 
@@ -113,13 +119,17 @@ describe('copy quality', () => {
 
   it('only the flow codes have no error copy', () => {
     const noCopy = Object.entries(START_FAILURE_COPY).filter(([, v]) => v === null).map(([k]) => k).sort()
-    expect(noCopy).toEqual(['IMAGE_MISSING', 'NOT_ELIGIBLE', 'RECREATE_REQUIRED'])
+    expect(noCopy).toEqual(['AGENT_NOT_READY', 'IMAGE_MISSING', 'NOT_ELIGIBLE', 'RECREATE_REQUIRED'])
     expect(Object.entries(HAND_OFF_FAILURE_COPY).filter(([, v]) => v === null).map(([k]) => k)).toEqual(['DIRTY'])
   })
 
-  it('uses the exact §14.5 copy for claude-home-missing and the kill-switch copy for sandbox-disabled', () => {
-    expect(ELIGIBILITY_COPY['claude-home-missing']).toBe('Run Claude Code on this machine once first, then try again.')
+  it('uses the exact §14.5 copy for a Claude home that is missing, from the descriptor, and the kill-switch copy for sandbox-disabled', () => {
+    expect(agentReadinessMessage('claude', 'home-missing')).toBe('Run Claude Code on this machine once first, then try again.')
     expect(ELIGIBILITY_COPY['sandbox-disabled']).toBe('Sandbox is disabled in this build.')
+  })
+
+  it('has no eligibility copy for an agent home: that is readiness now (D6)', () => {
+    expect(Object.keys(ELIGIBILITY_COPY).filter((k) => k.startsWith('claude-'))).toEqual([])
   })
 
   it('reads the eligibility reasons, warnings and §14.5 copy in one tone: short sentences ending in a full stop', () => {
@@ -220,10 +230,71 @@ describe('one constant per message (UX-M3)', () => {
   })
 })
 
+describe('agent-named dialogs and prompts (#0037 D11, UX-M5)', () => {
+  it('recreateTitle names the agent and the verb', () => {
+    expect(recreateTitle(false)).toBe('Recreate the Claude Code sandbox?')
+    expect(recreateTitle(false, 'codex')).toBe('Recreate the Codex sandbox?')
+    expect(recreateTitle(true, 'codex')).toBe('Create the Codex sandbox?')
+  })
+
+  it('the image reason reads "The sandbox image was updated."', () => {
+    expect(RECREATE_REASON_COPY.image).toBe('The sandbox image was updated.')
+  })
+
+  it('deleteConfirmCopy names every agent\'s containers and says the other sign-ins stay', () => {
+    expect(deleteConfirmCopy()).toBe(
+      'Deletes the sandbox worktree and its Claude Code and Codex containers. Your Codex sign-in stays on this computer.',
+    )
+  })
+
+  it('imageUpdatedForAgentCopy is a one-time rebuild line', () => {
+    expect(imageUpdatedForAgentCopy('codex')).toBe('The sandbox image was updated to include Codex. This is a one-time rebuild of a few minutes.')
+  })
+
+  it('agentReadinessCommandLead is "Run:" unless the message names a step first', () => {
+    expect(agentReadinessCommandLead('codex', 'not-signed-in')).toBe('Run:')
+    expect(agentReadinessCommandLead('codex', 'keyring')).toBe('After that, run:')
+    expect(agentReadinessCommandLead('nope', 'x')).toBe('Run:')
+  })
+
+  it('agentReadinessCommand returns the fix for a code that has one, else null', () => {
+    expect(agentReadinessCommand('codex', 'not-signed-in')).toBe('codex login')
+    expect(agentReadinessCommand('codex', 'never-run')).toBe('codex')
+    expect(agentReadinessCommand('codex', 'config-invalid')).toBeNull()
+    expect(agentReadinessCommand('claude', 'home-missing')).toBeNull()
+    expect(agentReadinessCommand('nope', 'x')).toBeNull()
+    expect(agentReadinessCommand('codex', 'nope')).toBeNull()
+  })
+})
+
+describe('agent-named copy (#0037 C7)', () => {
+  it('SPAWN_FAILED and AGENT_CONFIG_INVALID name the session\'s own agent, defaulting to Claude Code', () => {
+    expect(startFailureMessage('SPAWN_FAILED')).toBe(START_FAILURE_COPY.SPAWN_FAILED)
+    expect(startFailureMessage('SPAWN_FAILED')).toContain("Claude Code couldn't be launched in it")
+    expect(startFailureMessage('SPAWN_FAILED', null, null, { agentId: 'codex' })).toContain("Codex couldn't be launched in it")
+    expect(startFailureMessage('SPAWN_FAILED', null, null, { agentId: 'codex' })).not.toContain('Claude')
+    expect(startFailureMessage('AGENT_CONFIG_INVALID', null, null, { agentId: 'codex' })).toBe(
+      "Your Codex configuration couldn't be prepared for the sandbox, so nothing was started.",
+    )
+    expect(startFailureMessage('AGENT_CONFIG_INVALID', null, 'x.', { agentId: 'codex' })).toMatch(/^x\. Your Codex configuration/)
+  })
+
+  it('recreate failures name the plan\'s agent too', () => {
+    expect(recreateFailureMessage('AGENT_CONFIG_INVALID')).toBe(RECREATE_FAILURE_COPY.AGENT_CONFIG_INVALID)
+    expect(recreateFailureMessage('AGENT_CONFIG_INVALID', null, 'codex')).toContain('Your Codex configuration')
+    expect(recreateFailureMessage('FAILED', null, 'codex')).toBe(RECREATE_FAILURE_COPY.FAILED)
+  })
+
+  it('agentDisplayName falls back to the legacy agent for an absent or unknown id', () => {
+    expect(agentDisplayName()).toBe('Claude Code')
+    expect(agentDisplayName('codex')).toBe('Codex')
+    expect(agentDisplayName('nope')).toBe('Claude Code')
+  })
+})
+
 describe('startFailureMessage', () => {
   it('uses the eligibility reason copy for NOT_ELIGIBLE, with a generic fallback', () => {
     expect(startFailureMessage('NOT_ELIGIBLE', 'not-git')).toBe(ELIGIBILITY_COPY['not-git'])
-    expect(startFailureMessage('NOT_ELIGIBLE', 'claude-home-missing')).toBe(ELIGIBILITY_COPY['claude-home-missing'])
     expect(startFailureMessage('NOT_ELIGIBLE')).toBe("Sandbox isn't available for this workspace.")
     expect(startFailureMessage('NOT_ELIGIBLE', null)).toBe("Sandbox isn't available for this workspace.")
   })
@@ -237,7 +308,7 @@ describe('startFailureMessage', () => {
 
 describe('describeRecreatePlan', () => {
   const mount = (path: string, readonly: boolean, source: 'settings' | 'memory.md' | 'app' = 'settings') => ({ path, readonly, source })
-  const plan = (overrides: Partial<RecreatePlan>): RecreatePlan => ({ reason: 'mount-plan', specHash: 'a'.repeat(64), newHostMounts: [], removedHostMounts: [], ...overrides })
+  const plan = (overrides: Partial<RecreatePlan>): RecreatePlan => ({ reason: 'mount-plan', specHash: 'a'.repeat(64), newHostMounts: [], removedHostMounts: [], agentId: 'claude', ...overrides })
 
   it.each(Object.keys(ALL_PLAN_REASONS) as RecreatePlan['reason'][])('gives one reason line for %s', (reason) => {
     expect(describeRecreatePlan(plan({ reason })).reasonLine).toBe(RECREATE_REASON_COPY[reason])
@@ -305,12 +376,12 @@ describe('isSessionStopping', () => {
 
 describe('Claude config failure copy (#0030)', () => {
   it('has start copy that says nothing was started, and no log hint', () => {
-    expect(START_FAILURE_COPY.CLAUDE_CONFIG_INVALID).toContain("Your Claude Code configuration couldn't be prepared for the sandbox, so nothing was started.")
-    expect(START_FAILURE_COPY.CLAUDE_CONFIG_INVALID).not.toContain(APP_LOG_HINT)
+    expect(START_FAILURE_COPY.AGENT_CONFIG_INVALID).toContain("Your Claude Code configuration couldn't be prepared for the sandbox, so nothing was started.")
+    expect(START_FAILURE_COPY.AGENT_CONFIG_INVALID).not.toContain(APP_LOG_HINT)
   })
 
   it('has recreate copy that says the existing sandbox is unchanged, and no log hint', () => {
-    const text = RECREATE_FAILURE_COPY.CLAUDE_CONFIG_INVALID
+    const text = RECREATE_FAILURE_COPY.AGENT_CONFIG_INVALID
     expect(text).toContain("Your Claude Code configuration couldn't be prepared for the sandbox, so it wasn't recreated. Your existing sandbox is unchanged.")
     expect(text).not.toContain(APP_LOG_HINT)
   })
@@ -321,8 +392,8 @@ describe('Claude config failure copy (#0030)', () => {
     }
   })
 
-  it('has eligibility copy for a bad ~/.claude entry that ends with a remedy', () => {
-    expect(ELIGIBILITY_COPY['claude-config-invalid']).toContain('Replace it with a real file or folder, then try again.')
+  it('has readiness copy for a bad ~/.claude entry that ends with a remedy', () => {
+    expect(agentReadinessMessage('claude', 'config-invalid')).toContain('Replace it with a real file or folder, then try again.')
   })
 
   it('has a distinct fixed detail for every label and problem, never a raw path', () => {
@@ -346,13 +417,29 @@ describe('Claude config failure copy (#0030)', () => {
     )
   })
 
-  it('prefixes the detail for CLAUDE_CONFIG_INVALID only', () => {
+  it('prefixes the detail for AGENT_CONFIG_INVALID only', () => {
     const detail = claudeConfigDetail('commands', 'wrong-type')
-    expect(startFailureMessage('CLAUDE_CONFIG_INVALID', null, detail)).toBe(`${detail} ${START_FAILURE_COPY.CLAUDE_CONFIG_INVALID}`)
-    expect(startFailureMessage('CLAUDE_CONFIG_INVALID')).toBe(START_FAILURE_COPY.CLAUDE_CONFIG_INVALID)
+    expect(startFailureMessage('AGENT_CONFIG_INVALID', null, detail)).toBe(`${detail} ${START_FAILURE_COPY.AGENT_CONFIG_INVALID}`)
+    expect(startFailureMessage('AGENT_CONFIG_INVALID')).toBe(START_FAILURE_COPY.AGENT_CONFIG_INVALID)
     expect(startFailureMessage('CONTAINER_FAILED', null, detail)).toBe(START_FAILURE_COPY.CONTAINER_FAILED)
-    expect(recreateFailureMessage('CLAUDE_CONFIG_INVALID', detail)).toBe(`${detail} ${RECREATE_FAILURE_COPY.CLAUDE_CONFIG_INVALID}`)
-    expect(recreateFailureMessage('CLAUDE_CONFIG_INVALID')).toBe(RECREATE_FAILURE_COPY.CLAUDE_CONFIG_INVALID)
+    expect(recreateFailureMessage('AGENT_CONFIG_INVALID', detail)).toBe(`${detail} ${RECREATE_FAILURE_COPY.AGENT_CONFIG_INVALID}`)
+    expect(recreateFailureMessage('AGENT_CONFIG_INVALID')).toBe(RECREATE_FAILURE_COPY.AGENT_CONFIG_INVALID)
     expect(recreateFailureMessage('FAILED', detail)).toBe(RECREATE_FAILURE_COPY.FAILED)
+  })
+})
+
+describe('agent readiness copy (D6, UX-M8)', () => {
+  it('reads an agent readiness message from its descriptor, and nothing for an unknown agent or code', () => {
+    expect(agentReadinessMessage('claude', 'config-invalid')).toContain('symbolic link or the wrong type')
+    expect(agentReadinessMessage('claude', 'nope')).toBeNull()
+    expect(agentReadinessMessage('ghost', 'home-missing')).toBeNull()
+  })
+
+  it('AGENT_NOT_READY says what the descriptor says, with a generic fallback', () => {
+    expect(startFailureMessage('AGENT_NOT_READY', null, null, { agentId: 'claude', readiness: 'home-missing' })).toBe(
+      'Run Claude Code on this machine once first, then try again.',
+    )
+    expect(startFailureMessage('AGENT_NOT_READY', null, null, { agentId: 'claude', readiness: 'nope' })).toBe("This agent isn't ready to run in the sandbox yet.")
+    expect(startFailureMessage('AGENT_NOT_READY')).toBe("This agent isn't ready to run in the sandbox yet.")
   })
 })

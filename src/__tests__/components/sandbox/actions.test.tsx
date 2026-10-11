@@ -27,7 +27,7 @@ const ok = <T,>(data: T) => ({ data, error: null })
 const HASH = 'a'.repeat(64)
 
 function plan(overrides: Partial<RecreatePlan> = {}): RecreatePlan {
-  return { reason: 'image', specHash: HASH, newHostMounts: [], removedHostMounts: [], ...overrides }
+  return { reason: 'image', specHash: HASH, newHostMounts: [], removedHostMounts: [], agentId: 'claude', ...overrides }
 }
 
 function status(o: { state?: SandboxStatus['session']['state']; branch?: string | null; worktree?: SandboxStatus['worktree']; exists?: boolean; pending?: boolean; plan?: RecreatePlan | null } = {}): SandboxStatus {
@@ -37,10 +37,13 @@ function status(o: { state?: SandboxStatus['session']['state']; branch?: string 
     exists: o.exists ?? true,
     container: 'stopped',
     worktree: o.worktree ?? 'ready',
-    session: { state: o.state ?? 'idle', permissionMode: null, networkMode: null, lastExit: null },
+    session: { state: o.state ?? 'idle', agentId: null, permissionMode: null, networkMode: null, lastExit: null },
     git: o.branch === undefined ? { branch: 'feat/a', headShort: 'abc', ahead: 1, dirtyCount: 0, base: 'main' } : o.branch === null ? { branch: null, headShort: 'abc', ahead: 0, dirtyCount: 0, base: 'main' } : { branch: o.branch, headShort: 'abc', ahead: 1, dirtyCount: 0, base: 'main' },
     recreatePending: o.pending ?? false,
     recreatePlan: o.plan ?? null,
+    containers: {},
+    agentReadiness: {},
+    recreatePlans: [],
     channel: 'none',
   }
 }
@@ -53,7 +56,7 @@ function setup(s: SandboxStatus | null = status()): void {
 beforeEach(() => {
   vi.clearAllMocks()
   api.handOff.mockResolvedValue(ok({ ok: true }))
-  api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 0, unmergedBranches: [] }))
+  api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 0, unmergedBranches: [], quarantineFolders: [] }))
   api.delete.mockResolvedValue(ok({ ok: true }))
   api.recreate.mockResolvedValue(ok({ ok: true }))
   useTerminalStore.setState({ spawnError: {}, spawnFailure: {} })
@@ -221,22 +224,38 @@ describe('Hand off', () => {
 
 describe('Delete', () => {
   it('a clean sandbox: previews, confirms and deletes without the acknowledgement', async () => {
-    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 0, unmergedBranches: [] }))
+    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 0, unmergedBranches: [], quarantineFolders: [] }))
     render(<SandboxActions slug="ws" />)
     await userEvent.click(button('Delete sandbox'))
 
     const dialog = await screen.findByRole('alertdialog')
     expect(dialog).toHaveTextContent('Delete the sandbox?')
+    expect(dialog).toHaveTextContent(
+      'Deletes the sandbox worktree and its Claude Code and Codex containers. Your Codex sign-in stays on this computer.',
+    )
     expect(screen.queryByRole('checkbox')).toBeNull()
     expect(dialog).not.toHaveTextContent('will be lost')
     expect(dialog).not.toHaveTextContent('These branches stay')
+    expect(screen.queryByTestId('delete-quarantine-note')).toBeNull()
 
     await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }))
     expect(api.delete).toHaveBeenCalledExactlyOnceWith('ws', false)
   })
 
+  it('names the kept quarantine folder, and says nothing about one when there is none', async () => {
+    api.previewDelete.mockResolvedValue(
+      ok({ sessionRunning: false, dirtyCount: 0, unmergedBranches: [], quarantineFolders: ['~/.corner-office/sandbox/ws/codex-quarantine'] }),
+    )
+    render(<SandboxActions slug="ws" />)
+    await userEvent.click(button('Delete sandbox'))
+
+    const note = await screen.findByTestId('delete-quarantine-note')
+    expect(note).toHaveTextContent('Delete keeps them')
+    expect(note).toHaveTextContent('~/.corner-office/sandbox/ws/codex-quarantine')
+  })
+
   it('lists the unmerged branches, which stay in the repository', async () => {
-    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 0, unmergedBranches: ['feat/a', 'feat/b'] }))
+    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 0, unmergedBranches: ['feat/a', 'feat/b'], quarantineFolders: [] }))
     render(<SandboxActions slug="ws" />)
     await userEvent.click(button('Delete sandbox'))
 
@@ -247,14 +266,14 @@ describe('Delete', () => {
   })
 
   it('renders branch names with invisible characters visibly (review-safe)', async () => {
-    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 0, unmergedBranches: ['feat/a‮b'] }))
+    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 0, unmergedBranches: ['feat/a‮b'], quarantineFolders: [] }))
     render(<SandboxActions slug="ws" />)
     await userEvent.click(button('Delete sandbox'))
     expect((await screen.findByRole('alertdialog')).textContent).not.toContain('‮')
   })
 
   it('with uncommitted changes: Delete stays disabled until "I understand" is ticked, then acknowledges them', async () => {
-    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 4, unmergedBranches: [] }))
+    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 4, unmergedBranches: [], quarantineFolders: [] }))
     render(<SandboxActions slug="ws" />)
     await userEvent.click(button('Delete sandbox'))
 
@@ -277,7 +296,7 @@ describe('Delete', () => {
   })
 
   it('uses the singular for one uncommitted change', async () => {
-    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 1, unmergedBranches: [] }))
+    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 1, unmergedBranches: [], quarantineFolders: [] }))
     render(<SandboxActions slug="ws" />)
     await userEvent.click(button('Delete sandbox'))
     expect(await screen.findByRole('alertdialog')).toHaveTextContent('1 uncommitted change will be lost.')
@@ -299,7 +318,7 @@ describe('Delete', () => {
   })
 
   it('a session that started since the preview is refused with its copy, with no dialog', async () => {
-    api.previewDelete.mockResolvedValue(ok({ sessionRunning: true, dirtyCount: 0, unmergedBranches: [] }))
+    api.previewDelete.mockResolvedValue(ok({ sessionRunning: true, dirtyCount: 0, unmergedBranches: [], quarantineFolders: [] }))
     render(<SandboxActions slug="ws" />)
     await userEvent.click(button('Delete sandbox'))
 
@@ -340,10 +359,10 @@ describe('Recreate', () => {
     await userEvent.click(button('Recreate sandbox'))
     expect(api.recreate).not.toHaveBeenCalled()
     const dialog = screen.getByRole('alertdialog')
-    expect(dialog).toHaveTextContent('Recreate the sandbox?')
+    expect(dialog).toHaveTextContent('Recreate the Claude Code sandbox?')
 
     await userEvent.click(within(dialog).getByRole('button', { name: 'Recreate' }))
-    expect(api.recreate).toHaveBeenCalledExactlyOnceWith('ws', false, HASH)
+    expect(api.recreate).toHaveBeenCalledExactlyOnceWith('ws', false, HASH, 'claude')
     expect(await screen.findByRole('status')).toHaveTextContent(RECREATED_COPY)
     expect(screen.queryByRole('alertdialog')).toBeNull()
   })
@@ -373,7 +392,7 @@ describe('Recreate', () => {
     expect(api.recreate).toHaveBeenCalledWith('ws', false, '0'.repeat(64))
 
     await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Recreate' }))
-    expect(api.recreate).toHaveBeenLastCalledWith('ws', false, 'b'.repeat(64))
+    expect(api.recreate).toHaveBeenLastCalledWith('ws', false, 'b'.repeat(64), 'claude')
   })
 
   it('with recreatePending but no plan to show, says it is unavailable instead of opening an empty dialog', async () => {
@@ -396,7 +415,7 @@ describe('Recreate', () => {
     await userEvent.click(button('Recreate sandbox'))
     await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Recreate' }))
 
-    expect(api.recreate).toHaveBeenCalledWith('ws', true, HASH)
+    expect(api.recreate).toHaveBeenCalledWith('ws', true, HASH, 'claude')
     await vi.waitFor(() => expect(useTerminalStore.getState().spawnError.ws).toBeNull())
   })
 
@@ -441,7 +460,7 @@ describe('realm skin', () => {
     expect(button('Recreate sandbox')).toBeInTheDocument()
     expect(button('Delete sandbox')).toBeInTheDocument()
 
-    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 2, unmergedBranches: ['feat/a'] }))
+    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 2, unmergedBranches: ['feat/a'], quarantineFolders: [] }))
     await userEvent.click(button('Delete sandbox'))
     const dialog = await screen.findByRole('alertdialog')
     expect(dialog).toHaveTextContent('2 uncommitted changes will be lost.')

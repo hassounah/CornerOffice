@@ -119,6 +119,8 @@ const mockTerminalStore = vi.hoisted(() => ({
   // The sandbox chooser and actions (#0029) read these per workspace.
   spawnFailure: {} as Record<string, string | null>,
   buildPrompt: {} as Record<string, unknown>,
+  exitBanner: {} as Record<string, string | null>,
+  sessionAgent: {} as Record<string, string>, // read by useSessionAgent (C6)
   recreatePrompt: {} as Record<string, unknown>,
   clearBuildPrompt: vi.fn(),
   clearRecreatePrompt: vi.fn(),
@@ -1989,10 +1991,13 @@ describe('WizardsStudy — sandbox sessions (6.1)', () => {
       exists: false,
       container: 'absent',
       worktree: 'absent',
-      session: { state: 'idle', permissionMode: null, networkMode: null, lastExit: null },
+      session: { state: 'idle', agentId: null, permissionMode: null, networkMode: null, lastExit: null },
       git: null,
       recreatePending: false,
       recreatePlan: null,
+      containers: {},
+      agentReadiness: {},
+      recreatePlans: [],
       channel: 'none',
       ...overrides,
     }
@@ -2038,16 +2043,41 @@ describe('WizardsStudy — sandbox sessions (6.1)', () => {
     expect(mockTerminalStore.spawn).not.toHaveBeenCalled()
   })
 
-  it('Host Start runs the unchanged host spawn and closes the chooser', async () => {
+  it('Host Start runs the default host spawn through the store and closes the chooser', async () => {
     const user = userEvent.setup()
     render(<WizardsStudy workspaceSlug="my-project" />)
     await user.click(screen.getByRole('button', { name: 'Start Session' }))
 
-    await user.click(within(screen.getByRole('dialog', { name: 'Start a session' })).getByRole('button', { name: 'Start' }))
+    const dialog = screen.getByRole('dialog', { name: 'Start a session' })
+    await within(dialog).findByRole('radio', { name: 'Host' })
+    await user.click(within(dialog).getByRole('button', { name: 'Start' }))
 
     expect(mockTerminalStore.spawn).toHaveBeenCalledTimes(1)
-    expect(mockTerminalStore.spawn).toHaveBeenCalledWith('my-project')
+    expect(mockTerminalStore.spawn).toHaveBeenCalledWith('my-project', { kind: 'host', agentId: 'claude', permissionMode: 'default', fallbackFields: [] })
     expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull()
+  })
+
+  describe('terminal overlay mounting', () => {
+    afterEach(() => {
+      mockTerminalStore.sessions = {}
+      mockTerminalStore.overlayVisible = {}
+      mockTerminalStore.exitBanner = {}
+    })
+
+    it('mounts after the session ended when an exit banner is set', () => {
+      mockTerminalStore.sessions = { 'my-project': 'none' }
+      mockTerminalStore.overlayVisible = { 'my-project': true }
+      mockTerminalStore.exitBanner = { 'my-project': 'codex command not found.' }
+      render(<WizardsStudy workspaceSlug="my-project" />)
+      expect(screen.getByTestId('terminal-overlay')).toHaveAttribute('data-workspace-slug', 'my-project')
+    })
+
+    it('stays unmounted for an ended session without a banner', () => {
+      mockTerminalStore.sessions = { 'my-project': 'none' }
+      mockTerminalStore.overlayVisible = { 'my-project': true }
+      render(<WizardsStudy workspaceSlug="my-project" />)
+      expect(screen.queryByTestId('terminal-overlay')).toBeNull()
+    })
   })
 
   it('shows the same eligibility copy as Office when Sandbox is unavailable', async () => {
@@ -2076,7 +2106,7 @@ describe('WizardsStudy — sandbox sessions (6.1)', () => {
 
   it('Start Session is aria-disabled with a reason while the sandbox is ending, and opens nothing', async () => {
     const user = userEvent.setup()
-    setStatus(sandboxStatus({ exists: true, session: { state: 'ending', permissionMode: null, networkMode: null, lastExit: null } }))
+    setStatus(sandboxStatus({ exists: true, session: { state: 'ending', agentId: null, permissionMode: null, networkMode: null, lastExit: null } }))
     render(<WizardsStudy workspaceSlug="my-project" />)
 
     const start = screen.getByRole('button', { name: 'Start Session' })
@@ -2095,7 +2125,7 @@ describe('WizardsStudy — sandbox sessions (6.1)', () => {
         exists: true,
         container: 'running',
         worktree: 'ready',
-        session: { state: 'running', permissionMode: 'skip', networkMode: 'open', lastExit: null },
+        session: { state: 'running', agentId: 'claude', permissionMode: 'skip', networkMode: 'open', lastExit: null },
         git: { branch: 'feat/x', headShort: 'abc1234', ahead: 2, dirtyCount: 0, base: 'main' },
       }),
     )
@@ -2138,7 +2168,7 @@ describe('WizardsStudy — sandbox sessions (6.1)', () => {
       render(<WizardsStudy workspaceSlug="my-project" />)
 
       const chooser = screen.getByRole('dialog', { name: 'Start a session' })
-      fireEvent.keyDown(within(chooser).getByRole('radio', { name: 'Host' }), { key: 'Escape' })
+      fireEvent.keyDown(await within(chooser).findByRole('radio', { name: 'Host' }), { key: 'Escape' })
 
       expect(useSandboxStore.getState().chooserRequest).toBeNull()
       await vi.waitFor(() => expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull())

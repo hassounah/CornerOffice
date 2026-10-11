@@ -2,6 +2,12 @@ import crypto from 'crypto'
 import type { HookEvent } from '../types'
 import type { NotificationConfig } from '../types/config'
 import type { SandboxNotice } from '../types/sandbox'
+import { getDescriptor } from '../agents/descriptors'
+
+/** The only file names a quarantine notice repeats back. */
+const QUARANTINE_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/
+/** A path as the guard reports it: starts at `~/` and holds only plain path characters. */
+const QUARANTINE_PATH_RE = /^~\/(?!.*\.\.)[A-Za-z0-9._/-]{1,400}$/
 
 // ---------------------------------------------------------------------------
 // Types
@@ -21,6 +27,8 @@ export interface AppNotification {
   source?: 'host' | 'sandbox'
   /** Where a click on the OS notification should land (renderer-handled). */
   target?: string
+  /** A command the user may copy and run themselves (the renderer shows a copy button; nothing runs it). Built from checked names only. */
+  command?: string
 }
 
 export interface NotificationCallbacks {
@@ -52,6 +60,7 @@ export class NotificationService {
   private _idleTimer: ReturnType<typeof setInterval> | null = null
   private _lastActivity = new Map<string, number>() // workspace -> epoch ms
   private _consecutiveIdle = new Map<string, number>() // workspace -> consecutive idle count
+  private _idleSuppressed = new Set<string>() // workspaces whose session has no activity data (setIdleSuppressed)
   private _activePipelines = new Set<string>()      // workspace slugs with active pipeline
 
   constructor(callbacks: NotificationCallbacks) {
@@ -209,6 +218,20 @@ export class NotificationService {
   }
 
   /**
+   * Turns the idle-timer notification off for `workspaceSlug` while its session has no activity data (an agent whose
+   * plugin isn't installed): without events, a session waiting on an approval prompt would be reported as "idle".
+   * Turning it off also forgets the idle counter, so a later session starts from zero.
+   */
+  setIdleSuppressed(workspaceSlug: string, on: boolean): void {
+    if (on) {
+      this._idleSuppressed.add(workspaceSlug)
+      this._consecutiveIdle.delete(workspaceSlug)
+    } else {
+      this._idleSuppressed.delete(workspaceSlug)
+    }
+  }
+
+  /**
    * Raises a notice from the sandbox subsystem with FIXED copy (§3.8.2, §3.12, UX-H1). The
    * inputs are enums and numbers only, so nothing an agent chooses (a domain, stderr) can
    * reach the text. Blocked needs action; the rest are progress-tier.
@@ -248,6 +271,45 @@ export class NotificationService {
           detail: 'The container for this workspace was recreated.',
         })
         return
+      case 'agent-files-quarantined': {
+        const agent = getDescriptor(notice.agentId)
+        const home = `~/${agent.homeEntries[0] ?? ''}`
+        // A name is shown only when it is plain text; anything else reads as "a new file" (the file name is agent-chosen).
+        const file = notice.file !== null && QUARANTINE_NAME_RE.test(notice.file) ? notice.file : 'a new file'
+        const destination = notice.destination !== null && QUARANTINE_PATH_RE.test(notice.destination) ? notice.destination : null
+        const single = notice.count === 1 && destination !== null
+        const where = destination ?? 'a quarantine folder'
+        // Shown only for a plain name, so nothing agent-chosen reaches a shell command. Copying it is the user's decision; nothing runs it.
+        const command = single && file !== 'a new file' ? `mv ${destination} ${home}/${file}` : undefined
+        this.dispatch({
+          ...base,
+          workspace: notice.slug,
+          // Moving files out of the host agent home is a security event: it can't be disabled or silenced.
+          tier: 'requiresAction',
+          summary: `Files moved out of ${home}`,
+          detail: single
+            ? `${agent.displayName} in the sandbox added ${file} to ${home}. ${agent.displayName} on your computer could load it, so Corner Office moved it to ${destination}. Nothing was deleted.${command ? ' If you trust it, review it and then move it back.' : ''}`
+            : notice.count === 1
+              ? `${agent.displayName} in the sandbox added ${file} to ${home}. ${agent.displayName} on your computer could load it, so Corner Office moved it aside. Nothing was deleted.`
+              : `${agent.displayName} in the sandbox added ${notice.count} files to ${home}. ${agent.displayName} on your computer could load them, so Corner Office moved them to ${where}. Nothing was deleted.`,
+          ...(command ? { command } : {}),
+        })
+        return
+      }
+      case 'agent-guard-incomplete': {
+        const agent = getDescriptor(notice.agentId)
+        const home = `~/${agent.homeEntries[0] ?? ''}`
+        this.dispatch({
+          ...base,
+          workspace: notice.slug,
+          tier: 'requiresAction',
+          summary: `Couldn't finish checking ${home}`,
+          detail: notice.lostBaseline
+            ? `Corner Office lost track of which files in ${home} are yours, so ${agent.displayName} in the sandbox won't start. Files ${agent.displayName} could load were moved aside and nothing was deleted. Review ${home}, then delete this workspace's sandbox to reset.`
+            : `${agent.displayName} in the sandbox left more in ${home} than Corner Office can check at once. New files that ${agent.displayName} could load were moved aside, nothing was deleted. ${agent.displayName} won't start in the sandbox again until the check can finish.`,
+        })
+        return
+      }
       case 'image-ready':
         this.dispatch({
           ...base,
@@ -307,6 +369,7 @@ export class NotificationService {
   private _checkIdle(): void {
     const now = Date.now()
     for (const workspaceSlug of this._activePipelines) {
+      if (this._idleSuppressed.has(workspaceSlug)) continue
       const consecutiveCount = this._consecutiveIdle.get(workspaceSlug) ?? 0
       if (consecutiveCount >= MAX_CONSECUTIVE_IDLE) continue
 

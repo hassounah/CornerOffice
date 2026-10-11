@@ -90,6 +90,11 @@ export const DEFAULT_ALLOWLIST = [
   // token refresh is blocked and the session dies when the token expires.
   'platform.claude.com',
   'statsig.anthropic.com',
+  // Codex (#0037 U2): the model API, and ChatGPT sign-in and token refresh. Allowed for every sandbox session;
+  // `chatgpt.com` and `auth.openai.com` are an accepted exfiltration path for attacker-supplied credentials (SEC-L5).
+  'api.openai.com',
+  'chatgpt.com',
+  'auth.openai.com',
   'sentry.io',
   'registry.npmjs.org',
   'pypi.org',

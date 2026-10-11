@@ -1,4 +1,7 @@
 import { tokenizeNameToText } from './name-safety'
+import { TRUST_PROMPT_COPY } from '@main/agents/claude/descriptor'
+import { AGENT_DESCRIPTORS, LEGACY_AGENT_ID } from '@main/agents/descriptors'
+import type { ReadinessCopy } from '@main/agents/types'
 import type {
   DockerState,
   EligibilityReason,
@@ -31,8 +34,6 @@ export type RecreateFailureCode = Extract<RecreateResult, { ok: false }>['code']
 
 export const ELIGIBILITY_COPY: Record<EligibilityReason, string> = {
   'sandbox-disabled': 'Sandbox is disabled in this build.',
-  'claude-home-missing': 'Run Claude Code on this machine once first, then try again.',
-  'claude-config-invalid': 'An entry in ~/.claude is a symbolic link or the wrong type. Replace it with a real file or folder, then try again.',
   'docker-not-installed': "Docker isn't installed. Install Docker Engine 28 or newer, then press Check again.",
   'docker-daemon-down': "The Docker daemon isn't running. Start it, then press Check again.",
   'docker-no-permission': "Your user can't access Docker. Add it to the docker group and log in again.",
@@ -114,9 +115,17 @@ export const STILL_STOPPING = 'The sandbox is still stopping. Try again in a few
 /** After a recreate: the new container is ready, and Start is still the user's. */
 export const RECREATED_COPY = 'The sandbox was recreated. Press Start to begin the session.'
 const COULDNT_FINISH = `Couldn't finish. Some sandbox files may remain. ${APP_LOG_HINT}`
+/** An agent's display name for copy that applies to every agent; the legacy agent when none (or an unknown one) is given. */
+export function agentDisplayName(agentId?: string): string {
+  return (AGENT_DESCRIPTORS.find((d) => d.id === (agentId ?? LEGACY_AGENT_ID)) ?? AGENT_DESCRIPTORS[0]).displayName
+}
+
 // #0030: the detail main sends already names the file and the fix, so no log hint.
-const CLAUDE_CONFIG_COPY = "Your Claude Code configuration couldn't be prepared for the sandbox, so nothing was started."
-const CLAUDE_CONFIG_RECREATE_COPY = "Your Claude Code configuration couldn't be prepared for the sandbox, so it wasn't recreated. Your existing sandbox is unchanged."
+const configCopy = (agentId?: string): string => `Your ${agentDisplayName(agentId)} configuration couldn't be prepared for the sandbox, so nothing was started.`
+const configRecreateCopy = (agentId?: string): string =>
+  `Your ${agentDisplayName(agentId)} configuration couldn't be prepared for the sandbox, so it wasn't recreated. Your existing sandbox is unchanged.`
+const spawnFailedCopy = (agentId?: string): string =>
+  `The sandbox started, but ${agentDisplayName(agentId)} couldn't be launched in it. The container was stopped. Try Start again. ${APP_LOG_HINT}`
 
 /** `null` means "not an error": the flow continues (`NOT_ELIGIBLE` shows the eligibility reason instead). */
 export const START_FAILURE_COPY: Record<StartFailureCode, string | null> = {
@@ -130,8 +139,9 @@ export const START_FAILURE_COPY: Record<StartFailureCode, string | null> = {
   PORT_CONFLICT: "Another program is using the sandbox's channel port. Recreate the sandbox with a new port? Container caches will be reset.",
   DOCKER_UNAVAILABLE: 'Docker stopped responding. Check that the Docker daemon is running.',
   FIREWALL_FAILED: `The sandbox firewall couldn't start, so the session wasn't started. Nothing ran unprotected. Try Start again. ${APP_LOG_HINT}`,
-  SPAWN_FAILED: `The sandbox started, but Claude Code couldn't be launched in it. The container was stopped. Try Start again. ${APP_LOG_HINT}`,
-  CLAUDE_CONFIG_INVALID: CLAUDE_CONFIG_COPY,
+  SPAWN_FAILED: spawnFailedCopy(), // the legacy agent's wording; startFailureMessage names the session's own agent
+  AGENT_CONFIG_INVALID: configCopy(),
+  AGENT_NOT_READY: null, // the message comes from the agent's descriptor (agentReadinessMessage)
 }
 
 export const HAND_OFF_FAILURE_COPY: Record<HandOffFailureCode, string | null> = {
@@ -152,7 +162,7 @@ export const DELETE_FAILURE_COPY: Record<DeleteFailureCode, string> = {
 export const RECREATE_FAILURE_COPY: Record<RecreateFailureCode, string> = {
   SESSION_RUNNING: 'End the sandbox session first.',
   PLAN_CHANGED: 'The sandbox settings changed again. Review them before recreating.',
-  CLAUDE_CONFIG_INVALID: CLAUDE_CONFIG_RECREATE_COPY,
+  AGENT_CONFIG_INVALID: configRecreateCopy(),
   DOCKER_UNAVAILABLE: 'Docker stopped responding. Check that the Docker daemon is running.',
   FAILED: COULDNT_FINISH,
 }
@@ -166,16 +176,46 @@ export const SANDBOX_UNAVAILABLE_COPY = "The sandbox isn't available right now. 
 export const PORT_CONFLICT_NO_RECREATE_COPY = "Another program is using the sandbox's channel port. Close it and try again."
 
 /** The message for a failed start, or `null` when the code isn't an error (build / recreate flows). */
-export function startFailureMessage(code: StartFailureCode, eligibilityReason?: EligibilityReason | null, detail?: string | null): string | null {
+export function startFailureMessage(
+  code: StartFailureCode,
+  eligibilityReason?: EligibilityReason | null,
+  detail?: string | null,
+  agent?: { agentId?: string; readiness?: string },
+): string | null {
   if (code === 'NOT_ELIGIBLE') return eligibilityReason ? ELIGIBILITY_COPY[eligibilityReason] : "Sandbox isn't available for this workspace."
-  const message = START_FAILURE_COPY[code]
-  return code === 'CLAUDE_CONFIG_INVALID' && message !== null && detail ? `${detail} ${message}` : message
+  if (code === 'AGENT_NOT_READY') {
+    return (agent?.readiness && agentReadinessMessage(agent.agentId ?? LEGACY_AGENT_ID, agent.readiness)) || "This agent isn't ready to run in the sandbox yet."
+  }
+  // The wording that names the agent follows the session's own agent, not a fixed one.
+  const message = code === 'SPAWN_FAILED' ? spawnFailedCopy(agent?.agentId) : code === 'AGENT_CONFIG_INVALID' ? configCopy(agent?.agentId) : START_FAILURE_COPY[code]
+  return code === 'AGENT_CONFIG_INVALID' && message !== null && detail ? `${detail} ${message}` : message
 }
 
-/** The message for a failed recreate. `detail` is the fixed copy main built for `CLAUDE_CONFIG_INVALID`, e.g. "~/.claude/commands exists but isn't a folder." */
-export function recreateFailureMessage(code: RecreateFailureCode, detail?: string | null): string {
-  const message = RECREATE_FAILURE_COPY[code]
-  return code === 'CLAUDE_CONFIG_INVALID' && detail ? `${detail} ${message}` : message
+/**
+ * The one source of an agent's readiness message (UX-M8): the descriptor's copy for a handler readiness code.
+ * `null` for an unknown agent or code. The chooser's Sandbox reason and the Start refusal both read it.
+ */
+export function agentReadinessMessage(agentId: string, code: string): string | null {
+  const readiness: Readonly<Record<string, ReadinessCopy>> | undefined = AGENT_DESCRIPTORS.find((d) => d.id === agentId)?.copy.readiness
+  return readiness?.[code]?.message ?? null
+}
+
+/** The command that fixes a readiness problem (for example `codex login`), shown with a copy button; `null` when there is none. */
+export function agentReadinessCommand(agentId: string, code: string): string | null {
+  const readiness: Readonly<Record<string, ReadinessCopy>> | undefined = AGENT_DESCRIPTORS.find((d) => d.id === agentId)?.copy.readiness
+  return readiness?.[code]?.command ?? null
+}
+
+/** The few words between a readiness message and its command ("Run:", or "After that, run:" when the message names a step first). */
+export function agentReadinessCommandLead(agentId: string, code: string): string {
+  const readiness: Readonly<Record<string, ReadinessCopy>> | undefined = AGENT_DESCRIPTORS.find((d) => d.id === agentId)?.copy.readiness
+  return readiness?.[code]?.commandLead ?? 'Run:'
+}
+
+/** The message for a failed recreate. `detail` is the fixed copy main built for `AGENT_CONFIG_INVALID`, e.g. "~/.claude/commands exists but isn't a folder." */
+export function recreateFailureMessage(code: RecreateFailureCode, detail?: string | null, agentId?: string): string {
+  const message = code === 'AGENT_CONFIG_INVALID' ? configRecreateCopy(agentId) : RECREATE_FAILURE_COPY[code]
+  return code === 'AGENT_CONFIG_INVALID' && detail ? `${detail} ${message}` : message
 }
 
 // ── Chooser copy (§3.15.2, UX-C, D10) ───────────────────────────────────────
@@ -186,12 +226,14 @@ export const BUILD_CONFIRM_COPY = `${IMAGE_SIZE_COPY}, takes several minutes. Th
 export const IMAGE_READY_COPY = "Image ready. Press Start when you're ready."
 export const IMAGE_BUILDING_REASON = 'The image is still building.'
 export const BUILD_FAILED_COPY = 'The image build did not finish. Start again to build it.'
-/** Shown in sandbox mode: the first session in a new sandbox stops at Claude Code's folder-trust prompt (README, First-run prompts). */
-export const TRUST_PROMPT_COPY = 'The first session in a new sandbox asks you to trust the folder once, in the terminal.'
+/** Shown in sandbox mode: the first session in a new sandbox stops at Claude Code's folder-trust prompt (README, First-run prompts). Lives in the Claude descriptor. */
+export { TRUST_PROMPT_COPY }
 /** The Sandbox option while the status is still loading. */
 export const CHECKING_COPY = 'Checking…'
 /** How long "Checking…" may last before the chooser gives up and offers Check again. */
 export const STATUS_CHECK_TIMEOUT_MS = 10_000
+/** How long a remembered Sandbox choice waits for the status before the chooser opens and falls back as it does for an unknown status. */
+export const SANDBOX_CHOICE_WAIT_MS = 3_000
 export const UNRESTRICTED_WARNING = 'Unrestricted network: the sandbox can reach any site on the internet. The firewall is off for this session.'
 
 // ── Channel badge copy (§3.15.2, SEC-H4) ────────────────────────────────────
@@ -206,8 +248,27 @@ export const CHANNEL_COPY: Record<SandboxStatus['channel'], string | null> = {
 
 // ── Recreate dialog (§3.16, B-H2, UX-M1) ────────────────────────────────────
 
+/** "Create the Codex sandbox?" / "Recreate the Claude Code sandbox?": the dialog names the agent whose container it changes (UX-M5). */
+export function recreateTitle(creating: boolean, agentId?: string): string {
+  return `${creating ? 'Create' : 'Recreate'} the ${agentDisplayName(agentId)} sandbox?`
+}
+
+/** The Delete confirm's lead line: it removes every agent's container for the workspace, and says what stays (UX-M5). */
+export function deleteConfirmCopy(): string {
+  const names = AGENT_DESCRIPTORS.map((d) => d.displayName)
+  const others = AGENT_DESCRIPTORS.filter((d) => d.id !== LEGACY_AGENT_ID).map((d) => d.displayName)
+  const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]
+  const signIn = others.length > 0 ? ` Your ${others.join(' and ')} sign-in stays on this computer.` : ''
+  return `Deletes the sandbox worktree and its ${list} containers.${signIn}`
+}
+
+/** Added to the build prompt when an agent's start needs an image that predates it: a one-time rebuild. */
+export function imageUpdatedForAgentCopy(agentId?: string): string {
+  return `The sandbox image was updated to include ${agentDisplayName(agentId)}. This is a one-time rebuild of a few minutes.`
+}
+
 export const RECREATE_REASON_COPY: Record<RecreatePlan['reason'], string> = {
-  image: 'The sandbox image changed.',
+  image: 'The sandbox image was updated.',
   'mount-plan': 'The folders shared with the sandbox changed.',
   port: "The sandbox's channel port changed.",
   'new-container': "This sandbox doesn't exist yet. Nothing will be removed.",

@@ -3,8 +3,13 @@ import fs from 'fs'
 import path from 'path'
 import log from 'electron-log/main'
 import { z } from 'zod'
-import { sandboxPaths } from './sandbox-paths'
+import { hiddenHomeSegments, sandboxPaths } from './sandbox-paths'
 import type { SandboxPaths } from './sandbox-paths'
+import { LEGACY_AGENT_ID, getDescriptor } from '../agents/descriptors'
+import { AgentIdSchema } from '../agents/agent-id-schema'
+import type { AgentId } from '../agents/descriptors'
+import { assertAgentEnvName } from '../agents/handler'
+import type { AgentMountSpec } from '../agents/handler'
 
 // ---------------------------------------------------------------------------
 // sandbox-spec.ts — constants, naming and the pure validation/pin helpers for
@@ -21,14 +26,42 @@ export const SANDBOX_IMAGE = 'claude-sandbox:latest'
 /** D13: container name, worktree directory and event slug all derive from this. */
 export const SANDBOX_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 
-/** Docker-valid by construction: `SANDBOX_SLUG_RE` never allows a leading `-`. */
-export const containerName = (slug: string): string => `co-sandbox-${slug}`
+/** Docker-valid by construction: `SANDBOX_SLUG_RE` never allows a leading `-`. Claude keeps the legacy name (D22). */
+export const containerName = (slug: string, agentId: AgentId = LEGACY_AGENT_ID): string =>
+  agentId === LEGACY_AGENT_ID ? `co-sandbox-${slug}` : `co-sandbox-${slug}.${agentId}`
+
+const CONTAINER_NAME_PREFIX = 'co-sandbox-'
+
+/**
+ * The inverse of {@link containerName}: `null` for anything it could not have produced. A name without a
+ * suffix is the legacy agent's; an explicit `.claude` is refused (it would alias the legacy name), as is an
+ * unregistered agent or an invalid slug. `.` can't occur in a slug, so the split is unambiguous.
+ */
+export function parseContainerName(name: string): { slug: string; agentId: AgentId } | null {
+  if (!name.startsWith(CONTAINER_NAME_PREFIX)) return null
+  const rest = name.slice(CONTAINER_NAME_PREFIX.length)
+  const dot = rest.indexOf('.')
+  const slug = dot === -1 ? rest : rest.slice(0, dot)
+  if (!SANDBOX_SLUG_RE.test(slug)) return null
+  if (dot === -1) return { slug, agentId: LEGACY_AGENT_ID }
+  const suffix = rest.slice(dot + 1)
+  if (suffix === LEGACY_AGENT_ID) return null
+  const parsed = AgentIdSchema.safeParse(suffix)
+  return parsed.success ? { slug, agentId: parsed.data } : null
+}
 
 /** SEC-M2: `paths` comes from `sandboxPaths(resolveRealHome())` — never build this from `os.homedir()` directly. */
 export const worktreePath = (paths: SandboxPaths, slug: string): string => path.join(paths.sandboxesRoot, slug)
 
 /** SEC-M2: see `worktreePath`. */
 export const cardDir = (paths: SandboxPaths, slug: string): string => path.join(paths.sandboxStateRoot, slug, 'channels')
+
+/**
+ * D23: the workspace's own events directory, `S/events`, which every container mounts at the unchanged in-container
+ * path `~/.corner-office/events/<slug>`. The app watches it as a second root, so an event file's location says where
+ * it was written: this root means `sandbox`, the host events root means `host`.
+ */
+export const sandboxEventsDir = (paths: SandboxPaths, slug: string): string => path.join(paths.sandboxStateRoot, slug, 'events')
 
 /** SEC-M2: see `worktreePath`. Sanitized per-sandbox copy of settings.json, mounted read-only (0030 D3). */
 export const settingsOverlayPath = (paths: SandboxPaths, slug: string): string =>
@@ -57,9 +90,13 @@ export const SANDBOX_KILL_TIMEOUT_MS = (STOP_TIMEOUT_S.endSession + 5) * 1000
 export const LABEL = {
   sandbox: 'co.sandbox',
   workspace: 'co.sandbox.workspace',
+  /** The agent this container was created for (one container per workspace and agent, D22). */
+  agent: 'co.sandbox.agent',
   spec: 'co.sandbox.spec',
   build: 'co.sandbox.build-hash',
   toolchains: 'co.sandbox.toolchains',
+  /** Comma-separated agent ids installed in the image; a pre-Codex image has no label (read as `claude`). */
+  agents: 'co.sandbox.agents',
 } as const
 
 /** C1: the only-root exec gets a fixed, minimal environment — never the container's own PATH/HOME. */
@@ -114,8 +151,7 @@ export function assertMountSafe(p: string, opts: { home: string }): boolean {
   if (p.startsWith(home + path.sep)) {
     const firstSegment = path.relative(home, p).split(path.sep)[0]
     if (firstSegment.startsWith('.')) {
-      const allowed = firstSegment === '.claude' || firstSegment === '.claude.json' || firstSegment === '.corner-office'
-      if (!allowed) return false
+      if (!hiddenHomeSegments().includes(firstSegment)) return false
     }
   }
 
@@ -183,16 +219,17 @@ export interface PickChannelPortDeps {
   isFree: (port: number) => boolean | Promise<boolean>
   /** Ports already stored for other workspaces — never reused even if free. */
   taken: ReadonlySet<number> | readonly number[]
-  /** Injectable source of randomness for deterministic tests; defaults to `Math.random`. */
+  /** Injectable source of randomness for deterministic tests; defaults to a cryptographically secure RNG. */
   random?: () => number
 }
 
 /** Picks a random free port in `CHANNEL_PORT_RANGE`, retrying up to 20 times; `null` if none was found. */
 export async function pickChannelPort(deps: PickChannelPortDeps): Promise<number | null> {
-  const { isFree, taken, random = Math.random } = deps
+  const { isFree, taken } = deps
   const takenSet = taken instanceof Set ? taken : new Set(taken)
   const [min, max] = CHANNEL_PORT_RANGE
   const span = max - min + 1
+  const random = deps.random ?? (() => crypto.randomInt(0, span) / span)
 
   for (let attempt = 0; attempt < 20; attempt++) {
     const port = min + Math.floor(random() * span)
@@ -241,6 +278,12 @@ export interface PlanMountsFacts {
   docsRoot: DocsRootFacts
   /** §12 G1 / Phase 0.7: `.git/worktrees` read-only with `${gwt}` read-write on top. Provisional default `false` until 0.9. */
   worktreesOverlay: boolean
+  /**
+   * `~/.claude/homunculus` when it exists as a real directory (the Corner Office plugin's learning data), else
+   * `null`/absent. Mounted read-write at the same path in every container whose agent mounts don't already cover it
+   * (#0037 D10, Q-A): a Claude container does through `~/.claude`; a Codex container gets just this subtree.
+   */
+  homunculusDir?: string | null
 }
 
 /**
@@ -272,7 +315,7 @@ interface DocsRootOutcome {
  * the agent edit app config or another sandbox's worktree.
  */
 function insideAppState(p: string, home: string): boolean {
-  return ['.corner-office', '.claude'].some((d) => {
+  return hiddenHomeSegments().some((d) => {
     const dir = path.join(home, d)
     return p === dir || p.startsWith(dir + path.sep)
   })
@@ -385,7 +428,7 @@ function planDocsRootMount(
  * `assertMountSafe`; a failure fails the whole plan with `unsafe-path`,
  * except for docs_root, which is dropped with a warning instead (§3.6.3).
  */
-export function planMounts(facts: PlanMountsFacts): PlanMountsResult {
+export function planMounts(facts: PlanMountsFacts, agentMounts: readonly AgentMountSpec[]): PlanMountsResult {
   const { home, repo, wt, slug, gwt, indexExists, hooksPathInsideGit, eventsEnabled, docsRoot, worktreesOverlay } = facts
   const paths = sandboxPaths(home)
   const gitDir = path.join(repo, '.git')
@@ -402,14 +445,8 @@ export function planMounts(facts: PlanMountsFacts): PlanMountsResult {
     mounts.push({ source, target, readonly, provenance: 'app' })
   }
 
-  add(paths.claudeDir, paths.claudeDir, false)
-  add(settingsOverlayPath(paths, slug), paths.claudeSettings, true) // 0030: sanitized settings copy
-  for (const d of paths.claudeRoDirs) add(d, d, true) // 0030: plugins, commands, agents, skills, hooks
-  add(paths.claudeMd, paths.claudeMd, true) // 0030
-  add(paths.claudeSettingsLocal, paths.claudeSettingsLocal, true) // 0030 L4
-  for (const d of paths.claudeShadowDirs) add(claudeShadowSource(paths, slug, d), d, false) // 0030 C1: host-executed state, per-sandbox
-  add(sandboxClaudeJsonPath(paths, slug), paths.claudeJson, false) // 0030: per-sandbox source, never the host file
-  add(cardDir(paths, slug), path.join(paths.claudeDir, 'channels'), false)
+  // The session agent's mounts keep the slot Claude's occupied at 4cbd703, ahead of the neutral block.
+  for (const m of agentMounts) add(m.source, m.target, m.readonly)
 
   add(gitDir, gitDir, false)
   add(path.join(gitDir, 'hooks'), path.join(gitDir, 'hooks'), true)
@@ -443,8 +480,13 @@ export function planMounts(facts: PlanMountsFacts): PlanMountsResult {
   if (docsOutcome.warning) warnings.push(docsOutcome.warning)
   mounts.push(...docsOutcome.mounts)
 
-  add(path.join(paths.eventsRoot, slug), path.join(paths.eventsRoot, slug), false)
+  add(sandboxEventsDir(paths, slug), path.join(paths.eventsRoot, slug), false) // D23: S/events, not the host directory
   if (eventsEnabled) add(path.join(paths.eventsRoot, 'enabled'), path.join(paths.eventsRoot, 'enabled'), true)
+
+  // The plugin's learning data. A writable mount of an ancestor (Claude's `~/.claude`) already covers it.
+  const { homunculusDir } = facts
+  const covered = (dir: string): boolean => agentMounts.some((m) => !m.readonly && (dir === m.target || dir.startsWith(m.target + path.sep)))
+  if (homunculusDir && !covered(homunculusDir)) add(homunculusDir, homunculusDir, false)
 
   if (unsafe) return { ok: false, reason: 'unsafe-path' }
 
@@ -455,7 +497,8 @@ export function planMounts(facts: PlanMountsFacts): PlanMountsResult {
 
 export interface SpecHashInput {
   plan: readonly Mount[]
-  port: number
+  /** `null` for an agent without channels: no port is published. */
+  port: number | null
   uid: number
   gid: number
   home: string
@@ -543,14 +586,6 @@ export function hasMemoryMdMount(plan: readonly Mount[]): boolean {
 // pass a `c` that doesn't match the `slug` used elsewhere in the same call
 // (e.g. the co.sandbox.workspace label in createArgv).
 
-/** Bypasses `docker --format` templates for permission-mode argv, per the Phase 0 sign-off (TRD §14.6). `auto`'s exact spelling was confirmed against Claude Code 2.1.284's `--help`. */
-export const PERM_FLAGS = {
-  skip: ['--dangerously-skip-permissions'],
-  auto: ['--permission-mode', 'auto'],
-} as const
-
-export type PermMode = keyof typeof PERM_FLAGS
-
 /**
  * Rules 1-2 of {@link assertMountSafe} (absolute, normalized, realpath-equal,
  * no CSV/quote-injection characters), without Rules 3-4. AGENT_HOME *is* the
@@ -612,15 +647,43 @@ export interface BuildArgvOptions {
   buildHash: string
   /** The build context directory (resolved by sandbox-image.ts, step 2.2). */
   ctx: string
+  /**
+   * Install pins per agent: build-arg name -> value (for Codex the version and the hex sha512 of each platform
+   * tarball, D11, SL-1). Each pin is passed as `--build-arg NAME=value`, in the order given.
+   */
+  installPins: Readonly<Record<string, Readonly<Record<string, string>>>>
+  /** Agent ids installed in the image, written to the `co.sandbox.agents` label. */
+  agents: readonly string[]
   image?: string
+}
+
+const PIN_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/
+const PIN_VALUE_RE = /^[0-9A-Za-z.+-]{1,200}$/
+const SHA512_HEX_RE = /^[0-9a-f]{128}$/
+const AGENT_ID_LABEL_RE = /^[a-z][a-z0-9-]{0,31}$/
+
+/** Fail closed: an empty or malformed pin must never reach a Dockerfile verification step. A `*SHA512*` pin must be 128 lower-case hex digits. */
+function assertInstallPins(pins: BuildArgvOptions['installPins'], agents: readonly string[]): void {
+  for (const [agent, values] of Object.entries(pins)) {
+    if (!agents.includes(agent)) throw new Error(`sandbox-spec: install pins for ${agent}, which is not in the image, for buildArgv`)
+    for (const [name, value] of Object.entries(values)) {
+      if (!PIN_NAME_RE.test(name)) throw new Error(`sandbox-spec: invalid install pin name for ${agent} for buildArgv`)
+      if (!PIN_VALUE_RE.test(value)) throw new Error(`sandbox-spec: invalid install pin ${name} for ${agent} for buildArgv`)
+      if (name.includes('SHA512') && !SHA512_HEX_RE.test(value)) throw new Error(`sandbox-spec: invalid install pin ${name} (sha512) for ${agent} for buildArgv`)
+    }
+  }
 }
 
 /** `--pull` always; `--no-cache` only on `rebuild` (D15). */
 export function buildArgv(opts: BuildArgvOptions): string[] {
-  const { rebuild, toolchains, uid, gid, home, buildHash, ctx, image = SANDBOX_IMAGE } = opts
+  const { rebuild, toolchains, uid, gid, home, buildHash, ctx, installPins, agents, image = SANDBOX_IMAGE } = opts
 
   if (!validateBuildIds({ uid, gid })) throw new Error('sandbox-spec: invalid AGENT_UID/AGENT_GID for buildArgv')
   if (!isSafeAbsolutePath(home)) throw new Error('sandbox-spec: invalid AGENT_HOME for buildArgv')
+  if (agents.length === 0 || !agents.every((a) => AGENT_ID_LABEL_RE.test(a))) {
+    throw new Error('sandbox-spec: invalid agents label for buildArgv')
+  }
+  assertInstallPins(installPins, agents)
 
   const toolchainNames = [
     toolchains.node ? 'node' : null,
@@ -639,8 +702,10 @@ export function buildArgv(opts: BuildArgvOptions): string[] {
     '--build-arg', `AGENT_UID=${uid}`,
     '--build-arg', `AGENT_GID=${gid}`,
     '--build-arg', `AGENT_HOME=${home}`,
+    ...Object.values(installPins).flatMap((values) => Object.entries(values).flatMap(([name, value]) => ['--build-arg', `${name}=${value}`])),
     '--label', `${LABEL.build}=${buildHash}`,
     '--label', `${LABEL.toolchains}=${toolchainNames.join(',')}`,
+    '--label', `${LABEL.agents}=${agents.join(',')}`,
     '--file', path.join(ctx, 'Dockerfile'),
     ctx,
   ]
@@ -654,7 +719,10 @@ export interface CreateArgvOptions {
   slug: string
   uid: number
   gid: number
-  port: number
+  /** Published, with `CORNER_OFFICE_CHANNEL_PORT`, only for agents with channels; `null` or absent publishes nothing. */
+  port?: number | null
+  /** The agent the container is for; defaults to the legacy agent. */
+  agentId?: AgentId
   /** The one realHome. */
   home: string
   base: string
@@ -666,9 +734,13 @@ export interface CreateArgvOptions {
 
 /** Exactly as TRD §3.5's create argv. Every data value and mount is re-validated before the array is built (defense in depth — planMounts and the caller should already have validated them). */
 export function createArgv(opts: CreateArgvOptions): string[] {
-  const { c, slug, uid, gid, port, home, base, specHash: spec, mounts, workTree, image = SANDBOX_IMAGE } = opts
+  const { c, slug, uid, gid, port = null, agentId = LEGACY_AGENT_ID, home, base, specHash: spec, mounts, workTree, image = SANDBOX_IMAGE } = opts
 
   if (!SANDBOX_SLUG_RE.test(slug)) throw new Error('sandbox-spec: invalid slug for createArgv')
+  // Fail closed: an agent with channels must always get its port, or its channel would silently be dropped.
+  if (port === null && getDescriptor(agentId).capabilities.channels) {
+    throw new Error(`sandbox-spec: ${agentId} uses channels but createArgv got no port`)
+  }
   if (!validateBuildIds({ uid, gid })) throw new Error('sandbox-spec: invalid uid/gid for createArgv')
   if (!validateEnvValue(base)) throw new Error('sandbox-spec: invalid base branch value for createArgv')
   if (!isSafeAbsolutePath(home)) throw new Error('sandbox-spec: invalid home path for createArgv')
@@ -683,6 +755,7 @@ export function createArgv(opts: CreateArgvOptions): string[] {
     '--name', c, '--hostname', c,
     '--label', `${LABEL.sandbox}=1`,
     '--label', `${LABEL.workspace}=${slug}`,
+    '--label', `${LABEL.agent}=${agentId}`,
     '--label', `${LABEL.spec}=${spec}`,
     '--init',
     '--user', `${uid}:${gid}`,
@@ -691,10 +764,10 @@ export function createArgv(opts: CreateArgvOptions): string[] {
     '--security-opt', 'no-new-privileges',
     '--sysctl', 'net.ipv4.ip_unprivileged_port_start=1024',
     '--tmpfs', '/run:rw,nosuid,nodev,noexec,mode=0755,size=4m', // L1
-    '--publish', `127.0.0.1:${port}:${port}`,
+    ...(port === null ? [] : ['--publish', `127.0.0.1:${port}:${port}`]),
     '--env', `HOME=${home}`,
     '--env', 'CORNER_OFFICE_SANDBOX=1',
-    '--env', `CORNER_OFFICE_CHANNEL_PORT=${port}`,
+    ...(port === null ? [] : ['--env', `CORNER_OFFICE_CHANNEL_PORT=${port}`]),
     '--env', `CORNER_OFFICE_BASE_BRANCH=${base}`,
     ...mounts.flatMap(mountFlag),
     '--workdir', workTree,
@@ -717,13 +790,16 @@ export interface SessionExecArgvOptions {
   uid: number
   gid: number
   workTree: string
-  permMode: PermMode
+  /** The session agent's `launch().env`: `NAME=value` entries. Each name passes `assertAgentEnvName`, each value `validateEnvValue`. */
+  agentEnv: readonly string[]
+  /** The session agent's `launch().argv` (binary first). Every token passes `validateEnvValue`. */
+  agentArgv: readonly string[]
   /** Host `git config --get user.name`/`user.email`, or `null` if either is missing — then all four GIT_* env flags are omitted and git reports its usual "please tell me who you are" inside the container. */
   gitIdentity: { name: string; email: string } | null
 }
 
 export function sessionExecArgv(opts: SessionExecArgvOptions): string[] {
-  const { c, uid, gid, workTree, permMode, gitIdentity } = opts
+  const { c, uid, gid, workTree, agentEnv, agentArgv, gitIdentity } = opts
 
   // Defense in depth (not currently exploitable — uid/gid reaching here
   // always trace back to the same host os.userInfo() call already validated
@@ -745,11 +821,22 @@ export function sessionExecArgv(opts: SessionExecArgvOptions): string[] {
     )
   }
 
+  // Agent-supplied values come from a handler, so both are checked here and fail closed.
+  for (const entry of agentEnv) {
+    const eq = entry.indexOf('=')
+    if (eq < 1) throw new Error('sandbox-spec: agent env entries must be NAME=value for sessionExecArgv')
+    assertAgentEnvName(entry.slice(0, eq))
+    if (!validateEnvValue(entry.slice(eq + 1))) throw new Error('sandbox-spec: invalid agent env value for sessionExecArgv')
+    envFlags.push('--env', entry)
+  }
+  if (agentArgv.length === 0 || !agentArgv.every(validateEnvValue)) {
+    throw new Error('sandbox-spec: invalid agent argv for sessionExecArgv')
+  }
+
   return [
     'exec', '--interactive', '--tty', '--user', `${uid}:${gid}`, '--workdir', workTree,
     ...envFlags,
-    c, 'claude', ...PERM_FLAGS[permMode],
-    '--dangerously-load-development-channels', 'plugin:corner-office@amerh', '--teammate-mode', 'in-process',
+    c, ...agentArgv,
   ]
 }
 
@@ -768,6 +855,12 @@ export function inspectArgv(c: string): string[] {
 
 export function psArgv(): string[] {
   return ['ps', '--all', '--filter', `label=${LABEL.sandbox}=1`, '--format', '{{.Names}}\t{{.State}}\t{{.Image}}']
+}
+
+/** Every container (running or not) labeled with `slug`'s workspace, one per agent (D22); names only. */
+export function psWorkspaceArgv(slug: string): string[] {
+  if (!SANDBOX_SLUG_RE.test(slug)) throw new Error('sandbox-spec: invalid slug for psWorkspaceArgv')
+  return ['ps', '--all', '--filter', `label=${LABEL.workspace}=${slug}`, '--format', '{{.Names}}']
 }
 
 /** Runs as `codns` (never root) with a pinned `PATH`/`HOME` and the absolute `/usr/bin/tail`. `-c +N`, not `--bytes` — busybox rejects the long option (Phase 0 fix, TRD §14.6). */

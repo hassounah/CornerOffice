@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 import { createGitService } from '../main/services/git-runner'
@@ -13,12 +13,15 @@ import type {
 } from '../main/services/sandbox-manager'
 import { ensure, resolveBase, type WorktreeStatus } from '../main/services/sandbox-worktree'
 import { cardDir, worktreePath, containerName, LABEL, CREATE_TIMEOUT_MS, settingsOverlayPath, sandboxClaudeJsonPath, claudeShadowSource } from '../main/services/sandbox-spec'
+import { sandboxPaths } from '../main/services/sandbox-paths'
+import type { SandboxPaths } from '../main/services/sandbox-paths'
 import type { SandboxImageService, ImageState } from '../main/services/sandbox-image'
 import type { SandboxConfig } from '../main/types/config'
 import type { SandboxNotice } from '../main/types/sandbox'
 import type { DockerRunner } from '../main/services/docker-runner'
 import { CLAUDE_JSON_SEED_CAP, SANDBOX_DENY_RULES } from '../main/services/sandbox-claude-config'
 import { claudeConfigDetail } from '../main/types/claude-config'
+import { HANDLERS, getHandler } from '../main/agents/registry'
 import { FakeDockerRunner } from './helpers/fake-docker-runner'
 import { makeTmpDir, makeSimpleRepo, serviceEnvOverrides, initRepo, writeFile, commitAll } from './helpers/git-fixtures'
 import dockerVersionFixture from './fixtures/docker-version.json'
@@ -48,20 +51,13 @@ afterEach(() => {
   sandboxSettings.disabled = false // restore the committed default
 })
 
-function fakeSandboxPaths(realHome: string): { sandboxesRoot: string; sandboxStateRoot: string; claudeDir: string; claudeJson: string; claudeSettings: string; claudeMd: string; claudeSettingsLocal: string; claudeRoDirs: string[]; claudeShadowDirs: string[]; eventsRoot: string; rwMountRoots: string[] } {
-  const sandboxesRoot = path.join(realHome, '.corner-office', 'sandboxes')
-  const sandboxStateRoot = path.join(realHome, '.corner-office', 'sandbox')
-  const claudeDir = path.join(realHome, '.claude')
-  const claudeJson = path.join(realHome, '.claude.json')
-  const eventsRoot = path.join(realHome, '.corner-office', 'events')
-  const claudeRoDirs = ['plugins', 'commands', 'agents', 'skills', 'hooks'].map((d) => path.join(claudeDir, d))
-  const claudeShadowDirs = ['shell-snapshots', 'session-env', 'backups', 'security', 'ide'].map((d) => path.join(claudeDir, d))
-  return { sandboxesRoot, sandboxStateRoot, claudeDir, claudeJson, claudeSettings: path.join(claudeDir, 'settings.json'), claudeMd: path.join(claudeDir, 'CLAUDE.md'), claudeSettingsLocal: path.join(claudeDir, 'settings.local.json'), claudeRoDirs, claudeShadowDirs, eventsRoot, rwMountRoots: [claudeDir, sandboxesRoot, sandboxStateRoot, eventsRoot] }
+function fakeSandboxPaths(realHome: string): SandboxPaths {
+  return sandboxPaths(realHome)
 }
 
 function fakeImage(imageId: string = IMAGE_ID, state: ImageState['state'] = 'ready'): SandboxImageService {
   return {
-    getImageState: async () => ({ state, builtAt: null, sizeBytes: null, imageId }),
+    getImageState: async () => ({ state, builtAt: null, sizeBytes: null, imageId, agents: ['claude', 'codex'] }),
     build: async () => ({ ok: true, imageId, recreatePendingNames: [] }),
     cancel: () => {},
     getBuildLog: () => [],
@@ -733,7 +729,7 @@ describe('previewDelete / delete', () => {
 
     const preview = await manager.previewDelete('myslug')
 
-    expect(preview).toEqual({ sessionRunning: false, dirtyCount: 3, unmergedBranches: ['feat/x'] })
+    expect(preview).toEqual({ sessionRunning: false, dirtyCount: 3, unmergedBranches: ['feat/x'], quarantineFolders: [] })
     expect(docker.calls).toHaveLength(0)
     expect(h.worktreeFakes.remove).not.toHaveBeenCalled()
   })
@@ -781,6 +777,7 @@ describe('previewDelete / delete', () => {
     const docker = new FakeDockerRunner()
     docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
     docker.script(['rm'], { result: { stdout: '', stderr: '', exitCode: 0 } })
+    docker.script(['ps'], { result: { stdout: `${containerName('myslug')}\n`, stderr: '', exitCode: 0 } })
     const manager = createSandboxManager(
       h.makeDeps({
         docker,
@@ -844,7 +841,7 @@ describe('defensive fail-closed paths', () => {
 
     expect(await manager.ensureContainer('ghost')).toEqual({ ok: false, code: 'CONTAINER_FAILED' })
     expect(await manager.recreate('ghost', false, 'x'.repeat(64))).toEqual({ ok: false, code: 'FAILED' })
-    expect(await manager.previewDelete('ghost')).toEqual({ sessionRunning: false, dirtyCount: 0, unmergedBranches: [] })
+    expect(await manager.previewDelete('ghost')).toEqual({ sessionRunning: false, dirtyCount: 0, unmergedBranches: [], quarantineFolders: [] })
     expect(await manager.delete('ghost', false)).toEqual({ ok: false, code: 'FAILED' })
   })
 
@@ -970,6 +967,7 @@ describe('defensive fail-closed paths', () => {
 
     const deleteDocker = dockerThatThrowsOn('rm', boom, (inner) => {
       inner.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+      inner.script(['ps'], { result: { stdout: `${containerName('myslug')}\n`, stderr: '', exitCode: 0 } })
     })
     const deleteManager = createSandboxManager(h.makeDeps({ docker: deleteDocker }))
     await expect(deleteManager.delete('myslug', false)).rejects.toThrow('boom')
@@ -1108,6 +1106,86 @@ describe('0030 claude config preparation', () => {
     expect(mutating(docker)).toEqual([])
   })
 
+  it('a pre-D23 container (host events directory mount, an old spec label) is RECREATE_REQUIRED mount-plan, and nothing is removed', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const paths = fakeSandboxPaths(h.realHome)
+    // Build the container as it is created today, then swap its events mount for the old host-directory one.
+    const first = absentDocker()
+    await createSandboxManager(h.makeDeps({ docker: first })).ensureContainer('myslug')
+    const createCall = first.calls.find((c) => c.args[0] === 'create')
+    if (!createCall) throw new Error('expected a create call')
+    const hostEvents = path.join(paths.eventsRoot, 'myslug')
+    const preD23 = extractMountsFromCreateCall(createCall).map((m) =>
+      m.target === hostEvents ? { ...m, source: hostEvents } : m,
+    )
+    const port = h.sandboxConfig.workspaces.myslug.channelPort
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], { result: { stdout: inspectJson({ specLabel: 'b'.repeat(64), port, mounts: preD23 }), stderr: '', exitCode: 0 } })
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+
+    if (result.ok || result.code !== 'RECREATE_REQUIRED') throw new Error('expected RECREATE_REQUIRED')
+    expect(result.plan.reason).toBe('mount-plan')
+    expect(mutating(docker)).toEqual([])
+  })
+
+  it('precreates S/events with mode 0700 before the container is created (D23)', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const paths = fakeSandboxPaths(h.realHome)
+    const eventsDir = path.join(paths.sandboxStateRoot, 'myslug', 'events')
+    expect(fs.existsSync(eventsDir)).toBe(false)
+
+    await createSandboxManager(h.makeDeps({ docker: absentDocker() })).ensureContainer('myslug')
+
+    expect(fs.statSync(eventsDir).mode & 0o777).toBe(0o700)
+  })
+
+  it('tightens an existing S/events to 0700 (D7 review)', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const eventsDir = path.join(fakeSandboxPaths(h.realHome).sandboxStateRoot, 'myslug', 'events')
+    fs.mkdirSync(eventsDir, { recursive: true, mode: 0o755 })
+    fs.chmodSync(eventsDir, 0o755)
+
+    await createSandboxManager(h.makeDeps({ docker: absentDocker() })).ensureContainer('myslug')
+
+    expect(fs.statSync(eventsDir).mode & 0o777).toBe(0o700)
+  })
+
+  it('refuses a symlinked S/events with the agent config failure, and neither follows nor chmods it', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const stateDir = path.join(fakeSandboxPaths(h.realHome).sandboxStateRoot, 'myslug')
+    const target = path.join(h.realHome, 'elsewhere')
+    fs.mkdirSync(target, { mode: 0o755 })
+    fs.chmodSync(target, 0o755)
+    fs.mkdirSync(stateDir, { recursive: true })
+    fs.symlinkSync(target, path.join(stateDir, 'events'))
+    const docker = absentDocker()
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'AGENT_CONFIG_INVALID',
+      agentId: 'claude',
+      detail: '~/.corner-office/sandbox/myslug/events is a symbolic link. Replace it with a real file or folder, then Start again.',
+    })
+    expect(fs.statSync(target).mode & 0o777).toBe(0o755)
+    expect(mutating(docker)).toEqual([])
+  })
+
   it('recreate re-seeds claude.json before rm/create', async () => {
     sandboxSettings.disabled = false
     const h = setup()
@@ -1122,7 +1200,7 @@ describe('0030 claude config preparation', () => {
     expect(fs.readFileSync(sandboxClaudeJsonPath(paths, 'myslug'), 'utf8')).toBe('{}')
   })
 
-  it('invalid settings.json: ensureContainer returns CLAUDE_CONFIG_INVALID with fixed detail and docker sees no create/start/rm', async () => {
+  it('invalid settings.json: ensureContainer returns AGENT_CONFIG_INVALID with fixed detail and docker sees no create/start/rm', async () => {
     sandboxSettings.disabled = false
     const h = setup()
     makeSimpleRepo(h.repo, 'main')
@@ -1132,11 +1210,58 @@ describe('0030 claude config preparation', () => {
 
     const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
 
-    expect(result).toEqual({ ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: claudeConfigDetail('settings.json', 'invalid-json') })
+    expect(result).toEqual({ ok: false, code: 'AGENT_CONFIG_INVALID', detail: claudeConfigDetail('settings.json', 'invalid-json'), agentId: 'claude' })
     expect(mutating(docker)).toEqual([])
   })
 
-  it('invalid config in recreate: CLAUDE_CONFIG_INVALID before any rm/create', async () => {
+  it("call order: prepare('plan') -> inspect -> prepare('create') -> create", async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], { error: NOT_FOUND_ERROR })
+
+    const sandbox = getHandler('claude').sandbox
+    if (!sandbox) throw new Error('claude has no sandbox handler')
+    const original = sandbox.prepare.bind(sandbox)
+    const order: string[] = []
+    const seen = (verb: string): boolean => docker.calls.some((c) => c.args[0] === verb)
+    const spy = vi.spyOn(sandbox, 'prepare').mockImplementation((ctx, phase) => {
+      order.push(`prepare:${phase}:inspect=${seen('inspect')}:create=${seen('create')}`)
+      return original(ctx, phase)
+    })
+    try {
+      expect((await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')).ok).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(order).toEqual(['prepare:plan:inspect=false:create=false', 'prepare:create:inspect=true:create=false'])
+    expect(seen('create')).toBe(true)
+  })
+
+  it('delete runs every sandbox handler cleanup', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const sandbox = getHandler('claude').sandbox
+    if (!sandbox) throw new Error('claude has no sandbox handler')
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['rm'], { result: { stdout: '', stderr: '', exitCode: 0 } })
+    const spy = vi.spyOn(sandbox, 'cleanup')
+    try {
+      expect(await createSandboxManager(h.makeDeps({ docker })).delete('myslug', false)).toEqual({ ok: true })
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ slug: 'myslug' }), { containerAbsent: true })
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('invalid config in recreate: AGENT_CONFIG_INVALID before any rm/create', async () => {
     sandboxSettings.disabled = false
     const h = setup()
     makeSimpleRepo(h.repo, 'main')
@@ -1146,7 +1271,7 @@ describe('0030 claude config preparation', () => {
 
     const result = await createSandboxManager(h.makeDeps({ docker })).recreate('myslug', false, 'x'.repeat(64))
 
-    expect(result).toEqual({ ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: claudeConfigDetail('plugins', 'wrong-type') })
+    expect(result).toEqual({ ok: false, code: 'AGENT_CONFIG_INVALID', detail: claudeConfigDetail('plugins', 'wrong-type'), agentId: 'claude' })
     expect(mutating(docker)).toEqual([])
   })
 
@@ -1165,11 +1290,11 @@ describe('0030 claude config preparation', () => {
 
     const result = await manager.ensureContainer('myslug')
 
-    expect(result).toEqual({ ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: claudeConfigDetail('.claude.json', 'too-large') })
+    expect(result).toEqual({ ok: false, code: 'AGENT_CONFIG_INVALID', detail: claudeConfigDetail('.claude.json', 'too-large'), agentId: 'claude' })
     expect(mutating(docker)).toEqual([])
   })
 
-  it('a failing claude.json seed during recreate (host file over the cap) returns CLAUDE_CONFIG_INVALID with no rm/create', async () => {
+  it('a failing claude.json seed during recreate (host file over the cap) returns AGENT_CONFIG_INVALID with no rm/create', async () => {
     sandboxSettings.disabled = false
     const h = setup()
     makeSimpleRepo(h.repo, 'main')
@@ -1181,7 +1306,7 @@ describe('0030 claude config preparation', () => {
 
     const result = await createSandboxManager(h.makeDeps({ docker })).recreate('myslug', false, confirmedSpecHash)
 
-    expect(result).toEqual({ ok: false, code: 'CLAUDE_CONFIG_INVALID', detail: claudeConfigDetail('.claude.json', 'too-large') })
+    expect(result).toEqual({ ok: false, code: 'AGENT_CONFIG_INVALID', detail: claudeConfigDetail('.claude.json', 'too-large'), agentId: 'claude' })
     expect(mutating(docker)).toEqual([])
   })
 
@@ -1207,5 +1332,196 @@ describe('0030 claude config preparation', () => {
     expect(fs.existsSync(shadowRoot)).toBe(false)
     // The host-side shadow targets belong to the user and stay.
     for (const d of paths.claudeShadowDirs) expect(fs.existsSync(d)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// One container per (workspace, agent) — #0037 D4, D22. Codex has no sandbox
+// half until D10, so these tests give it a stub one for their duration.
+// ---------------------------------------------------------------------------
+
+describe('per-agent containers (D4)', () => {
+  const originalCodex = HANDLERS.codex
+  const codexCleanup = vi.fn()
+
+  beforeEach(() => {
+    codexCleanup.mockClear()
+    HANDLERS.codex = {
+      ...originalCodex,
+      sandbox: {
+        readiness: () => ({ ok: true }),
+        prepare: () => ({ ok: true }),
+        mounts: () => [],
+        launch: () => ({ env: [], argv: ['codex'] }),
+        cleanup: codexCleanup,
+      },
+    }
+  })
+
+  afterEach(() => {
+    HANDLERS.codex = originalCodex
+  })
+
+  const CLAUDE_NAME = containerName('myslug')
+  const CODEX_NAME = containerName('myslug', 'codex')
+
+  const absentDocker = (): FakeDockerRunner => {
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], { error: NOT_FOUND_ERROR })
+    return docker
+  }
+
+  async function preparedHarness(): Promise<Harness> {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    return h
+  }
+
+  it('a Codex ensure creates co-sandbox-<slug>.codex with the agent label, no port and no channel env', async () => {
+    const h = await preparedHarness()
+    const docker = absentDocker()
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug', 'codex')
+
+    expect(result).toMatchObject({ ok: true, recreatedNotice: false })
+    const create = docker.calls.find((c) => c.args[0] === 'create')
+    expect(create?.args).toContain(CODEX_NAME)
+    expect(create?.args).toContain(`${LABEL.agent}=codex`)
+    expect(create?.args).not.toContain('--publish')
+    expect(create?.args.join(' ')).not.toContain('CORNER_OFFICE_CHANNEL_PORT')
+    // No channel port was picked or stored for an agent without channels.
+    expect(h.sandboxConfig.workspaces.myslug).toBeUndefined()
+  })
+
+  it('a Claude ensure still publishes the workspace port on the legacy container name', async () => {
+    const h = await preparedHarness()
+    const docker = absentDocker()
+
+    await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+
+    const create = docker.calls.find((c) => c.args[0] === 'create')
+    expect(create?.args).toContain(CLAUDE_NAME)
+    expect(create?.args).toContain(`${LABEL.agent}=claude`)
+    expect(create?.args).toContain('--publish')
+    expect(h.sandboxConfig.workspaces.myslug?.channelPort).not.toBeNull()
+  })
+
+  it('switching agents never needs a recreate: the other agent simply gets its own container', async () => {
+    const h = await preparedHarness()
+    const manager = createSandboxManager(h.makeDeps({ docker: absentDocker() }))
+
+    expect(await manager.ensureContainer('myslug')).toMatchObject({ ok: true })
+    expect(await manager.ensureContainer('myslug', 'codex')).toMatchObject({ ok: true })
+    expect((await manager.getStatus('myslug')).recreatePlan).toBeNull()
+  })
+
+  it('recreate keys its plan and pending state by container: a Codex plan change leaves Claude untouched', async () => {
+    const h = await preparedHarness()
+    const manager = createSandboxManager(h.makeDeps({ docker: absentDocker() }))
+    manager.markRecreatePending('myslug', 'codex')
+
+    // Claude's container is not pending, so its status doesn't change from the Codex mark alone.
+    const result = await manager.recreate('myslug', false, '0'.repeat(64))
+    expect(result).toEqual({ ok: false, code: 'PLAN_CHANGED' })
+    expect((await manager.getStatus('myslug')).recreatePlan).not.toBeNull()
+    expect((await manager.getStatus('myslug')).recreatePending).toBe(true)
+  })
+
+  it('a Codex recreate ignores newPort: no port is picked, stored or published', async () => {
+    const h = await preparedHarness()
+    const hash = await (async () => {
+      const docker = absentDocker()
+      await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug', 'codex')
+      const spec = docker.calls.find((c) => c.args[0] === 'create')?.args.find((a) => a.startsWith(`${LABEL.spec}=`))
+      return (spec ?? '').slice(`${LABEL.spec}=`.length)
+    })()
+    const docker = absentDocker()
+    const pickPort = vi.fn(() => true)
+
+    const result = await createSandboxManager(h.makeDeps({ docker, isPortFree: pickPort })).recreate('myslug', true, hash, 'codex')
+
+    expect(result).toEqual({ ok: true })
+    expect(pickPort).not.toHaveBeenCalled()
+    const create = docker.calls.find((c) => c.args[0] === 'create')
+    expect(create?.args).toContain(CODEX_NAME)
+    expect(create?.args).not.toContain('--publish')
+    expect(h.sandboxConfig.workspaces.myslug).toBeUndefined()
+  })
+
+  it('a Codex ensure and a Claude recreate for one slug run one after the other', async () => {
+    const h = await preparedHarness()
+    const claudeHash = await createAndCaptureSpecHash(h, undefined)
+    const inner = absentDocker()
+    const log: string[] = []
+    let releaseCodexCreate: () => void = () => {}
+    const codexCreateGate = new Promise<void>((resolve) => { releaseCodexCreate = resolve })
+    const docker: DockerRunner = {
+      binary: () => inner.binary(),
+      run: async (args, opts) => {
+        log.push(`${args[0]} ${args.join(' ').includes(CODEX_NAME) ? 'codex' : args.includes(CLAUDE_NAME) ? 'claude' : '-'}`)
+        if (args[0] === 'create' && args.includes(CODEX_NAME)) {
+          log.push('codex-create-parked')
+          await codexCreateGate
+          log.push('codex-create-done')
+        }
+        return inner.run(args, opts)
+      },
+      stream: (args, onLine, signal) => inner.stream(args, onLine, signal),
+    }
+    const manager = createSandboxManager(h.makeDeps({ docker }))
+
+    const ensurePromise = manager.ensureContainer('myslug', 'codex')
+    await new Promise((r) => setTimeout(r, 50))
+    const recreatePromise = manager.recreate('myslug', false, claudeHash)
+    await new Promise((r) => setTimeout(r, 100))
+
+    // The Claude recreate has not touched docker while the Codex create is parked.
+    expect(log).toContain('codex-create-parked')
+    expect(log.some((entry) => entry.endsWith(' claude'))).toBe(false)
+
+    releaseCodexCreate()
+    await Promise.all([ensurePromise, recreatePromise])
+    const doneAt = log.indexOf('codex-create-done')
+    const firstClaude = log.findIndex((entry) => entry.endsWith(' claude'))
+    expect(doneAt).toBeGreaterThan(-1)
+    expect(firstClaude).toBeGreaterThan(doneAt)
+  })
+
+  it('delete removes every container labeled for the workspace and skips names that do not parse to that slug', async () => {
+    const h = await preparedHarness()
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['rm'], { result: { stdout: '', stderr: '', exitCode: 0 } })
+    docker.script(['ps'], {
+      result: {
+        stdout: [CLAUDE_NAME, CODEX_NAME, containerName('other'), 'co-sandbox-myslug.gemini', 'co-sandbox-myslug.claude', 'unrelated'].join('\n') + '\n',
+        stderr: '',
+        exitCode: 0,
+      },
+    })
+
+    expect(await createSandboxManager(h.makeDeps({ docker })).delete('myslug', false)).toEqual({ ok: true })
+
+    const psCall = docker.calls.find((c) => c.args[0] === 'ps')
+    expect(psCall?.args).toContain(`label=${LABEL.workspace}=myslug`)
+    const removed = docker.calls.filter((c) => c.args[0] === 'rm').map((c) => c.args[c.args.length - 1])
+    expect(removed).toEqual([CLAUDE_NAME, CODEX_NAME])
+    expect(codexCleanup).toHaveBeenCalledTimes(1)
+  })
+
+  it('delete falls back to the registry-derived names when docker ps fails', async () => {
+    const h = await preparedHarness()
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['rm'], { result: { stdout: '', stderr: '', exitCode: 0 } })
+    docker.script(['ps'], { error: { kind: 'daemon-down', exitCode: 1, stderrTail: 'Cannot connect' } })
+
+    expect(await createSandboxManager(h.makeDeps({ docker })).delete('myslug', false)).toEqual({ ok: true })
+
+    const removed = docker.calls.filter((c) => c.args[0] === 'rm').map((c) => c.args[c.args.length - 1])
+    expect(removed).toEqual([CLAUDE_NAME, CODEX_NAME])
   })
 })

@@ -8,6 +8,7 @@ import type { AppConfig, RealmLocation } from '../types'
 import type { SandboxConfig } from '../types/config'
 import { AllowlistSchema } from './sandbox-allowlist'
 import { SANDBOX_SLUG_RE, CHANNEL_PORT_RANGE } from './sandbox-spec'
+import { terminalSlug } from '../types/slugs'
 
 // ---------------------------------------------------------------------------
 // Zod schema for AppConfig (used for parse + migration validation)
@@ -105,6 +106,25 @@ const SandboxConfigSchema = z.object({
   toolchains: z.object({ node: z.boolean(), go: z.boolean(), buildBase: z.boolean() }),
   globalAllowlist: AllowlistSchema,
   workspaces: z.record(z.string().regex(SANDBOX_SLUG_RE), SandboxWorkspaceConfigSchema),
+  // D23 cutover: when container events moved to their own root. Host-root files at or before it keep the legacy attribution.
+  eventsSplitAt: z.string().nullable().default(null),
+})
+
+// ---------------------------------------------------------------------------
+// Remembered Start Session options (#0037 TRD §5.2)
+// ---------------------------------------------------------------------------
+
+export const SessionChoiceSchema = z.object({
+  agentId: z.string().min(1).max(32),
+  location: z.enum(['host', 'sandbox']),
+  hostPermissionMode: z.string().min(1).max(32),
+  sandboxPermissionMode: z.string().min(1).max(32),
+  networkMode: z.enum(['allowlist', 'open']),
+})
+
+export const SessionDefaultsSchema = z.object({
+  last: SessionChoiceSchema.nullable(),
+  workspaces: z.record(terminalSlug, SessionChoiceSchema),
 })
 
 // Code Explorer layout (#0031): tree width in px
@@ -146,6 +166,7 @@ const AppConfigSchema = z.object({
   terminal: TerminalConfigSchema,
   codeExplorer: CodeExplorerConfigSchema.optional(),
   sandbox: SandboxConfigSchema.optional(),
+  sessionDefaults: SessionDefaultsSchema.default({ last: null, workspaces: {} }),
   discoveryExclusions: z.array(z.string()),
   firstLaunchComplete: z.boolean(),
   terminalEmulator: z.string().nullable(),
@@ -187,9 +208,18 @@ const MIGRATIONS: Migration[] = [
       terminal: cfg.terminal ?? { fontSize: 14, windowBounds: {} },
     }),
   },
+  {
+    fromVersion: 3,
+    toVersion: 4,
+    migrate: (cfg) => ({
+      ...cfg,
+      version: 4,
+      sessionDefaults: { last: null, workspaces: {} },
+    }),
+  },
 ]
 
-const CURRENT_VERSION = 3
+const CURRENT_VERSION = 4
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -367,6 +397,13 @@ export class ConfigManager {
       }
     }
 
+    // Defensive: malformed remembered chooser options reset to the default
+    // (absent is fine: the schema default fills it). Never triggers .bak recovery.
+    if ('sessionDefaults' in migrated && !SessionDefaultsSchema.safeParse(migrated.sessionDefaults).success) {
+      log.warn('[ConfigManager] Invalid sessionDefaults config, falling back to defaults')
+      migrated = { ...migrated, sessionDefaults: { last: null, workspaces: {} } }
+    }
+
     // Defensive: a malformed codeExplorer value is dropped (absent means
     // defaults) — it must never invalidate the whole config or trigger .bak recovery.
     if ('codeExplorer' in migrated && !CodeExplorerConfigSchema.safeParse(migrated.codeExplorer).success) {
@@ -452,31 +489,42 @@ export class ConfigManager {
     }
   }
 
-  async updateConfig(partial: Partial<AppConfig>): Promise<AppConfig> {
+  // `mutateConfig` for read-modify-write of nested sections; `updateConfig` for shallow top-level replacement.
+  // Calls are chained in-process first (the file lock alone could exhaust its retries under a burst),
+  // then take the file lock, then read -> fn -> save. A failed call never blocks the next one.
+  mutateConfig(fn: (current: AppConfig) => AppConfig): Promise<AppConfig> {
+    const run = this._mutateChain.then(() => this._mutateLocked(fn))
+    this._mutateChain = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private _mutateChain: Promise<void> = Promise.resolve()
+
+  private async _mutateLocked(fn: (current: AppConfig) => AppConfig): Promise<AppConfig> {
     this.ensureDataDir()
     const cfgPath = configPath()
-
-    // Validate and sanitize realm field before writing
-    if (partial.realm !== undefined) {
-      partial = { ...partial, realm: this._sanitizeRealm(partial.realm) }
-    }
-
-    // Ensure file exists before locking
-    if (!fs.existsSync(cfgPath)) {
-      const defaults = this.getDefaultConfig()
-      this.saveConfig(defaults)
-    }
+    if (!fs.existsSync(cfgPath)) this.saveConfig(this.getDefaultConfig())
 
     let release: (() => Promise<void>) | null = null
     try {
       release = await lockfile.lock(cfgPath, { retries: { retries: 5, minTimeout: 50 } })
       const current = this.loadConfig() ?? this.getDefaultConfig()
-      const updated: AppConfig = { ...current, ...partial }
+      const updated = fn(current)
       this.saveConfig(updated)
       return updated
     } finally {
       if (release) await release()
     }
+  }
+
+  /** Shallow top-level replacement, in the same queue as `mutateConfig` so every writer is serialized together. */
+  updateConfig(partial: Partial<AppConfig>): Promise<AppConfig> {
+    // Validate and sanitize realm field before writing
+    const sanitized = partial.realm !== undefined ? { ...partial, realm: this._sanitizeRealm(partial.realm) } : partial
+    return this.mutateConfig((current) => ({ ...current, ...sanitized }))
   }
 
   getDefaultConfig(): AppConfig {
@@ -520,6 +568,7 @@ export class ConfigManager {
         fontSize: 14,
         windowBounds: {},
       },
+      sessionDefaults: { last: null, workspaces: {} },
       discoveryExclusions: [],
       firstLaunchComplete: false,
       terminalEmulator: null,
@@ -547,7 +596,28 @@ export class ConfigManager {
       toolchains: { node: true, go: true, buildBase: true },
       globalAllowlist: [],
       workspaces: {},
+      eventsSplitAt: null,
     }
+  }
+
+  /**
+   * D23 cutover: records `sandbox.eventsSplitAt` the first time it is asked for and returns it afterwards. Call it
+   * before the event watcher starts, so a file written after the split is never mistaken for legacy history.
+   * `null` when the write fails: callers then treat every host-root file as legacy (fail closed toward `sandbox`).
+   */
+  async ensureEventsSplitAt(now: Date): Promise<string | null> {
+    let split: string | null = null
+    try {
+      await this.mutateConfig((cfg) => {
+        const sandbox = this.getSandboxConfig(cfg)
+        split = sandbox.eventsSplitAt ?? now.toISOString()
+        return sandbox.eventsSplitAt === split ? cfg : { ...cfg, sandbox: { ...sandbox, eventsSplitAt: split } }
+      })
+    } catch (err) {
+      log.warn('[ConfigManager] Could not record sandbox.eventsSplitAt:', err)
+      return null
+    }
+    return split
   }
 
   /** `config.sandbox` is optional (TRD §3.14) — this returns the effective value, defaulting when absent. */

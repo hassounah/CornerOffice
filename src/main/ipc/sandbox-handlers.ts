@@ -33,6 +33,7 @@ import { wrapCodeHandler } from './wrap-code-handler'
 import type { IsAppOrigin } from './app-origin'
 import type { SandboxManagerService } from '../services/sandbox-manager'
 import type { SandboxImageService } from '../services/sandbox-image'
+import type { SessionStart } from '../services/session-defaults'
 import { DEFAULT_ALLOWLIST } from '../services/sandbox-allowlist'
 import type { SandboxConfig } from '../types/config'
 import type {
@@ -78,6 +79,8 @@ export interface BuildSandboxHandlersDeps {
   workspaceSlugs: () => readonly string[]
   /** Remembers which workspace asked for the build that is about to run (null when unknown). */
   noteBuildRequester: (slug: string | null) => void
+  /** Remembers the chooser options of a start that succeeded (fire-and-forget; #0037 B2). */
+  recordSessionStart: (start: SessionStart) => void
 }
 
 export interface SandboxPushSenders {
@@ -114,7 +117,7 @@ function unknownWorkspaceError(): Error {
 }
 
 export function buildSandboxHandlers(manager: SandboxManagerService, deps: BuildSandboxHandlersDeps): Record<string, HandlerFn> {
-  const { getMainWindow, isAppOrigin, image, config, workspaceSlugs, noteBuildRequester } = deps
+  const { getMainWindow, isAppOrigin, image, config, workspaceSlugs, noteBuildRequester, recordSessionStart } = deps
   const wrapDeps = { getMainWindow, isAppOrigin }
 
   async function applySettings(patch: SandboxUpdateSettingsInput): Promise<SandboxSettingsView> {
@@ -162,14 +165,28 @@ export function buildSandboxHandlers(manager: SandboxManagerService, deps: Build
       wrapDeps,
     ),
     [SANDBOX_CHANNELS.START_SESSION]: wrapCodeHandler<SandboxStartSessionInput, StartResult>(
-      (input) =>
-        manager.startSession({
+      async (input) => {
+        const result = await manager.startSession({
           slug: input.workspaceSlug,
           cols: input.cols,
           rows: input.rows,
           permissionMode: input.permissionMode,
           networkMode: input.networkMode,
-        }),
+          agentId: input.agentId,
+        })
+        // Only a start that actually succeeded is remembered.
+        if (result.ok) {
+          recordSessionStart({
+            workspaceSlug: input.workspaceSlug,
+            agentId: input.agentId,
+            location: 'sandbox',
+            permissionMode: input.permissionMode,
+            networkMode: input.networkMode,
+            fallbackFields: input.fallbackFields,
+          })
+        }
+        return result
+      },
       SandboxStartSessionSchema,
       wrapDeps,
     ),
@@ -189,7 +206,7 @@ export function buildSandboxHandlers(manager: SandboxManagerService, deps: Build
       wrapDeps,
     ),
     [SANDBOX_CHANNELS.RECREATE]: wrapCodeHandler<SandboxRecreateInput, RecreateResult>(
-      (input) => manager.recreate(input.workspaceSlug, input.newPort, input.confirmedSpecHash),
+      (input) => manager.recreate(input.workspaceSlug, input.newPort, input.confirmedSpecHash, input.agentId),
       SandboxRecreateSchema,
       wrapDeps,
     ),

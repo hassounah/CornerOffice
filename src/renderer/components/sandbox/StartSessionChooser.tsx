@@ -3,6 +3,17 @@ import { useSandboxStore } from '../../stores/sandbox-store'
 import { useTerminalStore } from '../../stores/terminal-store'
 import { DisabledReason } from '../shared/DisabledReason'
 import { RecreateDialog } from './RecreateDialog'
+import { CopyCommand } from './CopyCommand'
+import { InlineCode } from '../shared/InlineCode'
+import { writableRootPath } from '../../utils/host-availability'
+import { AGENT_DESCRIPTORS, LEGACY_AGENT_ID, getDescriptor } from '@main/agents/descriptors'
+import type { AgentId } from '@main/agents/descriptors'
+import type { AgentDescriptor, AppPermissionMode, PermissionChoice, SessionLocation } from '@main/agents/types'
+import type { SessionChoice } from '@main/types/config'
+import type { SessionDefaultsView } from '@main/services/session-defaults'
+import type { ChoiceSource } from '../../utils/session-options'
+import { loadAvailability, loadDefaults, useChooserChoice } from './use-chooser-choice'
+import type { HostAvailability, NetworkMode } from './use-chooser-choice'
 import {
   ELIGIBILITY_COPY,
   WARNING_COPY,
@@ -14,11 +25,15 @@ import {
   IMAGE_BUILDING_REASON,
   BUILD_FAILED_COPY,
   UNRESTRICTED_WARNING,
-  TRUST_PROMPT_COPY,
   CHECKING_COPY,
   forSkin,
   STATUS_CHECK_TIMEOUT_MS,
+  SANDBOX_CHOICE_WAIT_MS,
   SANDBOX_UNAVAILABLE_COPY,
+  agentReadinessMessage,
+  agentReadinessCommand,
+  agentReadinessCommandLead,
+  imageUpdatedForAgentCopy,
   isDockerReason,
   PORT_CONFLICT_NO_RECREATE_COPY,
 } from '../../utils/sandbox-copy'
@@ -52,8 +67,10 @@ import {
 export interface StartSessionChooserProps {
   slug: string
   skin?: 'office' | 'realm'
-  /** The Host option's start (the existing host spawn). */
-  onStartHost: () => void
+  /** The remembered (or resolved) options to start from; the built-in choice when absent. */
+  initial?: { choice: SessionChoice; source: ChoiceSource }
+  /** The agents offered; every registered agent by default. A test seam. */
+  agents?: readonly AgentDescriptor[]
   onClose: () => void
   /** Opens Sandbox settings (the build log lives there). The "Show log" link only renders when given. */
   onShowLog?: () => void
@@ -61,9 +78,18 @@ export interface StartSessionChooserProps {
   returnFocusRef?: React.RefObject<HTMLElement | null>
 }
 
-type Mode = 'host' | 'sandbox'
-type PermissionMode = 'skip' | 'auto'
-type NetworkMode = 'allowlist' | 'open'
+type Mode = SessionLocation
+type SandboxPermission = 'skip' | 'auto'
+
+/** The helper label next to Reset, from where the starting choice came from. */
+const SOURCE_LABEL: Record<ChoiceSource, string | null> = {
+  workspace: 'Remembered for this workspace',
+  last: 'Last used',
+  builtin: null,
+}
+
+/** Shown beside Reset (UX-M6): a visible hint, not a hover-only tooltip. */
+const RESET_HINT = 'Resets these choices. Nothing is saved until you start.'
 
 // A focusable control that is not a roving-tabindex radio (those use `tabIndex=-1`).
 const TABBABLE = 'button:not([tabindex="-1"]), [tabindex="0"]'
@@ -97,12 +123,15 @@ function Segmented<T extends string>({
   onChange,
   skin,
   wrap,
+  autoFocusSelected,
 }: {
   label: string
   choices: readonly Choice<T>[]
   value: T
   onChange: (v: T) => void
   skin: 'office' | 'realm'
+  /** Marks the selected radio as the dialog's initial focus (the first control a notice replaced). */
+  autoFocusSelected?: boolean
   /** Lets the caller wrap an option (e.g. in DisabledReason). Returns the props to spread onto the option, or null for enabled. */
   wrap?: (choice: Choice<T>, render: (props: React.HTMLAttributes<HTMLButtonElement> | null) => React.ReactElement) => React.ReactElement
 }): React.ReactElement {
@@ -131,6 +160,7 @@ function Segmented<T extends string>({
               role="radio"
               aria-checked={selected}
               tabIndex={selected ? 0 : -1}
+              data-autofocus={selected && autoFocusSelected ? true : undefined}
               className={`rounded px-3 py-1 text-sm ${FOCUS} ${skin === 'realm' ? '' : selected ? 'bg-co-accent/20 text-co-accent' : 'bg-co-bg-tertiary text-co-text-secondary'}`}
               style={skin === 'realm' ? (selected ? REALM_SELECTED_STYLE : REALM_BUTTON_STYLE) : undefined}
               onClick={() => onChange(choice.value)}
@@ -151,10 +181,6 @@ const MODES: readonly Choice<Mode>[] = [
   { value: 'host', label: 'Host' },
   { value: 'sandbox', label: 'Sandbox' },
 ]
-const PERMISSIONS: readonly Choice<PermissionMode>[] = [
-  { value: 'skip', label: 'Skip permissions' },
-  { value: 'auto', label: 'Auto mode' },
-]
 const NETWORKS: readonly Choice<NetworkMode>[] = [
   { value: 'allowlist', label: 'Allowlist' },
   { value: 'open', label: 'Unrestricted' },
@@ -173,7 +199,78 @@ function focusTerminal(slug: string): void {
   if (!focus()) setTimeout(focus, 0)
 }
 
-export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClose, onShowLog, returnFocusRef }: StartSessionChooserProps): React.ReactElement {
+/**
+ * The Permissions row for the current agent and location (TRD §4.6). One offered
+ * mode is a static line (nothing to choose); several are a radio group. Either
+ * way the selected mode's note is shown.
+ */
+function PermissionRow({
+  choices,
+  value,
+  onChange,
+  skin,
+  autoFocusSelected,
+}: {
+  choices: readonly PermissionChoice[]
+  value: string
+  onChange: (mode: string) => void
+  skin: 'office' | 'realm'
+  autoFocusSelected?: boolean
+}): React.ReactElement | null {
+  const selected = choices.find((c) => c.mode === value) ?? choices[0]
+  if (!selected) return null
+  if (choices.length === 1) {
+    return (
+      <div data-testid="permission-static" className="space-y-1">
+        <div className="text-xs font-medium">Permissions</div>
+        <p className="text-sm">{selected.label}</p>
+        <p className="text-xs">{selected.note}</p>
+      </div>
+    )
+  }
+  return (
+    <div className="space-y-1">
+      <Segmented
+        label="Permissions"
+        choices={choices.map((c) => ({ value: c.mode, label: c.label }))}
+        value={selected.mode}
+        onChange={onChange}
+        skin={skin}
+        autoFocusSelected={autoFocusSelected}
+      />
+      <p className="text-xs" data-testid="permission-note">
+        {selected.note}
+      </p>
+    </div>
+  )
+}
+
+/** The "Will start" summary: what Start will do, in the order of the rows above it. */
+function willStartText(agentName: string, mode: Mode, permissionLabel: string, networkMode: NetworkMode): string {
+  const parts = [agentName, mode === 'host' ? 'Host' : 'Sandbox', permissionLabel]
+  if (mode === 'sandbox') parts.push(networkMode === 'open' ? 'Unrestricted' : 'Allowlist')
+  return parts.join(' · ')
+}
+
+/** Keeps a remembered mode only if the agent still offers it at this location; otherwise that location's first (default) mode. */
+function offeredMode(choices: readonly PermissionChoice[], mode: string): string {
+  return choices.some((c) => c.mode === mode) ? mode : (choices[0]?.mode ?? mode)
+}
+
+/** Keyed by workspace: another workspace is a new opening, with its own fetch, touched fields and notices. */
+export function StartSessionChooser(props: StartSessionChooserProps): React.ReactElement {
+  return <StartSessionChooserInner key={props.slug} {...props} />
+}
+
+function StartSessionChooserInner({
+  slug,
+  skin = 'office',
+  initial,
+  agents = AGENT_DESCRIPTORS,
+  onClose,
+  onShowLog,
+  returnFocusRef,
+}: StartSessionChooserProps): React.ReactElement {
   const status = useSandboxStore((s) => s.status[slug])
   const build = useSandboxStore((s) => s.build)
   const fetchStatus = useSandboxStore((s) => s.fetchStatus)
@@ -182,6 +279,7 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
   const releaseBuildRequest = useSandboxStore((s) => s.releaseBuildRequest)
   const spawn = useTerminalStore((s) => s.spawn)
   const buildPrompt = useTerminalStore((s) => s.buildPrompt[slug] ?? null)
+  const imageExists = useSandboxStore((s) => s.environment?.image.state === 'ready' || s.environment?.image.state === 'stale')
   const recreatePrompt = useTerminalStore((s) => s.recreatePrompt[slug] ?? null)
   const spawnError = useTerminalStore((s) => s.spawnError[slug] ?? null)
   const spawnFailure = useTerminalStore((s) => s.spawnFailure[slug] ?? null)
@@ -190,9 +288,12 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
   const clearRecreatePrompt = useTerminalStore((s) => s.clearRecreatePrompt)
   const clearSpawnError = useTerminalStore((s) => s.clearSpawnError)
 
-  const [mode, setMode] = useState<Mode>('host')
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('skip')
-  const [networkMode, setNetworkMode] = useState<NetworkMode>('allowlist')
+  const choice = useChooserChoice({ slug, initial, agents })
+  // A pre-resolved `initial` skips the open-time resolution (a test seam; the app never passes one).
+  const preResolved = initial !== undefined
+  // Advisory only (D19): a PATH miss is flagged, never swapped or blocked.
+  const [availability, setAvailability] = useState<HostAvailability | null>(null)
+  const { agentId, mode, hostPermission, sandboxPermission, networkMode, source, notices, replaced, recheckOutcome, resolved, resolveWith } = choice
   const [portRecreate, setPortRecreate] = useState(false)
   const [recreated, setRecreated] = useState(false)
   const [buildError, setBuildError] = useState(false)
@@ -202,6 +303,7 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
   const statusChecked = checkedSlug === slug
   const [restoredFor, setRestoredFor] = useState<unknown>(null)
   const titleId = useId()
+  const resetHintId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
   // Synchronous guards: a second click in the same tick must not start a second spawn or build.
   const startInFlight = useRef(false)
@@ -230,20 +332,84 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
     return reset
   }, [reset, releaseBuildRequest])
 
-  // The store keeps the last status when a fetch fails, so "still no status once the fetch settled" means it failed.
-  useEffect(() => {
-    let current = true
-    const settle = (): void => {
-      if (current) setCheckedSlug(slug)
-    }
-    void Promise.all([fetchStatus(slug), fetchEnvironment(false)]).then(settle)
-    // A fetch that never settles must not leave "Checking…" with no way out.
-    const timer = setTimeout(settle, STATUS_CHECK_TIMEOUT_MS)
-    return () => {
-      current = false
-      clearTimeout(timer)
-    }
-  }, [slug, fetchStatus, fetchEnvironment])
+  /**
+   * The one bounded fetch behind both the open and "Check again" (D18): the environment (then the status it
+   * feeds), the remembered options and the host availability settle together, or the timeout does. `onSettled`
+   * runs once with the options that arrived; the returned function cancels it. The store keeps the last status
+   * when a fetch fails, so "still no status once the fetch settled" means it failed.
+   */
+  const fetchAll = useCallback(
+    (onSettled: (defaults: SessionDefaultsView | null) => void, onEarly?: (defaults: SessionDefaultsView | null) => void): (() => void) => {
+      let live = true
+      let settled = false
+      let early = onEarly === undefined // nothing to fire without a callback
+      let defaults: SessionDefaultsView | null = null
+      const fireEarly = (): void => {
+        if (!live || early) return
+        early = true
+        onEarly?.(defaults)
+      }
+      const settle = (): void => {
+        if (!live || settled) return
+        fireEarly() // a fetch that never answered still ends in a resolved chooser
+        settled = true
+        onSettled(defaults)
+      }
+      // The status reads the Docker state the refresh just probed, so it waits for the environment.
+      const statusFetch = fetchEnvironment(true).then(() => fetchStatus(slug))
+      const defaultsFetch = loadDefaults(slug).then((view) => {
+        defaults = view
+      })
+      const fetched = [
+        statusFetch,
+        defaultsFetch,
+        loadAvailability().then((found) => {
+          if (live) setAvailability(found)
+        }),
+      ]
+      let waitTimer: ReturnType<typeof setTimeout> | undefined
+      if (onEarly) {
+        // First paint needs only the remembered options. A Host or built-in choice is resolved as soon as they
+        // arrive, without waiting for Docker (UX-H1); a remembered Sandbox choice waits for the status, but only so long.
+        void defaultsFetch.then(async () => {
+          if (defaults?.choice?.location === 'sandbox') {
+            await Promise.race([statusFetch, new Promise<void>((resolve) => (waitTimer = setTimeout(resolve, SANDBOX_CHOICE_WAIT_MS)))])
+          }
+          fireEarly()
+        })
+      }
+      void Promise.all(fetched).then(settle)
+      // A fetch that never settles must not leave "Checking…" with no way out.
+      const timer = setTimeout(settle, STATUS_CHECK_TIMEOUT_MS)
+      return () => {
+        live = false
+        clearTimeout(timer)
+        clearTimeout(waitTimer)
+      }
+    },
+    [slug, fetchStatus, fetchEnvironment],
+  )
+
+  useEffect(
+    () =>
+      fetchAll(
+        () => setCheckedSlug(slug),
+        (defaults) => {
+          if (!preResolved) resolveWith(defaults, useSandboxStore.getState().status[slug])
+        },
+      ),
+    [fetchAll, slug, preResolved, resolveWith],
+  )
+
+  // A "Check again" that is still running when the chooser goes away must not touch it afterwards.
+  const recheckCancel = useRef<(() => void) | null>(null)
+  useEffect(
+    () => () => {
+      recheckCancel.current?.()
+      recheckCancel.current = null
+    },
+    [],
+  )
 
   // Focus returns to the control that opened the chooser.
   useEffect(() => {
@@ -261,9 +427,7 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
   // Adjusting state while rendering (React's documented pattern for state derived from a transition), once per finished build.
   if (imageReady && buildFor && !restoredFor) {
     setRestoredFor(buildFor)
-    setMode('sandbox')
-    setPermissionMode(buildFor.permissionMode)
-    setNetworkMode(buildFor.networkMode)
+    choice.restoreSandbox(buildFor.permissionMode, buildFor.networkMode)
   } else if (!imageReady && restoredFor) {
     setRestoredFor(null)
   }
@@ -272,12 +436,33 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
   const statusFailed = !status && statusChecked
   const ineligibleReason = eligibility && !eligibility.ok ? ELIGIBILITY_COPY[eligibility.reason] : !status ? (statusChecked ? SANDBOX_UNAVAILABLE_COPY : CHECKING_COPY) : null
   const dockerIneligible = eligibility && !eligibility.ok && isDockerReason(eligibility.reason)
-  // Docker reasons and a failed status fetch both end in "try again": one button serves both.
-  const canCheckAgain = dockerIneligible || statusFailed
   const sandboxEligible = eligibility?.ok === true
   const warnings = eligibility?.ok ? eligibility.warnings : []
   const ending = isSessionStopping(status?.session.state)
   const sandbox = mode === 'sandbox'
+
+  const descriptorOf = (id: AgentId): AgentDescriptor => agents.find((d) => d.id === id) ?? getDescriptor(id)
+  const descriptor = descriptorOf(agentId)
+  const permissionChoices = descriptor.permissionModes[mode]
+  const permissionMode = offeredMode(permissionChoices, sandbox ? sandboxPermission : hostPermission)
+  const permissionLabel = permissionChoices.find((c) => c.mode === permissionMode)?.label ?? permissionMode
+  const agentHasSandbox = descriptor.permissionModes.sandbox.length > 0
+  // Why Sandbox can't be chosen right now: the workspace or Docker first, then this agent's own readiness (UX-M8: the
+  // descriptor's copy is the one source). `null` means it can.
+  const readinessCode = status?.agentReadiness[agentId]?.code
+  const readinessReason = readinessCode ? (agentReadinessMessage(agentId, readinessCode) ?? SANDBOX_UNAVAILABLE_COPY) : null
+  const sandboxReason = !agentHasSandbox ? `${descriptor.displayName} isn't available in the sandbox yet.` : (ineligibleReason ?? readinessReason)
+  // The fix, when this agent's own readiness is what blocks the sandbox (not Docker or the workspace).
+  const writableInstallPath = writableRootPath(availability?.[agentId])
+  const readinessCommand = agentHasSandbox && !ineligibleReason && readinessCode ? agentReadinessCommand(agentId, readinessCode) : null
+  // The agent's own readiness is what blocks the sandbox: the user fixes it outside the app (UX-H2).
+  const readinessBlocked = agentHasSandbox && !ineligibleReason && readinessCode !== undefined
+  // Docker reasons, a failed status fetch and a readiness problem all end in "try again": one button serves them.
+  const canCheckAgain = dockerIneligible || statusFailed || readinessBlocked
+  const warnStart = permissionMode === 'skip' || (sandbox && networkMode === 'open')
+  const willStartId = `${titleId}-will-start`
+  const networkWarningId = `${titleId}-network-warning`
+  const firstRunNote = sandbox ? descriptor.copy.sandboxFirstRunNote : descriptor.copy.hostFirstRunNote
 
   const startBlockedReason = starting ? 'Starting…' : sandbox && ending ? STILL_STOPPING : sandbox && buildRunning ? IMAGE_BUILDING_REASON : null
   const recreatePlan = status?.recreatePlan ?? null
@@ -288,8 +473,8 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
     startInFlight.current = true
     try {
       if (!sandbox) {
-        // The host start is synchronous and closes the chooser: the guard stays set so a second click can't start another.
-        onStartHost()
+        // The store marks the session 'starting' synchronously, so the chooser closes at once; the guard stays set so a second click can't start another.
+        void spawn(slug, { kind: 'host', agentId, permissionMode: permissionMode as AppPermissionMode, fallbackFields: replaced })
         startedRef.current = true
         close()
         focusTerminal(slug)
@@ -298,7 +483,7 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
       setReadyAcknowledged(true)
       setRecreated(false)
       setBuildError(false)
-      await spawn(slug, { kind: 'sandbox', permissionMode, networkMode })
+      await spawn(slug, { kind: 'sandbox', agentId, permissionMode: permissionMode as SandboxPermission, networkMode, fallbackFields: replaced })
       if (useTerminalStore.getState().sessions[slug] === 'running') {
         startedRef.current = true
         close()
@@ -310,18 +495,18 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
   }
 
   // The Docker reasons say "press Check again": this is that button, so the chooser is never a dead end.
-  async function checkAgain(): Promise<void> {
+  function checkAgain(): void {
     if (checkInFlight.current) return
     checkInFlight.current = true
     setChecking(true)
     refocusAfterCheck.current = true
-    try {
-      await fetchEnvironment(true)
-      await fetchStatus(slug)
-    } finally {
+    recheckCancel.current = fetchAll((defaults) => {
+      recheckCancel.current = null
+      // The one exception to "resolve once" (UX H2): re-resolve whatever the user hasn't touched.
+      resolveWith(defaults, useSandboxStore.getState().status[slug], { recheck: true })
       checkInFlight.current = false
       setChecking(false)
-    }
+    })
   }
 
   // The button disappears once Docker is fine; focus moves to the selected option instead of dropping to the page.
@@ -336,7 +521,7 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
   async function confirmBuild(): Promise<void> {
     if (buildInFlight.current) return
     buildInFlight.current = true
-    const request = { slug, permissionMode: buildPrompt?.permissionMode ?? permissionMode, networkMode: buildPrompt?.networkMode ?? networkMode }
+    const request = { slug, permissionMode: buildPrompt?.permissionMode ?? (permissionMode as SandboxPermission), networkMode: buildPrompt?.networkMode ?? networkMode }
     clearBuildPrompt(slug)
     setBuildError(false)
     setReadyAcknowledged(false)
@@ -355,9 +540,13 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
     // The RecreateDialog (a modal <dialog>) manages its own focus, both as a whole panel and nested.
     if (panel === 'recreate' || portRecreate) return
     const root = rootRef.current
-    const target = root?.querySelector<HTMLElement>('[data-autofocus], [role="radio"][aria-checked="true"]') ?? root?.querySelector<HTMLElement>('h2')
+    // Start when nothing was replaced; otherwise the first replaced control (both marked `data-autofocus`).
+    const target =
+      root?.querySelector<HTMLElement>('[data-autofocus]') ??
+      root?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]') ??
+      root?.querySelector<HTMLElement>('h2')
     target?.focus()
-  }, [panel, portRecreate])
+  }, [panel, portRecreate, resolved])
 
   function onDialogKeyDown(e: React.KeyboardEvent<HTMLDivElement>): void {
     const root = rootRef.current
@@ -415,6 +604,8 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
         <h2 id={titleId} tabIndex={-1} className="text-sm font-semibold">
           Build the sandbox image?
         </h2>
+        {/* An existing image that predates the chosen agent is rebuilt once to include it. */}
+        {imageExists && buildPrompt.agentId && buildPrompt.agentId !== LEGACY_AGENT_ID && <p>{imageUpdatedForAgentCopy(buildPrompt.agentId)}</p>}
         <p>{BUILD_CONFIRM_COPY}</p>
         <div className="flex justify-end gap-2">
           <button type="button" data-autofocus className={buttonClass} style={buttonStyle} onClick={() => clearBuildPrompt(slug)}>
@@ -428,25 +619,132 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
     )
   }
 
+  // The live region exists from mount, empty, so the notices that arrive after the skeleton are announced.
+  const noticesRegion = (
+    <div aria-live="polite" data-testid="notices-region" className="space-y-1">
+      {resolved && notices.length > 0 && (
+        <ul data-testid="notices" className="space-y-1 text-xs">
+          {notices.map((notice) => (
+            <li key={notice}>{notice}</li>
+          ))}
+        </ul>
+      )}
+      {resolved && notices.length === 0 && recheckOutcome && (
+        <p data-testid="notices-outcome" className="text-xs">
+          {recheckOutcome}
+        </p>
+      )}
+    </div>
+  )
+
+  // ── Skeleton until the open-time fetch settles or times out ────────────────
+  if (!resolved) {
+    return (
+      <div ref={rootRef} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-busy="true" onKeyDown={onDialogKeyDown} className={panelClass} style={skin === 'realm' ? REALM_PANEL_STYLE : undefined}>
+        <h2 id={titleId} tabIndex={-1} className="text-sm font-semibold">
+          Start a session
+        </h2>
+        {noticesRegion}
+        <p data-testid="chooser-skeleton" className="text-xs">
+          {CHECKING_COPY}
+        </p>
+        <div className="flex justify-end">
+          <button type="button" className={buttonClass} style={buttonStyle} onClick={close}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const firstReplaced = notices.length > 0 ? replaced[0] : undefined
+  // Is there a replaced control on screen to land on? A hidden Agent row or a static single-mode row has none.
+  const replacedControlShown =
+    firstReplaced === 'agentId' ? agents.length > 1 : firstReplaced === 'permissionMode' ? permissionChoices.length > 1 : firstReplaced !== undefined
+
   return (
     <div ref={rootRef} role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={onDialogKeyDown} className={panelClass} style={skin === 'realm' ? REALM_PANEL_STYLE : undefined}>
       <h2 id={titleId} tabIndex={-1} className="text-sm font-semibold">
         Start a session
       </h2>
 
+      {noticesRegion}
+
+      {(canCheckAgain || notices.length > 0 || recheckOutcome !== null) && (
+        <DisabledReason reason={checking ? CHECKING_COPY : null} skin={skin}>
+          {(props) => (
+            <button
+              type="button"
+              className={buttonClass}
+              style={buttonStyle}
+              onClick={checkAgain}
+              // Notices without a replaced control to land on (a static row, a timeout): focus the way forward.
+              data-autofocus={notices.length > 0 && !replacedControlShown ? true : undefined}
+              {...props}
+            >
+              {checking ? 'Checking…' : 'Check again'}
+            </button>
+          )}
+        </DisabledReason>
+      )}
+
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+        <span data-testid="choice-source">{SOURCE_LABEL[source]}</span>
+        <span className="flex items-center gap-2">
+          <span id={resetHintId}>{RESET_HINT}</span>
+          <button type="button" aria-describedby={resetHintId} className={`underline ${FOCUS}`} onClick={choice.resetChoices}>
+            Reset
+          </button>
+        </span>
+      </div>
+
+      {agents.length > 1 && (
+        <Segmented
+          label="Agent"
+          choices={agents.map((d) => ({
+            value: d.id as AgentId,
+            label: availability?.[d.id] === 'not-found' ? `${d.displayName} (may not be installed)` : d.displayName,
+          }))}
+          value={agentId}
+          skin={skin}
+          onChange={choice.chooseAgent}
+          autoFocusSelected={firstReplaced === 'agentId'}
+        />
+      )}
+
+      {!sandbox && availability?.[agentId] === 'not-found' && (
+        <p data-testid="path-warning" className="text-xs">
+          <code>{descriptor.binaryName}</code> wasn&apos;t found on your PATH, so it may not be installed. Start may still work if your shell finds it.
+        </p>
+      )}
+
+      {!sandbox && writableInstallPath !== null && (
+        <p data-testid="writable-install-warning" className="text-xs">
+          <code>{descriptor.binaryName}</code> is installed in <code>{writableInstallPath}</code>, a folder that sandbox sessions can change. Start still works.
+          {descriptor.copy.reinstallCommand && (
+            <>
+              {' '}
+              To install it somewhere sandbox sessions can&apos;t change, run:{' '}
+              <CopyCommand command={descriptor.copy.reinstallCommand} buttonClass={buttonClass} buttonStyle={buttonStyle} />
+            </>
+          )}
+        </p>
+      )}
+
       <Segmented
-        label="Run Claude Code"
+        label="Where"
         choices={MODES}
         value={mode}
         skin={skin}
+        autoFocusSelected={firstReplaced === 'location'}
         onChange={(v) => {
-          // The Sandbox option is explained, not selectable, while it is ineligible.
-          if (v === 'sandbox' && !sandboxEligible) return
-          setMode(v)
+          // The Sandbox option is explained, not selectable, while it is ineligible or the agent has no sandbox half.
+          if (v === 'sandbox' && sandboxReason !== null) return
+          choice.chooseMode(v)
         }}
         wrap={(choice, render) =>
           choice.value === 'sandbox' ? (
-            <DisabledReason reason={ineligibleReason} skin={skin}>
+            <DisabledReason reason={sandboxReason} skin={skin}>
               {(props) => render(props)}
             </DisabledReason>
           ) : (
@@ -455,14 +753,18 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
         }
       />
 
-      {canCheckAgain && (
-        <DisabledReason reason={checking ? CHECKING_COPY : null} skin={skin}>
-          {(props) => (
-            <button type="button" className={buttonClass} style={buttonStyle} onClick={() => void checkAgain()} {...props}>
-              {checking ? 'Checking…' : 'Check again'}
-            </button>
+      {/* The readiness message is the real step; its command, when it has one, comes after it (UX-H3). */}
+      {readinessReason !== null && !ineligibleReason && agentHasSandbox && (
+        <p data-testid="readiness-message" className="text-xs">
+          <InlineCode text={readinessReason} />
+          {readinessCommand && readinessCode && (
+            <span data-testid="readiness-command">
+              {' '}
+              {agentReadinessCommandLead(agentId, readinessCode)}{' '}
+              <CopyCommand command={readinessCommand} buttonClass={buttonClass} buttonStyle={buttonStyle} />
+            </span>
           )}
-        </DisabledReason>
+        </p>
       )}
 
       {sandboxEligible && warnings.length > 0 && (
@@ -473,17 +775,36 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
         </ul>
       )}
 
+      <PermissionRow
+        choices={permissionChoices}
+        value={permissionMode}
+        onChange={choice.choosePermission}
+        skin={skin}
+        autoFocusSelected={firstReplaced === 'permissionMode'}
+      />
+
       {sandbox && (
         <>
-          <Segmented label="Permissions" choices={PERMISSIONS} value={permissionMode} onChange={setPermissionMode} skin={skin} />
-          <Segmented label="Network" choices={NETWORKS} value={networkMode} onChange={setNetworkMode} skin={skin} />
+          <Segmented label="Network" choices={NETWORKS} value={networkMode} onChange={choice.chooseNetwork} skin={skin} />
           {/* The region exists before the warning does, so toggling Unrestricted is announced. */}
           <div aria-live="polite" aria-atomic="true" data-testid="network-announcer">
-            {networkMode === 'open' && <p className="text-xs font-medium">{UNRESTRICTED_WARNING}</p>}
+            {networkMode === 'open' && (
+              <p id={networkWarningId} className="text-xs font-medium">
+                {UNRESTRICTED_WARNING}
+              </p>
+            )}
           </div>
-          <p className="text-xs">{TRUST_PROMPT_COPY}</p>
         </>
       )}
+
+      {firstRunNote && <p className="text-xs">{firstRunNote}</p>}
+
+      <p id={willStartId} data-testid="will-start" data-tone={warnStart ? 'warning' : 'neutral'} className={`text-xs ${warnStart ? 'font-semibold' : ''}`}>
+        {/* The warning tone is never conveyed by weight alone: a symbol for sight, text for a screen reader. */}
+        {warnStart && <span aria-hidden="true">⚠ </span>}
+        {warnStart && <span className="sr-only">Warning: </span>}
+        Will start: {willStartText(descriptor.displayName, mode, permissionLabel, networkMode)}
+      </p>
 
       {imageReady && (
         <p role="status" className="font-medium">
@@ -546,7 +867,16 @@ export function StartSessionChooser({ slug, skin = 'office', onStartHost, onClos
         </button>
         <DisabledReason reason={startBlockedReason} skin={skin}>
           {(props) => (
-            <button type="button" className={buttonClass} style={buttonStyle} onClick={() => void start()} {...props}>
+            <button
+              type="button"
+              className={buttonClass}
+              style={buttonStyle}
+              onClick={() => void start()}
+              // Start is the initial focus only when resolution replaced nothing: one Enter must never start a changed choice.
+              data-autofocus={notices.length === 0 ? true : undefined}
+              {...props}
+              aria-describedby={[props['aria-describedby'], willStartId, sandbox && networkMode === 'open' ? networkWarningId : undefined].filter(Boolean).join(' ')}
+            >
               Start
             </button>
           )}

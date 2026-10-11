@@ -176,6 +176,20 @@ export const SANDBOX_CHANNELS = {
 } as const
 
 // ---------------------------------------------------------------------------
+// Remembered Start Session options (#0037 TRD §6)
+// ---------------------------------------------------------------------------
+export const SESSION_IPC = {
+  GET_DEFAULTS: 'session:getDefaults',
+} as const
+
+// ---------------------------------------------------------------------------
+// Agents (#0037 TRD §6)
+// ---------------------------------------------------------------------------
+export const AGENTS_IPC = {
+  GET_HOST_AVAILABILITY: 'agents:getHostAvailability',
+} as const
+
+// ---------------------------------------------------------------------------
 // Aggregated push channels (subset consumed by preload whitelist)
 // ---------------------------------------------------------------------------
 export const PUSH_CHANNELS = [

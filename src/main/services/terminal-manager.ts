@@ -4,6 +4,10 @@ import log from 'electron-log/main'
 import * as nodePty from 'node-pty'
 import type { BrowserWindow } from 'electron'
 import type { AppState } from '../ipc/handlers'
+import { LEGACY_AGENT_ID, getDescriptor } from '../agents/descriptors'
+import type { AgentId } from '../agents/descriptors'
+import { assertArgvToken } from '../agents/handler'
+import { getHandler } from '../agents/registry'
 import {
   MAX_SCROLLBACK_CHARS,
   DATA_BATCH_MS,
@@ -28,9 +32,6 @@ import { sanitizedEnv } from './env-policy'
 
 /** Spawn claude through a login shell so .bashrc/.profile are sourced (provides PATH for bun, etc.) */
 const USER_SHELL = process.env.SHELL || '/bin/bash'
-const CLAUDE_COMMAND = 'claude --dangerously-load-development-channels plugin:corner-office@amerh --teammate-mode in-process'
-const SPAWN_COMMAND = USER_SHELL
-const SPAWN_ARGS = ['--login', '-i', '-c', CLAUDE_COMMAND]
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -86,6 +87,11 @@ function timeout(ms: number): Promise<void> {
 // WARNING: Accesses xterm private API (_core._renderService.dimensions).
 // Pin @xterm/xterm version. Verify on upgrade.
 
+export interface HostSessionObserver {
+  started(workspaceSlug: string, agentId: AgentId): void
+  ended(workspaceSlug: string): void
+}
+
 /**
  * Manages PTY lifecycle for terminal sessions.
  *
@@ -98,6 +104,7 @@ export class TerminalManagerService {
   private readonly _appState: AppState
   /** Setter-injected (breaks the construction cycle with sandbox-manager, §3.12). Null until index.ts wires it (step 3.9). */
   private _delegate: SandboxSessionDelegate | null = null
+  private _sessionObserver: HostSessionObserver | null = null
 
   constructor(getMainWindow: () => BrowserWindow | null, appState: AppState) {
     this._getMainWindow = getMainWindow
@@ -110,8 +117,13 @@ export class TerminalManagerService {
     this._delegate = delegate
   }
 
+  /** Told when an agent's host session starts and ends (not shells or sandbox sessions); wired once by index.ts. */
+  setSessionObserver(observer: HostSessionObserver): void {
+    this._sessionObserver = observer
+  }
+
   spawn(options: TerminalSpawnOptions): TerminalSpawnResult {
-    const { workspaceSlug, cols, rows } = options
+    const { workspaceSlug, cols, rows, agentId = LEGACY_AGENT_ID, permissionMode = 'default' } = options
 
     if (this._sessions.size >= MAX_CONCURRENT_SESSIONS) {
       throw new Error(`Maximum concurrent sessions (${MAX_CONCURRENT_SESSIONS}) reached`)
@@ -133,11 +145,21 @@ export class TerminalManagerService {
 
     const cwd = fs.existsSync(workspace.path) ? workspace.path : os.homedir()
 
+    if (!getDescriptor(agentId).permissionModes.host.some((m) => m.mode === permissionMode)) {
+      throw new Error(`Permission mode ${permissionMode} is not available on the host for ${agentId}`)
+    }
+    const handler = getHandler(agentId)
+    const argv = handler.host.argv({ permissionMode })
+    // Checked twice on purpose: `defineAgent` validates every mode's argv at module load (a bad handler never ships),
+    // and this checks the argv that is actually about to be joined into a shell command line (a handler is a function).
+    for (const token of argv) assertArgvToken(token)
+
     // Build sanitized environment
-    const env = sanitizedEnv(process.env)
+    const env = sanitizedEnv(process.env, handler.host.envAllow)
     env.TERM = 'xterm-256color'
 
-    this._spawnPty(workspaceSlug, 'host', SPAWN_COMMAND, SPAWN_ARGS, cwd, env, cols, rows)
+    this._spawnPty(workspaceSlug, 'host', USER_SHELL, ['--login', '-i', '-c', argv.join(' ')], cwd, env, cols, rows, agentId)
+    this._sessionObserver?.started(workspaceSlug, agentId)
     return { workspaceSlug }
   }
 
@@ -412,6 +434,7 @@ export class TerminalManagerService {
     env: Record<string, string>,
     cols: number,
     rows: number,
+    agentId?: AgentId,
   ): TerminalSession {
     let pty: nodePty.IPty
     try {
@@ -438,6 +461,7 @@ export class TerminalManagerService {
     const session: TerminalSession = {
       workspaceSlug: key,
       kind,
+      agentId,
       pty,
       scrollback: '',
       pendingData: '',
@@ -489,6 +513,8 @@ export class TerminalManagerService {
       session.exitResolve?.()
 
       this._cleanup(key)
+
+      if (kind === 'host' && agentId !== undefined) this._sessionObserver?.ended(key)
 
       // §3.12: notifies the manager so it can run `ending` if it wasn't
       // already underway, and surface a notification on an unexpected exit.

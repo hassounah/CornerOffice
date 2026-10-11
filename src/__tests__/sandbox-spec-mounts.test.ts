@@ -2,14 +2,15 @@ import { describe, it, expect } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { planClaudeMounts as planMounts } from './helpers/claude-mounts'
 import {
-  planMounts,
   specHash,
   docsRootWtTarget,
   diffMountPlans,
   hasMemoryMdMount,
   worktreePath,
   cardDir,
+  sandboxEventsDir,
   settingsOverlayPath,
   sandboxClaudeJsonPath,
   claudeShadowSource,
@@ -97,6 +98,7 @@ function makeFixture(): Fixture {
   mkdir(path.join(wt, '.rix'))
 
   mkdir(path.join(paths.eventsRoot, slug))
+  mkdir(sandboxEventsDir(paths, slug))
 
   const baseFacts: PlanMountsFacts = {
     home,
@@ -198,13 +200,13 @@ describe('planMounts — always-present overlays', () => {
     })
   })
 
-  it('mounts the per-workspace events directory read-write, and events/enabled read-only only when eventsEnabled', () => {
+  it('mounts S/events at the in-container events path read-write (D23), and events/enabled read-only only when eventsEnabled', () => {
     const fixture = makeFixture()
     const withoutEvents = planMounts(fixture.baseFacts)
     expect(withoutEvents.ok).toBe(true)
     if (withoutEvents.ok) {
       expect(withoutEvents.mounts).toContainEqual({
-        source: path.join(fixture.paths.eventsRoot, fixture.slug),
+        source: sandboxEventsDir(fixture.paths, fixture.slug),
         target: path.join(fixture.paths.eventsRoot, fixture.slug),
         readonly: false,
         provenance: 'app',
@@ -310,6 +312,34 @@ describe('planMounts — docs_root', () => {
     if (!result.ok) return
     expect(result.warnings).toContain('docs-root-unsafe')
     expect(result.mounts.some((m) => m.source === appDir)).toBe(false)
+  })
+
+  it('outside REPO under an agent home entry (~/.claude/notes): refused as docs-root-unsafe (A7)', () => {
+    const fixture = makeFixture()
+    const agentDir = path.join(fixture.home, '.claude', 'notes')
+    mkdir(agentDir)
+    const docsRoot: DocsRootFacts = { path: agentDir, source: 'memory.md', exists: true, inRepoRel: null }
+    expect(planMounts({ ...fixture.baseFacts, docsRoot })).toEqual({ ok: false, reason: 'docs-root-unsafe' })
+  })
+
+  it('outside REPO under ~/.codex: dropped with docs-root-unsafe, and a Claude plan never mounts ~/.codex (SM-4, D8)', () => {
+    const fixture = makeFixture()
+    const codexDir = path.join(fixture.home, '.codex', 'notes')
+    mkdir(codexDir)
+    const docsRoot: DocsRootFacts = { path: codexDir, source: 'memory.md', exists: true, inRepoRel: null }
+    const refused = planMounts({ ...fixture.baseFacts, docsRoot })
+    expect(refused.ok).toBe(true)
+    if (!refused.ok) return
+    expect(refused.warnings).toContain('docs-root-unsafe')
+
+    const codexRoot = path.join(fixture.home, '.codex')
+    for (const result of [refused, planMounts(fixture.baseFacts)]) {
+      if (!result.ok) throw new Error('plan failed')
+      for (const m of result.mounts) {
+        expect(m.source.startsWith(codexRoot), m.source).toBe(false)
+        expect(m.target.startsWith(codexRoot), m.target).toBe(false)
+      }
+    }
   })
 
   it('backstop: a crafted inRepoRel escaping the repo is docs-root-unsafe (SEC-M1)', () => {
@@ -664,6 +694,7 @@ describe('specHash', () => {
 
   it.each([
     ['port', { port: 20002 }],
+    ['port being dropped (an agent without channels)', { port: null }],
     ['uid', { uid: 1001 }],
     ['gid', { gid: 1001 }],
     ['base', { base: 'master' }],

@@ -101,6 +101,11 @@ describe('NotificationService', () => {
       expect(svc.classify(makeHookEvent('Stop', { featureShipped: true }))).toBe('progress')
     })
 
+    it('classifies a Codex Interrupt as activity', () => {
+      const svc = new NotificationService(makeCallbacks())
+      expect(svc.classify(makeHookEvent('Interrupt'))).toBe('activity')
+    })
+
     it('classifies gatePassed Stop as progress', () => {
       const svc = new NotificationService(makeCallbacks())
       expect(svc.classify(makeHookEvent('Stop', { gatePassed: true }))).toBe('progress')
@@ -667,6 +672,29 @@ describe('NotificationService', () => {
       expect(svc.getBanners()).toHaveLength(0)
     })
 
+    it('setIdleSuppressed(on) silences the idle notification for that workspace only', () => {
+      vi.useFakeTimers()
+      const svc = new NotificationService(makeCallbacks())
+      svc.startIdleCheck(['ws-a', 'ws-b'])
+      svc.setIdleSuppressed('ws-a', true)
+      vi.advanceTimersByTime(6 * 60_000)
+      const idle = svc.getBanners().filter((b) => b.tier === 'idle')
+      expect(idle.map((b) => b.workspace)).toEqual(['ws-b'])
+    })
+
+    it('setIdleSuppressed(off) lets the idle notification fire again', () => {
+      vi.useFakeTimers()
+      const svc = new NotificationService(makeCallbacks())
+      svc.startIdleCheck(['ws-a'])
+      svc.setIdleSuppressed('ws-a', true)
+      vi.advanceTimersByTime(6 * 60_000)
+      expect(svc.getBanners()).toHaveLength(0)
+
+      svc.setIdleSuppressed('ws-a', false)
+      vi.advanceTimersByTime(6 * 60_000)
+      expect(svc.getBanners().some((b) => b.tier === 'idle' && b.workspace === 'ws-a')).toBe(true)
+    })
+
     it('stopIdleCheck prevents further idle notifications', () => {
       vi.useFakeTimers()
       const callbacks = makeCallbacks()
@@ -828,6 +856,100 @@ describe('NotificationService.notifySandbox', () => {
     const [n] = dispatched(callbacks)
     expect(n).toMatchObject({ workspace: 'ws-a', tier: 'progress', summary: 'Sandbox image is ready', target: 'sandbox-chooser', source: 'sandbox' })
     expect(callbacks.showOsNotification).toHaveBeenCalledWith('Sandbox · ws-a -- Sandbox image is ready', '', 'ws-a', n.timestamp, 'sandbox-chooser')
+  })
+
+  it('agent-guard-incomplete: a requiresAction notice that says nothing was deleted and names no file', () => {
+    const callbacks = makeCallbacks()
+    new NotificationService(callbacks).notifySandbox({ kind: 'agent-guard-incomplete', slug: 'ws-a', agentId: 'codex' })
+
+    const [n] = dispatched(callbacks)
+    expect(n).toMatchObject({ workspace: 'ws-a', tier: 'requiresAction', source: 'sandbox', summary: "Couldn't finish checking ~/.codex" })
+    expect(n.detail).toContain('nothing was deleted')
+    expect(n.detail).toContain("won't start in the sandbox again until the check can finish")
+  })
+
+  it('agent-guard-incomplete with a lost baseline says why Codex will not start and how to reset', () => {
+    const callbacks = makeCallbacks()
+    new NotificationService(callbacks).notifySandbox({ kind: 'agent-guard-incomplete', slug: 'ws-a', agentId: 'codex', lostBaseline: true })
+
+    const [n] = dispatched(callbacks)
+    expect(n).toMatchObject({ tier: 'requiresAction', summary: "Couldn't finish checking ~/.codex" })
+    expect(n.detail).toBe(
+      "Corner Office lost track of which files in ~/.codex are yours, so Codex in the sandbox won't start. Files Codex could load were moved aside and nothing was deleted. Review ~/.codex, then delete this workspace's sandbox to reset.",
+    )
+  })
+
+  describe('agent-files-quarantined', () => {
+    const DEST = '~/.corner-office/sandbox/ws-a/codex-quarantine/AGENTS.override.md-1700000000000'
+
+    function raise(extra: Partial<Extract<Parameters<NotificationService['notifySandbox']>[0], { kind: 'agent-files-quarantined' }>>): AppNotification {
+      const callbacks = makeCallbacks()
+      new NotificationService(callbacks).notifySandbox({
+        kind: 'agent-files-quarantined',
+        slug: 'ws-a',
+        agentId: 'codex',
+        count: 1,
+        file: 'AGENTS.override.md',
+        destination: DEST,
+        ...extra,
+      })
+      return dispatched(callbacks)[0]
+    }
+
+    it('one file: requiresAction (cannot be silenced), kept in history, with the exact mv command', () => {
+      const n = raise({})
+      expect(n).toMatchObject({ workspace: 'ws-a', tier: 'requiresAction', source: 'sandbox', autoDismissMs: null, summary: 'Files moved out of ~/.codex' })
+      expect(n.detail).toBe(
+        `Codex in the sandbox added AGENTS.override.md to ~/.codex. Codex on your computer could load it, so Corner Office moved it to ${DEST}. Nothing was deleted. If you trust it, review it and then move it back.`,
+      )
+      expect(n.command).toBe(`mv ${DEST} ~/.codex/AGENTS.override.md`)
+    })
+
+    it('is not silenced by quiet hours or by turning the other tiers off', () => {
+      const callbacks = makeCallbacks({ tiers: { requiresAction: { enabled: true, sound: false }, idle: { enabled: false, osNotification: false }, progress: { enabled: false, osNotification: false }, activity: { enabled: false } }, quietHours: { enabled: true, start: '00:00', end: '23:59' } })
+      new NotificationService(callbacks).notifySandbox({ kind: 'agent-files-quarantined', slug: 'ws-a', agentId: 'codex', count: 1, file: 'hooks.json', destination: DEST })
+      expect(dispatched(callbacks)).toHaveLength(1)
+    })
+
+    it('a name that is not plain, or unknown, reads as "a new file" and offers no command', () => {
+      expect(raise({ file: null }).detail).toContain('added a new file to ~/.codex')
+      expect(raise({ file: 'x\ny `rm -rf`' }).detail).toContain('added a new file to ~/.codex')
+      expect(raise({ file: 'x\ny `rm -rf`' }).detail).not.toContain('rm -rf')
+      expect(raise({ file: null }).command).toBeUndefined()
+      expect(raise({ file: 'x y' }).command).toBeUndefined()
+    })
+
+    it('a destination with a parent-directory segment is not shown and gives no command', () => {
+      const n = raise({ destination: '~/.corner-office/../../etc/passwd' })
+      expect(n.command).toBeUndefined()
+      expect(n.detail).not.toContain('..')
+    })
+
+    it('a destination that is not a plain path is not shown and gives no command', () => {
+      const n = raise({ destination: '~/x; rm -rf ~' })
+      expect(n.command).toBeUndefined()
+      expect(n.detail).not.toContain('rm -rf')
+    })
+
+    it('several files: the calm copy pointing at the folder the guard reported, and no command', () => {
+      const n = raise({ count: 3, file: null, destination: '~/.corner-office/sandbox/ws-a/codex-quarantine/' })
+      expect(n.detail).toBe(
+        'Codex in the sandbox added 3 files to ~/.codex. Codex on your computer could load them, so Corner Office moved them to ~/.corner-office/sandbox/ws-a/codex-quarantine/. Nothing was deleted.',
+      )
+      expect(n.command).toBeUndefined()
+    })
+
+    it('several files with no known folder do not invent a path', () => {
+      const n = raise({ count: 3, file: null, destination: null })
+      expect(n.detail).toContain('moved them to a quarantine folder')
+      expect(n.detail).not.toContain('-quarantine')
+    })
+
+    it('a single file with no known destination says it was moved aside, with no command', () => {
+      const n = raise({ count: 1, destination: null })
+      expect(n.detail).toContain('moved it aside')
+      expect(n.command).toBeUndefined()
+    })
   })
 
   it('image-ready: fixed title, no workspace, target sandbox-image, and a bare OS title', () => {

@@ -30,6 +30,8 @@ import { useWorkspaceStore } from '../../../renderer/stores/workspace-store'
 import { ChatMessage } from '../../../renderer/components/channels/ChatMessage'
 import { SessionSelector } from '../../../renderer/components/channels/SessionSelector'
 import { ChatPanel } from '../../../renderer/components/channels/ChatPanel'
+import { ChatUnavailable } from '../../../renderer/components/channels/ChatUnavailable'
+import { expectNoAxeViolations } from '../../helpers/a11y'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -111,6 +113,40 @@ describe('ChatMessage', () => {
 // ---------------------------------------------------------------------------
 // SessionSelector component
 // ---------------------------------------------------------------------------
+
+describe('SessionSelector empty state with a reason (#0037 C6)', () => {
+  it('shows the reason instead of "No active sessions"', () => {
+    render(<SessionSelector sessions={[]} activeSessionId={null} onSelect={vi.fn()} emptyReason="Chat isn't available for Codex sessions yet." />)
+    expect(screen.getByText("Chat isn't available for Codex sessions yet.")).toBeInTheDocument()
+    expect(screen.queryByText('No active sessions')).not.toBeInTheDocument()
+  })
+
+  it('keeps "No active sessions" when no reason is given', () => {
+    render(<SessionSelector sessions={[]} activeSessionId={null} onSelect={vi.fn()} />)
+    expect(screen.getByText('No active sessions')).toBeInTheDocument()
+  })
+})
+
+describe('ChatUnavailable (#0037 C6)', () => {
+  const REASON = "Chat isn't available for Codex sessions yet."
+
+  it('shows the empty session list carrying the reason, and no dead Chat button', () => {
+    render(<ChatUnavailable reason={REASON} />)
+    expect(screen.getAllByText(REASON).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull()
+  })
+
+  it('shows no channel badge or connection dot', () => {
+    const { container } = render(<ChatUnavailable reason={REASON} />)
+    expect(container.querySelector('.bg-emerald-400, .bg-amber-400')).toBeNull()
+    expect(screen.queryByText(/Connected|Connecting|Disconnected/)).not.toBeInTheDocument()
+  })
+
+  it('has no axe violations', async () => {
+    const { container } = render(<ChatUnavailable reason={REASON} />)
+    await expectNoAxeViolations(container)
+  })
+})
 
 describe('SessionSelector', () => {
   it('renders a select element', () => {

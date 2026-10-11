@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventParserService } from '../main/services/event-parser'
 
 vi.mock('fs')
+const { warn } = vi.hoisted(() => ({ warn: vi.fn() }))
+vi.mock('electron-log/main', () => ({ default: { info: vi.fn(), warn, error: vi.fn() } }))
 import fs from 'fs'
 const mockFs = fs as unknown as Record<string, ReturnType<typeof vi.fn>>
 
@@ -85,6 +87,33 @@ describe('EventParserService', () => {
       expect(result.events).toHaveLength(1)
       expect(result.events[0].event).toBe('SessionStart')
       expect(result.newOffset).toBe(bytes.length)
+    })
+
+    it('keeps agent claude, and leaves an absent agent absent', () => {
+      mockRegularFile(Buffer.from(makeEvent({ agent: 'claude' }) + '\n' + makeEvent() + '\n', 'utf-8'))
+      const result = parser.parseFromOffset('/path/events.jsonl', 0)
+      expect(result.events.map((e) => e.agent)).toEqual(['claude', undefined])
+    })
+
+    it('drops lines with an unknown agent, warning once per file', () => {
+      warn.mockClear()
+      const content = [makeEvent({ agent: 'nope' }), makeEvent({ agent: 'other' }), makeEvent({ agent: 'claude' })].join('\n') + '\n'
+      mockRegularFile(Buffer.from(content, 'utf-8'))
+
+      const first = parser.parseFromOffset('/path/a.jsonl', 0)
+      expect(first.events).toHaveLength(1)
+      expect(warn).toHaveBeenCalledTimes(1)
+
+      parser.parseFromOffset('/path/a.jsonl', 0)
+      expect(warn).toHaveBeenCalledTimes(1)
+
+      parser.parseFromOffset('/path/b.jsonl', 0)
+      expect(warn).toHaveBeenCalledTimes(2)
+    })
+
+    it('drops a non-string agent value', () => {
+      mockRegularFile(Buffer.from(makeEvent({ agent: 7 }) + '\n', 'utf-8'))
+      expect(parser.parseFromOffset('/path/events.jsonl', 0).events).toHaveLength(0)
     })
 
     it('skips malformed JSONL lines without crashing', () => {
@@ -214,6 +243,23 @@ describe('EventParserService', () => {
 
     it('classifies SessionEnd as session_ended', () => {
       expect(parser.classifyActivity(makeHookEvent('SessionEnd'))).toBe('session_ended')
+    })
+
+    it.each([
+      ['SessionStart', 'session_started'],
+      ['SessionEnd', 'session_ended'],
+      ['UserPromptSubmit', 'user_prompt'],
+      ['PreToolUse', 'tool_started'],
+      ['PermissionRequest', 'input_required'],
+      ['PostToolUse', 'tool_completed'],
+      ['PreCompact', 'context_compacted'],
+      ['PostCompact', 'context_compacted'],
+      ['SubagentStart', 'agent_spawned'],
+      ['SubagentStop', 'agent_spawned'],
+      ['Stop', 'session_ended'],
+      ['Interrupt', 'session_ended'],
+    ])('classifies the Codex hook %s as %s (TRD 4.10)', (hook, activity) => {
+      expect(parser.classifyActivity(makeHookEvent(hook))).toBe(activity)
     })
 
     it('classifies PreCompact as context_compacted', () => {
@@ -347,6 +393,20 @@ describe('EventParserService', () => {
       expect(result.events).toHaveLength(1)
       expect(result.events[0].event).toBe('SessionStart')
       expect(result.events[0].sessionId).toBe('session-abc')
+    })
+
+    it('parses an Interrupt line written with the aliases and an agent field', () => {
+      const line = JSON.stringify({
+        timestamp: '2026-03-01T10:00:00Z',
+        hook_event_name: 'Interrupt',
+        workspace: 'my-project',
+        session_id: 'codex-1',
+        agent: 'codex',
+      })
+      mockRegularFile(Buffer.from(line + '\n'))
+      const result = parser.parseFromOffset('/path/events.jsonl', 0)
+      expect(result.events).toHaveLength(1)
+      expect(result.events[0]).toMatchObject({ event: 'Interrupt', sessionId: 'codex-1', agent: 'codex' })
     })
 
     it('prefers new-format event field over hook_event_name', () => {

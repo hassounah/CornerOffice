@@ -11,6 +11,7 @@ import {
   LABEL,
   ROOT_EXEC_ENV,
   containerName,
+  parseContainerName,
   worktreePath,
   cardDir,
   settingsOverlayPath,
@@ -22,6 +23,7 @@ import {
   pickChannelPort,
 } from '../main/services/sandbox-spec'
 import { sandboxPaths } from '../main/services/sandbox-paths'
+import { AGENT_IDS } from '../main/agents/descriptors'
 
 // ---------------------------------------------------------------------------
 // sandbox-spec-naming.test.ts (TRD §3.2, §3.6.4, §10.4, D13, H1, SEC-M2)
@@ -58,6 +60,38 @@ describe('naming', () => {
 
   it('containerName is docker-valid by construction', () => {
     expect(containerName('my-workspace')).toBe('co-sandbox-my-workspace')
+    expect(containerName('my-workspace', 'claude')).toBe('co-sandbox-my-workspace')
+  })
+
+  it('a non-legacy agent gets a dotted suffix, which a slug can never contain', () => {
+    expect(containerName('my-workspace', 'codex')).toBe('co-sandbox-my-workspace.codex')
+    expect(SANDBOX_SLUG_RE.test('my-workspace.codex')).toBe(false)
+  })
+
+  const SAMPLE_SLUGS = ['a', 'A1', 'my-workspace', 'my_workspace_2', '0', 'x'.repeat(64), 'codex', 'claude']
+
+  it.each(AGENT_IDS.flatMap((agentId) => SAMPLE_SLUGS.map((slug) => [agentId, slug] as const)))(
+    'round-trips (%s, %s) through containerName and parseContainerName',
+    (agentId, slug) => {
+      expect(parseContainerName(containerName(slug, agentId))).toEqual({ slug, agentId })
+    },
+  )
+
+  it('is collision-free across every (slug, agent) pair', () => {
+    const names = AGENT_IDS.flatMap((agentId) => SAMPLE_SLUGS.map((slug) => containerName(slug, agentId)))
+    expect(new Set(names).size).toBe(names.length)
+  })
+
+  it.each([
+    ['an explicit .claude suffix (it would alias the legacy name)', 'co-sandbox-ws.claude'],
+    ['an unregistered agent', 'co-sandbox-ws.gemini'],
+    ['an empty slug', 'co-sandbox-'],
+    ['an empty suffix', 'co-sandbox-ws.'],
+    ['a second dot', 'co-sandbox-ws.codex.x'],
+    ['an invalid slug', 'co-sandbox--ws'],
+    ['a foreign prefix', 'other-ws'],
+  ])('parseContainerName rejects %s', (_label, name) => {
+    expect(parseContainerName(name)).toBeNull()
   })
 
   it('worktreePath and cardDir derive from the sandboxPaths(realHome) object (SEC-M2)', () => {

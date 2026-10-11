@@ -26,10 +26,13 @@ function makeStatus(overrides: { session?: Partial<SandboxStatus['session']>; gi
     exists: overrides.exists ?? true,
     container: 'running',
     worktree: 'ready',
-    session: { state: 'running', permissionMode: 'skip', networkMode: 'allowlist', lastExit: null, ...overrides.session },
+    session: { state: 'running', agentId: 'claude', permissionMode: 'skip', networkMode: 'allowlist', lastExit: null, ...overrides.session },
     git: overrides.git === undefined ? { branch: 'feat/a', headShort: 'abc1234', ahead: 2, dirtyCount: 0, base: 'main' } : overrides.git,
     recreatePending: false,
     recreatePlan: null,
+    containers: {},
+    agentReadiness: {},
+    recreatePlans: [],
     channel: overrides.channel ?? 'connected',
   }
 }

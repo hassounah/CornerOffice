@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import path from 'path'
 import { ESLint } from 'eslint'
 
@@ -8,14 +8,25 @@ import { ESLint } from 'eslint'
 
 const projectRoot = path.resolve(__dirname, '..', '..')
 
+// Loading the flat config (typescript-eslint, react plugins) is the slow part
+// and takes several seconds when the whole suite runs in parallel. Do it once,
+// in a hook with its own generous timeout, instead of inside each 5 s test.
+const COLD_START_TIMEOUT_MS = 60_000
+
+let eslint: ESLint
+
 async function lint(code: string, filePath: string) {
-  const eslint = new ESLint({
-    cwd: projectRoot,
-    overrideConfigFile: path.join(projectRoot, 'eslint.config.mjs'),
-  })
   const [result] = await eslint.lintText(code, { filePath: path.join(projectRoot, filePath) })
   return result.messages
 }
+
+beforeAll(async () => {
+  eslint = new ESLint({
+    cwd: projectRoot,
+    overrideConfigFile: path.join(projectRoot, 'eslint.config.mjs'),
+  })
+  await lint('export {}\n', 'src/main/services/foo.ts')
+}, COLD_START_TIMEOUT_MS)
 
 const staticImport = "import { execFile } from 'child_process'\nexecFile('git', [])\n"
 const staticImportNode = "import { execFile } from 'node:child_process'\nexecFile('git', [])\n"

@@ -91,8 +91,12 @@ export const api = {
   },
 
   terminal: {
-    spawn: (workspaceSlug: string, cols: number, rows: number) =>
-      ipcRenderer.invoke('terminal:spawn', { workspaceSlug, cols, rows }),
+    spawn: (
+      workspaceSlug: string,
+      cols: number,
+      rows: number,
+      opts?: { agentId?: string; permissionMode?: string; fallbackFields?: readonly string[] },
+    ) => ipcRenderer.invoke('terminal:spawn', { workspaceSlug, cols, rows, ...opts }),
     write: (workspaceSlug: string, data: string) =>
       ipcRenderer.invoke('terminal:write', { workspaceSlug, data }),
     resize: (workspaceSlug: string, cols: number, rows: number) =>
@@ -143,6 +147,14 @@ export const api = {
       ipcRenderer.invoke('code:unwatch', { workspaceSlug, gen, root }),
   },
 
+  agents: {
+    getHostAvailability: () => ipcRenderer.invoke('agents:getHostAvailability', {}),
+  },
+
+  session: {
+    getDefaults: (workspaceSlug: string) => ipcRenderer.invoke('session:getDefaults', { workspaceSlug }),
+  },
+
   sandbox: {
     getEnvironment: (refresh: boolean) => ipcRenderer.invoke('sandbox:getEnvironment', { refresh }),
     getStatus: (workspaceSlug: string) => ipcRenderer.invoke('sandbox:getStatus', { workspaceSlug }),
@@ -153,14 +165,15 @@ export const api = {
       rows: number,
       permissionMode: 'skip' | 'auto',
       networkMode: 'allowlist' | 'open',
-    ) => ipcRenderer.invoke('sandbox:startSession', { workspaceSlug, cols, rows, permissionMode, networkMode }),
+      opts?: { agentId?: string; fallbackFields?: readonly string[] },
+    ) => ipcRenderer.invoke('sandbox:startSession', { workspaceSlug, cols, rows, permissionMode, networkMode, ...opts }),
     handOff: (workspaceSlug: string, allowDirty: boolean) =>
       ipcRenderer.invoke('sandbox:handOff', { workspaceSlug, allowDirty }),
     previewDelete: (workspaceSlug: string) => ipcRenderer.invoke('sandbox:previewDelete', { workspaceSlug }),
     delete: (workspaceSlug: string, acknowledgeDirty: boolean) =>
       ipcRenderer.invoke('sandbox:delete', { workspaceSlug, acknowledgeDirty }),
-    recreate: (workspaceSlug: string, newPort: boolean, confirmedSpecHash: string) =>
-      ipcRenderer.invoke('sandbox:recreate', { workspaceSlug, newPort, confirmedSpecHash }),
+    recreate: (workspaceSlug: string, newPort: boolean, confirmedSpecHash: string, agentId?: string) =>
+      ipcRenderer.invoke('sandbox:recreate', { workspaceSlug, newPort, confirmedSpecHash, ...(agentId === undefined ? {} : { agentId }) }),
     buildImage: (rebuild: boolean, requestedFor?: string) =>
       ipcRenderer.invoke('sandbox:buildImage', requestedFor === undefined ? { rebuild } : { rebuild, requestedFor }),
     cancelBuild: () => ipcRenderer.invoke('sandbox:cancelBuild', {}),

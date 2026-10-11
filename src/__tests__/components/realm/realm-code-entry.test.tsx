@@ -90,6 +90,8 @@ const mockTerminalStore = vi.hoisted(() => ({
   // The sandbox chooser and actions (#0029) read these per workspace.
   spawnFailure: {} as Record<string, string | null>,
   buildPrompt: {} as Record<string, unknown>,
+  exitBanner: {} as Record<string, string | null>,
+  sessionAgent: {} as Record<string, string>, // read by useSessionAgent (C6)
   recreatePrompt: {} as Record<string, unknown>,
   clearBuildPrompt: vi.fn(),
   clearRecreatePrompt: vi.fn(),

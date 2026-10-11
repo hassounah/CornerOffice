@@ -16,14 +16,18 @@ import {
   startArgv,
   stopArgv,
   rmArgv,
-  planMounts,
   cardDir,
+  sandboxEventsDir,
   worktreePath,
   worktreePin,
   STOP_TIMEOUT_S,
   CHANNEL_PORT_RANGE,
 } from '../../main/services/sandbox-spec'
 import type { Mount } from '../../main/services/sandbox-spec'
+import { LEGACY_AGENT_ID } from '../../main/agents/descriptors'
+import type { AgentId } from '../../main/agents/descriptors'
+import { codexMounts, prepareCodexConfig } from '../../main/agents/codex/sandbox-config'
+import { planClaudeMounts as planMounts } from '../helpers/claude-mounts'
 import { resolveBuildContext, createSandboxImageService } from '../../main/services/sandbox-image'
 import { makeTmpDir, makeSimpleRepo, writeFile, commitAll, serviceEnvOverrides } from '../helpers/git-fixtures'
 
@@ -136,20 +140,24 @@ export interface CreateTestContainerOpts {
   /** The container's `--workdir` (defaults to the temp HOME). */
   workTree?: string
   port?: number
+  /** Defaults to Claude. Codex has no channel, so it gets no port. */
+  agentId?: AgentId
 }
 
 /** create + start, through the real argv builders — no mounts by default (this suite's tests don't touch the git/channel mounts; see the file header). */
 export async function createTestContainer(d: DockerRunner, identity: TestIdentity, opts: CreateTestContainerOpts = {}): Promise<TestContainer> {
   const slug = opts.slug ?? `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
-  const c = containerName(slug)
-  const port = opts.port ?? testPort()
+  const agentId = opts.agentId ?? LEGACY_AGENT_ID
+  const c = containerName(slug, agentId)
+  const port = agentId === 'codex' ? 0 : (opts.port ?? testPort())
 
   let argv = createArgv({
     c,
     slug,
     uid: identity.uid,
     gid: identity.gid,
-    port,
+    agentId,
+    port: agentId === 'codex' ? null : port,
     home: identity.home,
     base: 'main',
     specHash: 'docker-suite-test',
@@ -293,6 +301,7 @@ export async function createSandboxRig(d: DockerRunner, identity: TestIdentity, 
   fs.mkdirSync(path.join(repo, '.git', 'hooks'), { recursive: true })
   fs.mkdirSync(path.join(repo, '.git', 'modules'), { recursive: true })
   fs.mkdirSync(eventsDir, { recursive: true })
+  fs.mkdirSync(sandboxEventsDir(paths, slug), { recursive: true }) // D23: the container's events mount source
   fs.mkdirSync(path.join(paths.claudeDir, 'channels'), { recursive: true, mode: 0o700 })
   // #0030: the read-only Claude config sources, the settings copy and the first `claude.json` seed, as the manager does.
   const claudeConfig = prepareClaudeConfig(paths, slug)
@@ -347,4 +356,54 @@ export async function agentSh(
   const envArgs = Object.entries(env).flatMap(([k, v]) => ['--env', `${k}=${v}`])
   const argv = ['exec', '--user', `${identity.uid}:${identity.gid}`, '--workdir', rig.wt, ...envArgs, rig.container.name, '/bin/sh', '-c', script]
   return d.run(argv, { allowExit: [1, 2, 126, 127] })
+}
+
+// ---------------------------------------------------------------------------
+// createCodexRig — a Codex container the way production creates one: a temp
+// `~/.codex` seeded like a host that has used Codex, the real
+// `prepareCodexConfig` and `codexMounts`, and the real `createArgv`. Used by
+// codex.test.ts (TRD §10.4, §11.2). The temp HOME is `identity.home`.
+// ---------------------------------------------------------------------------
+
+export interface CodexRig {
+  slug: string
+  container: TestContainer
+  /** The host side of `~/.codex`. */
+  codexDir: string
+  /** `~/.corner-office/sandbox/<slug>`. */
+  state: string
+  cleanup: () => Promise<void>
+}
+
+export interface CreateCodexRigOpts {
+  /** Files written into the host `~/.codex` before prepare, relative to it. */
+  hostFiles?: Record<string, string>
+}
+
+export async function createCodexRig(d: DockerRunner, identity: TestIdentity, opts: CreateCodexRigOpts = {}): Promise<CodexRig> {
+  const slug = `x${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+  const paths = sandboxPaths(identity.home)
+  fs.mkdirSync(paths.codexDir, { recursive: true, mode: 0o700 })
+  fs.writeFileSync(path.join(paths.codexDir, 'config.toml'), 'model = "gpt-5"\n')
+  for (const [rel, content] of Object.entries(opts.hostFiles ?? {})) {
+    fs.mkdirSync(path.dirname(path.join(paths.codexDir, rel)), { recursive: true })
+    fs.writeFileSync(path.join(paths.codexDir, rel), content)
+  }
+
+  const prepared = prepareCodexConfig(paths, slug, identity.home)
+  if (!prepared.ok) throw new Error(`codex rig prepare failed: ${prepared.detail}`)
+  const mounts: Mount[] = codexMounts(paths, slug).map((m) => ({ ...m, provenance: 'app' }))
+  const container = await createTestContainer(d, identity, { slug, mounts, agentId: 'codex' })
+
+  return {
+    slug,
+    container,
+    codexDir: paths.codexDir,
+    state: path.join(paths.sandboxStateRoot, slug),
+    cleanup: async () => {
+      await removeTestContainer(d, container.name)
+      fs.rmSync(path.join(paths.sandboxStateRoot, slug), { recursive: true, force: true })
+      fs.rmSync(paths.codexDir, { recursive: true, force: true })
+    },
+  }
 }

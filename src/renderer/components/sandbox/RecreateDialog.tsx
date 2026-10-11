@@ -12,6 +12,7 @@ import {
   RECREATE_FAILURE_COPY,
   SANDBOX_UNAVAILABLE_COPY,
   recreateFailureMessage,
+  recreateTitle,
 } from '../../utils/sandbox-copy'
 
 // ---------------------------------------------------------------------------
@@ -108,7 +109,7 @@ export function RecreateDialog({ slug, plan: initialPlan, newPort = false, skin 
     setBusy(true)
     setError(null)
     try {
-      const result = await recreate(slug, newPort, plan.specHash)
+      const result = await recreate(slug, newPort, plan.specHash, plan.agentId)
       if (result.ok) {
         onRecreated()
         return
@@ -127,7 +128,7 @@ export function RecreateDialog({ slug, plan: initialPlan, newPort = false, skin 
         }
         return
       }
-      setError(recreateFailureMessage(result.code, 'detail' in result ? result.detail : null))
+      setError(recreateFailureMessage(result.code, 'detail' in result ? result.detail : null, plan.agentId))
     } catch {
       setError(SANDBOX_UNAVAILABLE_COPY)
     } finally {
@@ -148,7 +149,7 @@ export function RecreateDialog({ slug, plan: initialPlan, newPort = false, skin 
         <div className="absolute inset-0 bg-black/50" onClick={onCancel} />
         <div className={panelClass} style={panelStyle}>
           <h2 id={titleId} className="text-sm font-semibold">
-            {creating ? 'Create the sandbox?' : 'Recreate the sandbox?'}
+            {recreateTitle(creating, plan.agentId)}
           </h2>
 
           <div id={bodyId} className="space-y-2">

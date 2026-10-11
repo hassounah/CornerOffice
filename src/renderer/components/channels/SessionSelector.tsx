@@ -5,6 +5,8 @@ interface SessionSelectorProps {
   sessions: ChannelSession[]
   activeSessionId: string | null
   onSelect: (shortId: string) => void
+  /** Shown instead of "No active sessions" when the list is empty for a known reason (an agent without channels). */
+  emptyReason?: string
 }
 
 /** Map connection state to a color class for the status dot. */
@@ -43,6 +45,7 @@ export function SessionSelector({
   sessions,
   activeSessionId,
   onSelect,
+  emptyReason,
 }: SessionSelectorProps): React.ReactElement {
   const activeSession = sessions.find((s) => s.shortId === activeSessionId)
 
@@ -62,7 +65,7 @@ export function SessionSelector({
       >
         {sessions.length === 0 && (
           <option value="" disabled>
-            No active sessions
+            {emptyReason ?? 'No active sessions'}
           </option>
         )}
         {sessions.map((session) => {

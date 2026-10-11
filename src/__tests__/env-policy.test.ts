@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ENV_DENYLIST, sanitizedEnv } from '../main/services/env-policy'
+import { ENV_DENYLIST, NEVER_ALLOWED, isNeverAllowed, sanitizedEnv } from '../main/services/env-policy'
 
 describe('sanitizedEnv', () => {
   it('removes every denylisted key', () => {
@@ -16,6 +16,9 @@ describe('sanitizedEnv', () => {
       GITHUB_TOKEN: 'github-tok',
       NPM_TOKEN: 'npm-tok',
       OPENAI_API_KEY: 'oai-key',
+      CODEX_API_KEY: 'codex-key',
+      CODEX_ACCESS_TOKEN: 'codex-tok',
+      CODEX_GITHUB_PERSONAL_ACCESS_TOKEN: 'codex-gh',
       DATABASE_URL: 'postgres://...',
     }
     const env = sanitizedEnv(base)
@@ -23,6 +26,15 @@ describe('sanitizedEnv', () => {
       expect(env[key]).toBeUndefined()
     }
   })
+
+  it.each(['CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'CODEX_GITHUB_PERSONAL_ACCESS_TOKEN'])(
+    'denies the Codex secret %s by default and lets an agent re-admit it',
+    (key) => {
+      expect(ENV_DENYLIST.has(key)).toBe(true)
+      expect(sanitizedEnv({ [key]: 'v', PATH: '/usr/bin' })).toEqual({ PATH: '/usr/bin' })
+      expect(sanitizedEnv({ [key]: 'v' }, new Set([key]))).toEqual({ [key]: 'v' })
+    },
+  )
 
   it('keeps everything else', () => {
     const env = sanitizedEnv({ PATH: '/usr/bin', HOME: '/home/user', SHELL: '/bin/bash' })
@@ -39,5 +51,29 @@ describe('sanitizedEnv', () => {
     const env = sanitizedEnv({ PATH: '/usr/bin' })
     env.TERM = 'xterm-256color'
     expect(sanitizedEnv({ PATH: '/usr/bin' })).toEqual({ PATH: '/usr/bin' })
+  })
+
+  describe('allow', () => {
+    it('re-admits a denylisted, non-forbidden key', () => {
+      const env = sanitizedEnv({ OPENAI_API_KEY: 'k', GH_TOKEN: 't' }, new Set(['OPENAI_API_KEY']))
+      expect(env).toEqual({ OPENAI_API_KEY: 'k' })
+    })
+
+    it('never re-admits NODE_OPTIONS, LD_PRELOAD or ELECTRON_*', () => {
+      const base = { NODE_OPTIONS: 'x', LD_PRELOAD: 'y', ELECTRON_RUN_AS_NODE: '1', ELECTRON_NO_ASAR: '1' }
+      expect(sanitizedEnv(base, new Set(Object.keys(base)))).toEqual({})
+    })
+
+    it('ignores allow entries that are not on the denylist', () => {
+      expect(sanitizedEnv({ FOO: 'bar' }, new Set(['BAZ']))).toEqual({ FOO: 'bar' })
+    })
+  })
+})
+
+describe('isNeverAllowed', () => {
+  it('covers the fixed set and the ELECTRON_ prefix', () => {
+    for (const key of NEVER_ALLOWED) expect(isNeverAllowed(key)).toBe(true)
+    expect(isNeverAllowed('ELECTRON_ENABLE_LOGGING')).toBe(true)
+    expect(isNeverAllowed('OPENAI_API_KEY')).toBe(false)
   })
 })

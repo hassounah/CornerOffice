@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, within } from '@testing-library/react'
 import { useParams } from 'react-router'
 import type { Pipeline, Feature, IdeationItem, ShippedFeature, Workspace, TeamLevel } from '@main/types/workspace'
@@ -6,6 +6,11 @@ import type { Pipeline, Feature, IdeationItem, ShippedFeature, Workspace, TeamLe
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
+
+// The real overlay hosts xterm, which jsdom can't run; these tests only care whether the page mounts it.
+vi.mock('../../../renderer/components/terminal/TerminalOverlay', () => ({
+  TerminalOverlay: ({ workspaceSlug }: { workspaceSlug: string }) => <div data-testid="terminal-overlay">{workspaceSlug}</div>,
+}))
 
 vi.mock('react-markdown', () => ({
   default: ({ children }: { children: string }) => <div data-testid="markdown">{children}</div>,
@@ -905,6 +910,94 @@ describe('WorkspaceDetail', () => {
     }
   })
 
+  describe('terminal overlay mounting', () => {
+    function showOverlay(state: { sessions: 'none' | 'running'; exitBanner: string | null }): void {
+      useTerminalStore.setState({
+        sessions: { 'test-ws': state.sessions },
+        overlayVisible: { 'test-ws': true },
+        exitBanner: { 'test-ws': state.exitBanner },
+      })
+    }
+
+    afterEach(() => {
+      useTerminalStore.setState({ sessions: {}, overlayVisible: {}, exitBanner: {} })
+    })
+
+    it('mounts for a running session', () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace()]
+      showOverlay({ sessions: 'running', exitBanner: null })
+      render(<WorkspaceDetail />)
+      expect(screen.getByTestId('terminal-overlay')).toBeInTheDocument()
+    })
+
+    it('mounts after the session ended when an exit banner is set, so the banner can be shown', () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace()]
+      showOverlay({ sessions: 'none', exitBanner: 'codex command not found.' })
+      render(<WorkspaceDetail />)
+      expect(screen.getByTestId('terminal-overlay')).toBeInTheDocument()
+    })
+
+    it('stays unmounted for an ended session without a banner', () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace()]
+      showOverlay({ sessions: 'none', exitBanner: null })
+      render(<WorkspaceDetail />)
+      expect(screen.queryByTestId('terminal-overlay')).toBeNull()
+    })
+  })
+
+  describe('chat column by session agent (C6)', () => {
+    const CODEX_REASON = "Chat isn't available for Codex sessions yet."
+
+    function runSession(agent: 'claude' | 'codex' | null): void {
+      useTerminalStore.setState({
+        sessions: { 'test-ws': agent ? 'running' : 'none' },
+        sessionAgent: agent ? { 'test-ws': agent } : {},
+      })
+    }
+
+    beforeEach(() => {
+      ;(window.cornerOffice as unknown as { plugin: unknown }).plugin = {
+        getStatus: vi.fn().mockResolvedValue({ data: { claude: { installed: true }, codex: { installed: false } }, error: null }),
+      }
+    })
+
+    afterEach(() => {
+      useTerminalStore.setState({ sessions: {}, sessionAgent: {} })
+    })
+
+    it('swaps in the chat-unavailable state with the reason for a Codex session, with an empty session list and no dead button', async () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace()]
+      runSession('codex')
+      render(<WorkspaceDetail />)
+
+      const unavailable = await screen.findByTestId('chat-unavailable')
+      expect(within(unavailable).queryByRole('button', { name: 'Chat' })).toBeNull()
+      // The reason is the session list's empty state.
+      expect(within(unavailable).getByRole('option', { name: CODEX_REASON })).toBeDisabled()
+      expect(await screen.findByText(/Codex running · activity tracking off/)).toBeInTheDocument()
+    })
+
+    it('leaves a Claude session exactly as before: no swapped entry, no activity-tracking note', async () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace()]
+      runSession('claude')
+      render(<WorkspaceDetail />)
+
+      await act(async () => {})
+      expect(screen.queryByTestId('chat-unavailable')).toBeNull()
+      expect(screen.queryByTestId('activity-tracking-off')).toBeNull()
+      expect(window.cornerOffice.plugin.getStatus).not.toHaveBeenCalled()
+    })
+
+    it('shows no chat column without a live session', async () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace()]
+      runSession(null)
+      render(<WorkspaceDetail />)
+
+      await act(async () => {})
+      expect(screen.queryByTestId('chat-unavailable')).toBeNull()
+    })
+  })
+
   it('renders Browse Docs button', () => {
     mockWorkspaceStore.workspaces = [makeWorkspace()]
     render(<WorkspaceDetail />)
@@ -1092,10 +1185,13 @@ describe('WorkspaceDetail — sandbox sessions', () => {
       exists: (o.worktree ?? 'ready') !== 'absent',
       container: 'stopped',
       worktree: o.worktree ?? 'ready',
-      session: { state: o.state ?? 'idle', permissionMode: null, networkMode: null, lastExit: null },
+      session: { state: o.state ?? 'idle', agentId: null, permissionMode: null, networkMode: null, lastExit: null },
       git: { branch: 'feat/a', headShort: 'abc', ahead: 1, dirtyCount: 0, base: 'main' },
       recreatePending: false,
       recreatePlan: null,
+      containers: {},
+      agentReadiness: {},
+      recreatePlans: [],
       channel: 'none',
     }
   }
@@ -1121,7 +1217,7 @@ describe('WorkspaceDetail — sandbox sessions', () => {
     expect(sandboxApi.getStatus).toHaveBeenCalledWith('test-ws')
   })
 
-  it('Start Session opens the chooser instead of spawning, and Host starts the unchanged host session', async () => {
+  it('Start Session opens the chooser instead of spawning, and Host starts the default host session through the store', async () => {
     const spawn = vi.fn().mockResolvedValue(undefined)
     useTerminalStore.setState({ spawn })
     await act(async () => {
@@ -1131,10 +1227,11 @@ describe('WorkspaceDetail — sandbox sessions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start Session' }))
     expect(spawn).not.toHaveBeenCalled()
     const chooser = screen.getByRole('dialog', { name: 'Start a session' })
-    expect(within(chooser).getByRole('radio', { name: 'Host' })).toHaveAttribute('aria-checked', 'true')
+    // The form replaces the skeleton once the open-time fetch settles.
+    expect(await within(chooser).findByRole('radio', { name: 'Host' })).toHaveAttribute('aria-checked', 'true')
 
     fireEvent.click(within(chooser).getByRole('button', { name: 'Start' }))
-    expect(spawn).toHaveBeenCalledExactlyOnceWith('test-ws')
+    expect(spawn).toHaveBeenCalledExactlyOnceWith('test-ws', { kind: 'host', agentId: 'claude', permissionMode: 'default', fallbackFields: [] })
     expect(screen.queryByRole('dialog', { name: 'Start a session' })).toBeNull()
   })
 
@@ -1237,7 +1334,7 @@ describe('WorkspaceDetail — sandbox sessions', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Start Session' }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show log' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Show log' }))
 
     expect(useSandboxStore.getState().settingsRequest).toBe('test-ws')
     expect(mockNavigate).toHaveBeenCalledWith('/settings')

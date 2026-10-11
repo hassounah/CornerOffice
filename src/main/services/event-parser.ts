@@ -2,6 +2,8 @@ import log from 'electron-log/main'
 import crypto from 'crypto'
 import { z } from 'zod'
 import { readRegularFileCappedSync } from './safe-fs'
+import { AGENT_IDS } from '../agents/descriptors'
+import { AgentIdSchema } from '../agents/agent-id-schema'
 import type { HookEvent, HookEventName, ActivityFeedItem, ActivityType } from '../types'
 
 // Read at most 1 MB per call (H2, §10.8, Appendix C item 2); the rest is
@@ -59,9 +61,12 @@ const HookEventSchema = z.preprocess(normalizeLegacyFields, z.object({
     'PostCompact',
     'Elicitation',
     'ElicitationResult',
+    'Interrupt',
   ]),
   workspace: z.string(),
   sessionId: z.string(),
+  // Absent = claude (D14). Selects the shared classifier path only; never capability gating or provenance.
+  agent: AgentIdSchema.optional(),
   // Legacy field — kept for backward compat with older plugin versions
   data: z.record(z.string(), z.unknown()).optional().default({}),
 }).passthrough()) // Allow all additional fields from the full Claude Code payload
@@ -102,7 +107,17 @@ function getBoolField(event: HookEvent, field: string): boolean {
 // EventParserService
 // ---------------------------------------------------------------------------
 
+/** True when `raw` carries an `agent` value that is not a registered agent id. */
+function hasUnknownAgent(raw: unknown): boolean {
+  if (typeof raw !== 'object' || raw === null || !('agent' in raw)) return false
+  const agent = (raw as Record<string, unknown>).agent
+  return agent !== undefined && !(AGENT_IDS as readonly unknown[]).includes(agent)
+}
+
 export class EventParserService {
+  /** Files already warned about for an unknown `agent`: one warning per file (§4.10). */
+  private readonly _unknownAgentWarned = new Set<string>()
+
   /**
    * Read new lines from filePath starting at byteOffset.
    * Returns parsed events and the new byte offset.
@@ -159,6 +174,11 @@ export class EventParserService {
               )
             ),
           })
+        } else if (hasUnknownAgent(raw)) {
+          if (!this._unknownAgentWarned.has(filePath)) {
+            this._unknownAgentWarned.add(filePath)
+            log.warn('[EventParser] Dropping event(s) with an unknown agent in this file')
+          }
         } else {
           log.warn('[EventParser] Skipping event that failed schema validation')
         }
@@ -198,6 +218,7 @@ export class EventParserService {
 
       case 'SessionEnd':
       case 'StopFailure':
+      case 'Interrupt': // Codex (TRD §4.10): the shared switch, no per-agent hook
         return 'session_ended'
 
       case 'PreCompact':

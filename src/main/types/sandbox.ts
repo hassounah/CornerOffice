@@ -5,6 +5,8 @@
 // be imported from main, preload or renderer code alike.
 // ---------------------------------------------------------------------------
 
+import type { AgentId } from '../agents/descriptors'
+
 export type DockerState =
   | 'ok'
   | 'not-installed'
@@ -22,25 +24,18 @@ export interface SandboxEnvironment {
 }
 
 /**
- * §3.11 eligibility reason codes, plus two Gate 2 additions:
+ * §3.11 eligibility reason codes, plus a Gate 2 addition:
  *  - `sandbox-disabled`: the §6.3 kill switch. §3.11 had copy for this
  *    ("Sandbox is disabled in this build") but no code (Appendix C item 13);
  *    checked first, ahead of every other reason.
- *  - `claude-home-missing`: `~/.claude` (a directory) or `~/.claude.json`
- *    (a file) is missing on the host, or either is a symlink (TRD §14.5 #1).
- *    Checked after the Docker reasons but before any path or mount check
- *    (Appendix C item 10) — it preempts `unsafe-path`. CornerOffice never
- *    creates either path itself.
- *  - `claude-config-invalid` (#0030): an entry under `~/.claude` that the
- *    sandbox mounts over is a symlink or the wrong type. Checked right after
- *    `claude-home-missing`, with the same lstat rules Start's prepare uses.
+ * These describe the workspace and the host's Docker only. Whether an agent's
+ * own home is ready (for Claude: `~/.claude` and `~/.claude.json` present and
+ * real, #0037 D6) is `SandboxStatus.agentReadiness`, per agent.
  * The check order itself lives in `SandboxManager.getEligibility` (step 3.4),
  * not in this type.
  */
 export type EligibilityReason =
   | 'sandbox-disabled'
-  | 'claude-home-missing'
-  | 'claude-config-invalid'
   | 'docker-not-installed'
   | 'docker-daemon-down'
   | 'docker-no-permission'
@@ -74,7 +69,12 @@ export interface RecreatePlan {
   specHash: string
   newHostMounts: { path: string; readonly: boolean; source: 'settings' | 'memory.md' | 'app' }[]
   removedHostMounts: string[]
+  /** Which agent's container the plan is for. Always set by main. */
+  agentId: AgentId
 }
+
+/** A plan as the container check builds it; the manager adds the agent when it stores and reports it. */
+export type RecreatePlanBody = Omit<RecreatePlan, 'agentId'>
 
 export interface SandboxStatus {
   workspaceSlug: string
@@ -83,18 +83,30 @@ export interface SandboxStatus {
     | { ok: false; reason: EligibilityReason }
   /** Container or worktree present. */
   exists: boolean
+  /** The aggregate over `containers`: running if any is, else stopped if any is, else unknown if any is, else absent. */
   container: 'absent' | 'stopped' | 'running' | 'unknown'
+  /** One container per agent (D22), keyed by agent id. Always set by main. */
+  containers: Record<string, 'absent' | 'stopped' | 'running' | 'unknown'>
+  /**
+   * Per agent: `null` when it can start in the sandbox, else the handler's readiness `code`, which keys
+   * `descriptor.copy.readiness` (the one source of the message, UX-M8). Always set by main.
+   */
+  agentReadiness: Record<string, { code: string } | null>
   worktree: 'absent' | 'ready' | 'missing' | 'corrupt'
   session: {
     state: SessionState
+    /** The agent of the current session; `null` when there is none. */
+    agentId: AgentId | null
     permissionMode: 'skip' | 'auto' | null
     networkMode: 'allowlist' | 'open' | null
     lastExit: { kind: 'unexpected'; reason: 'docker-unavailable' | 'exited'; at: string } | null
   }
   git: { branch: string | null; headShort: string | null; ahead: number; dirtyCount: number; base: string } | null
   recreatePending: boolean
-  /** Non-null => the next start returns `RECREATE_REQUIRED`. */
+  /** Non-null => the next start returns `RECREATE_REQUIRED`. The last-started agent's plan, kept for compatibility; see `recreatePlans`. */
   recreatePlan: RecreatePlan | null
+  /** Every agent's pending plan, each tagged with its `agentId`. Always set by main. */
+  recreatePlans: RecreatePlan[]
   /**
    * `unavailable` (TRD §14.5 #5, SEC-H4): this workspace's sandbox channel
    * card was rejected (for example a `shortId`/filename mismatch).
@@ -130,10 +142,13 @@ export type StartResult =
         | 'DOCKER_UNAVAILABLE'
         | 'FIREWALL_FAILED'
         | 'SPAWN_FAILED'
-        | 'CLAUDE_CONFIG_INVALID'
       /** Fixed copy, never raw stderr. */
       detail: string | null
     }
+  /** The agent's config under its home couldn't be prepared. `detail` is fixed copy built by the handler. */
+  | { ok: false; code: 'AGENT_CONFIG_INVALID'; detail: string | null; agentId: AgentId }
+  /** The agent isn't ready to run in the sandbox yet; `readiness` keys `descriptor.copy.readiness`. */
+  | { ok: false; code: 'AGENT_NOT_READY'; detail: null; agentId: AgentId; readiness: string }
 
 export type HandOffResult =
   | { ok: true }
@@ -144,6 +159,8 @@ export interface DeletePreview {
   sessionRunning: boolean
   dirtyCount: number
   unmergedBranches: string[]
+  /** Quarantine folders (user-visible paths) that hold files and are kept by Delete. */
+  quarantineFolders: string[]
 }
 
 export type DeleteResult = { ok: true } | { ok: false; code: 'SESSION_RUNNING' | 'DIRTY_NOT_ACKNOWLEDGED' | 'FAILED' }
@@ -151,8 +168,8 @@ export type DeleteResult = { ok: true } | { ok: false; code: 'SESSION_RUNNING' |
 export type RecreateResult =
   | { ok: true }
   | { ok: false; code: 'SESSION_RUNNING' | 'PLAN_CHANGED' | 'FAILED' | 'DOCKER_UNAVAILABLE' }
-  /** `detail` is fixed copy built by `claudeConfigDetail`, never a raw path or file content. */
-  | { ok: false; code: 'CLAUDE_CONFIG_INVALID'; detail: string | null }
+  /** `detail` is fixed copy built by the agent's handler, never a raw path or file content. */
+  | { ok: false; code: 'AGENT_CONFIG_INVALID'; detail: string | null; agentId: AgentId }
 
 /** `sandbox:buildImage` outcome. `detail` is fixed copy, never raw docker output. */
 export type BuildImageResult = { ok: true } | { ok: false; cancelled: boolean; detail: string | null }
@@ -184,6 +201,13 @@ export type SandboxNotice =
   | { kind: 'container-recreated'; slug: string }
   /** `slug` is the workspace whose Start asked for the build, or null when none is known. */
   | { kind: 'image-ready'; slug: string | null }
+  /**
+   * The agent's guard moved `count` new files out of its home (D9). `file` is the original name when exactly one moved
+   * and the name is plain; `destination` is where that one went. Both are null for several.
+   */
+  | { kind: 'agent-files-quarantined'; slug: string; agentId: AgentId; count: number; file: string | null; destination: string | null }
+  /** The agent's guard could not finish checking its home (too many entries to walk). Nothing was deleted; it checks again later. */
+  | { kind: 'agent-guard-incomplete'; slug: string; agentId: AgentId; lostBaseline?: boolean }
 
 // ── Push payloads ───────────────────────────────────────────────────────────
 

@@ -24,6 +24,8 @@ import {
   DOCS_CHANNELS,
   CHANNEL_IPC,
   TERMINAL_IPC,
+  SESSION_IPC,
+  AGENTS_IPC,
   PLUGIN_IPC,
   SHELL_IPC,
   CODE_CHANNELS,
@@ -72,8 +74,10 @@ import {
   SandboxGetSettingsSchema,
   SandboxUpdateSettingsSchema,
   SandboxGetBlockedSchema,
+  SessionGetDefaultsSchema,
+  AgentsGetHostAvailabilitySchema,
 } from './schemas'
-import type { DocsListTreeInput, DocsReadFileInput, DocsWriteFileInput } from './schemas'
+import type { DocsListTreeInput, DocsReadFileInput, DocsWriteFileInput, TerminalSpawnInput } from './schemas'
 import type { SandboxManagerService } from '../services/sandbox-manager'
 import type { TerminalManagerService } from '../services/terminal-manager'
 import type { IpcResponse } from '../types/ipc'
@@ -91,9 +95,16 @@ import type {
 } from '../types'
 import { WorkspaceDiscoveryService } from '../services/workspace-discovery'
 import { configManager } from '../services/config-manager'
+import { getSessionDefaults, recordSessionStart } from '../services/session-defaults'
+import type { SessionStart } from '../services/session-defaults'
+import { getHostAvailability } from '../agents/availability'
+import { resolveRealHome, sandboxPaths } from '../services/sandbox-paths'
+import { AGENT_IDS } from '../agents/descriptors'
+import type { AgentId } from '../agents/descriptors'
+import { getHandler } from '../agents/registry'
 import { stateCacheService } from '../services/state-cache'
 import type { ChannelDiscoveryService } from '../services/channel-discovery'
-import type { PluginDetectorService } from '../services/plugin-detector'
+import { pluginDetectorService } from '../services/plugin-detector'
 import type { ChannelConnectionService } from '../services/channel-connection'
 import type { PluginStatus } from '../types'
 
@@ -242,6 +253,14 @@ export function registerHandlers(codeHandlerDeps?: {
     wrapHandler(notReadyStub(), TerminalSpawnSchema) as HandlerFn,
   )
   ipcMain.handle(
+    SESSION_IPC.GET_DEFAULTS,
+    wrapHandler(notReadyStub(), SessionGetDefaultsSchema) as HandlerFn,
+  )
+  ipcMain.handle(
+    AGENTS_IPC.GET_HOST_AVAILABILITY,
+    wrapHandler(notReadyStub(), AgentsGetHostAvailabilitySchema) as HandlerFn,
+  )
+  ipcMain.handle(
     TERMINAL_IPC.WRITE,
     wrapHandler(notReadyStub(), TerminalWriteSchema) as HandlerFn,
   )
@@ -356,7 +375,6 @@ export interface AppState {
   discoveryService: WorkspaceDiscoveryService
   // Channels integration (Phase 1+)
   channelDiscovery: ChannelDiscoveryService | null
-  pluginDetector: PluginDetectorService | null
   channelConnection: ChannelConnectionService | null
   // Terminal integration
   terminalManager: TerminalManagerService | null
@@ -376,6 +394,9 @@ function slugToTitle(slug: string): string {
 export function buildRealHandlers(
   appState: AppState,
   getMainWindow: () => BrowserWindow | null,
+  deps: { recordSessionStart: (start: SessionStart) => void } = {
+    recordSessionStart: (start) => recordSessionStart(configManager, () => new Set(appState.workspaces.keys()), start),
+  },
 ): Partial<Record<string, HandlerFn>> {
   // Outbound rate limit state: 10 messages/s per session
   const _sendRateMap = new Map<string, { count: number; windowStart: number }>()
@@ -676,25 +697,23 @@ export function buildRealHandlers(
       return sessions
     }) as HandlerFn,
 
+    // One status per agent, keyed by agent id. An agent without a plugin reports "not installed".
     [PLUGIN_IPC.GET_STATUS]: wrapHandler(async (_input: unknown) => {
-      const defaultEmpty: PluginStatus = { installed: false, meetsMinimumVersion: false, eventsEnabled: false }
-      return appState.pluginDetector != null
-        ? await appState.pluginDetector.getStatus()
-        : defaultEmpty
+      const notInstalled: PluginStatus = { installed: false, meetsMinimumVersion: false, eventsEnabled: false }
+      const entries = await Promise.all(AGENT_IDS.map(async (id) => [id, (await getHandler(id).plugin?.detect()) ?? notInstalled] as const))
+      return Object.fromEntries(entries) as Record<AgentId, PluginStatus>
     }) as HandlerFn,
 
     [PLUGIN_IPC.INSTALL_HOOKS]: wrapHandler(async (_input: unknown) => {
-      if (appState.pluginDetector == null) throw new Error('Plugin detector not initialized')
       log.info('[IPC] plugin:installHooks — installing event hooks')
-      await appState.pluginDetector.installHooks()
+      await pluginDetectorService.installHooks()
       log.info('[IPC] plugin:installHooks — done')
       return { installed: true }
     }) as HandlerFn,
 
     [PLUGIN_IPC.UNINSTALL_HOOKS]: wrapHandler(async (_input: unknown) => {
-      if (appState.pluginDetector == null) throw new Error('Plugin detector not initialized')
       log.info('[IPC] plugin:uninstallHooks — removing event hooks')
-      await appState.pluginDetector.uninstallHooks()
+      await pluginDetectorService.uninstallHooks()
       log.info('[IPC] plugin:uninstallHooks — done')
       return { uninstalled: true }
     }) as HandlerFn,
@@ -750,11 +769,34 @@ export function buildRealHandlers(
     // ─── Terminal ─────────────────────────────────────────────────────────────
 
     [TERMINAL_IPC.SPAWN]: wrapHandler(
-      async ({ workspaceSlug, cols, rows }: { workspaceSlug: string; cols: number; rows: number }) => {
+      async ({ workspaceSlug, cols, rows, agentId, permissionMode, fallbackFields }: TerminalSpawnInput) => {
         if (!appState.terminalManager) throw new Error('Terminal manager not initialized')
-        return appState.terminalManager.spawn({ workspaceSlug, cols, rows })
+        const result = appState.terminalManager.spawn({ workspaceSlug, cols, rows, agentId, permissionMode })
+        // After the spawn succeeded: recording is fire-and-forget and can never fail the start. A start of an agent the
+        // PATH check can't find is not remembered: it will most likely exit 127, and the next chooser should not offer it again.
+        if (getHostAvailability()[agentId] !== 'not-found') {
+          deps.recordSessionStart({
+            workspaceSlug,
+            agentId,
+            location: 'host',
+            permissionMode,
+            fallbackFields,
+          })
+        }
+        return result
       },
       TerminalSpawnSchema,
+    ) as HandlerFn,
+
+    [AGENTS_IPC.GET_HOST_AVAILABILITY]: wrapHandler(
+      async (_input: Record<string, never>) => getHostAvailability({ writableRoots: sandboxPaths(resolveRealHome()).rwMountRoots }),
+      AgentsGetHostAvailabilitySchema,
+    ) as HandlerFn,
+
+    [SESSION_IPC.GET_DEFAULTS]: wrapHandler(
+      async ({ workspaceSlug }: { workspaceSlug: string }) =>
+        getSessionDefaults(configManager.loadConfig() ?? configManager.getDefaultConfig(), workspaceSlug),
+      SessionGetDefaultsSchema,
     ) as HandlerFn,
 
     [TERMINAL_IPC.WRITE]: wrapHandler(

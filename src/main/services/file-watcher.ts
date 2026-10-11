@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import chokidar, { FSWatcher } from 'chokidar'
+import { sandboxEventSlug } from './event-attribution'
 
 // ---------------------------------------------------------------------------
 // Debounce helper
@@ -17,6 +18,22 @@ function debounce<T extends (...args: unknown[]) => void>(fn: T, ms: number): T 
       fn(...args)
     }, ms)
   }) as T
+}
+
+/** One timer per key: two files that change within `ms` of each other are each reported once, instead of the earlier one being dropped. */
+function debouncePerKey(fn: (key: string) => void, ms: number): (key: string) => void {
+  const timers = new Map<string, ReturnType<typeof setTimeout>>()
+  return (key: string) => {
+    const pending = timers.get(key)
+    if (pending) clearTimeout(pending)
+    timers.set(
+      key,
+      setTimeout(() => {
+        timers.delete(key)
+        fn(key)
+      }, ms),
+    )
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +76,21 @@ export const CHOKIDAR_OPTIONS = {
   followSymlinks: false,
 } as const
 
+/**
+ * D23: whether chokidar should look at `candidate` under the sandbox state root at all: the root itself, a slug
+ * directory, its `events` directory, and files directly inside that. Everything else in a slug's state is skipped.
+ */
+export function isSandboxEventPathCandidate(sandboxStateRoot: string, candidate: string): boolean {
+  const relative = path.relative(sandboxStateRoot, candidate)
+  if (relative === '') return true
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return false
+  const parts = relative.split(path.sep)
+  if (!/^[a-zA-Z0-9_-]+$/.test(parts[0])) return false
+  if (parts.length === 1) return true
+  if (parts[1] !== 'events') return false
+  return parts.length <= 3
+}
+
 // Files that trigger rix state re-parse
 const RIX_STATE_FILES = new Set(['memory.md', 'history.md'])
 
@@ -73,6 +105,9 @@ export class FileWatcherService {
   private _readmeWatchers = new Map<string, FSWatcher>()   // workspacePath -> watcher
   private _homunculusWatcher: FSWatcher | null = null
   private _eventStreamWatcher: FSWatcher | null = null
+  /** D23: the second events root, `<sandboxStateRoot>/<slug>/events`, where containers write. Anything seen there is `sandbox`. */
+  private _sandboxEventWatcher: FSWatcher | null = null
+  private _sandboxStateRoot: string | null
   private _totalWatchCount = 0
   private _inotifyWarned = false
   private _readInotifyMax: () => number | null
@@ -82,9 +117,10 @@ export class FileWatcherService {
   // one external contributor can report independently.
   private _externalWatchCounts = new Map<string, number>()
 
-  constructor(callbacks: FileWatcherCallbacks, opts: { readInotifyMax?: () => number | null } = {}) {
+  constructor(callbacks: FileWatcherCallbacks, opts: { readInotifyMax?: () => number | null; sandboxStateRoot?: string } = {}) {
     this._callbacks = callbacks
     this._readInotifyMax = opts.readInotifyMax ?? readInotifyMax
+    this._sandboxStateRoot = opts.sandboxStateRoot ?? null
   }
 
   /**
@@ -110,6 +146,7 @@ export class FileWatcherService {
   startGlobal(): void {
     this._startHomunculusWatcher()
     this._startEventStreamWatcher()
+    this._startSandboxEventWatcher()
     this._checkInotifyLimit()
   }
 
@@ -154,12 +191,14 @@ export class FileWatcherService {
     }
     this._homunculusWatcher?.close().catch(() => { /* ignore */ })
     this._eventStreamWatcher?.close().catch(() => { /* ignore */ })
+    this._sandboxEventWatcher?.close().catch(() => { /* ignore */ })
 
     this._rixWatchers.clear()
     this._docsWatchers.clear()
     this._readmeWatchers.clear()
     this._homunculusWatcher = null
     this._eventStreamWatcher = null
+    this._sandboxEventWatcher = null
     this._externalWatchCounts.clear()
     this._totalWatchCount = 0
   }
@@ -328,10 +367,7 @@ export class FileWatcherService {
     const eventsDir = path.join(os.homedir(), '.corner-office', 'events')
     if (!fs.existsSync(eventsDir)) return
 
-    const debouncedPush = debounce(
-      (filePath: unknown) => this._callbacks.onEventStreamChange(filePath as string),
-      100
-    )
+    const debouncedPush = debouncePerKey((filePath) => this._callbacks.onEventStreamChange(filePath), 100)
 
     // Valid workspace directory names: alphanumeric, hyphens, underscores only
     const VALID_DIR_RE = /^[a-zA-Z0-9_-]+$/
@@ -360,6 +396,43 @@ export class FileWatcherService {
     this._recalcWatchCount()
   }
 
+  /**
+   * D23: watches only `<root>/<slug>/events/*.jsonl` under the sandbox state root. Everything else in the state
+   * directory (channel cards, Claude config copies, shadow dirs) is excluded before chokidar descends into it, and the
+   * callback filter re-checks the exact shape, so no other file can reach the event pipeline from here.
+   */
+  private _startSandboxEventWatcher(): void {
+    const root = this._sandboxStateRoot
+    if (!root || this._sandboxEventWatcher) return
+    try {
+      fs.mkdirSync(root, { recursive: true, mode: 0o700 })
+    } catch (err) {
+      log.warn('[FileWatcher] Could not create the sandbox state root; sandbox events are not watched:', err)
+      return
+    }
+
+    const debouncedPush = debouncePerKey((filePath) => this._callbacks.onEventStreamChange(filePath), 100)
+    const handleEventFile = (filePath: string): void => {
+      if (sandboxEventSlug(root, filePath) === null) return
+      debouncedPush(filePath)
+    }
+
+    const watcher = chokidar.watch(root, {
+      ...CHOKIDAR_OPTIONS,
+      depth: 2,
+      ignored: (candidate: string) => !isSandboxEventPathCandidate(root, candidate),
+    })
+    watcher
+      .on('change', handleEventFile)
+      .on('add', handleEventFile)
+      .on('error', (err: unknown) => {
+        log.warn('[FileWatcher] Sandbox event watcher error:', err)
+      })
+
+    this._sandboxEventWatcher = watcher
+    this._recalcWatchCount()
+  }
+
   // ---------------------------------------------------------------------------
   // Inotify limit check
   // ---------------------------------------------------------------------------
@@ -373,6 +446,7 @@ export class FileWatcherService {
       this._readmeWatchers.size +
       (this._homunculusWatcher ? 1 : 0) +
       (this._eventStreamWatcher ? 1 : 0) +
+      (this._sandboxEventWatcher ? 1 : 0) +
       externalTotal
   }
 

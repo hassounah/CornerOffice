@@ -164,4 +164,102 @@ describe('ConfigManager durability (real filesystem)', () => {
       }
     })
   })
+
+  describe('ensureEventsSplitAt (#0037 D7, D23)', () => {
+    it('records the split once and returns the same value afterwards', async () => {
+      manager.saveConfig(manager.getDefaultConfig())
+      const first = await manager.ensureEventsSplitAt(new Date('2026-06-01T00:00:00.000Z'))
+      const second = await manager.ensureEventsSplitAt(new Date('2026-09-09T00:00:00.000Z'))
+
+      expect(first).toBe('2026-06-01T00:00:00.000Z')
+      expect(second).toBe(first)
+      expect(manager.loadConfig()?.sandbox?.eventsSplitAt).toBe(first)
+    })
+
+    it('keeps the rest of an existing sandbox section', async () => {
+      const cfg = manager.getDefaultConfig()
+      manager.saveConfig({ ...cfg, sandbox: { toolchains: { node: false, go: true, buildBase: true }, globalAllowlist: ['example.com'], workspaces: {} } })
+
+      await manager.ensureEventsSplitAt(new Date('2026-06-01T00:00:00.000Z'))
+
+      expect(manager.loadConfig()?.sandbox).toMatchObject({ toolchains: { node: false }, globalAllowlist: ['example.com'], eventsSplitAt: '2026-06-01T00:00:00.000Z' })
+    })
+
+    it('a sandbox section saved without the field loads with a null split', () => {
+      const cfg = manager.getDefaultConfig()
+      manager.saveConfig({ ...cfg, sandbox: { toolchains: { node: true, go: true, buildBase: true }, globalAllowlist: [], workspaces: {} } })
+      expect(manager.loadConfig()?.sandbox?.eventsSplitAt).toBeNull()
+    })
+
+    it('returns null, without throwing, when the config cannot be written', async () => {
+      vi.spyOn(manager, 'mutateConfig').mockRejectedValueOnce(new Error('disk full'))
+      await expect(manager.ensureEventsSplitAt(new Date())).resolves.toBeNull()
+    })
+  })
+
+  describe('mutateConfig (#0037 B1)', () => {
+    const choice = {
+      agentId: 'claude',
+      location: 'host',
+      hostPermissionMode: 'default',
+      sandboxPermissionMode: 'skip',
+      networkMode: 'allowlist',
+    } as const
+
+    it('persists 10 concurrent read-modify-write calls', async () => {
+      manager.saveConfig(manager.getDefaultConfig())
+
+      await Promise.all(
+        Array.from({ length: 10 }, (_, i) =>
+          manager.mutateConfig((cfg) => ({
+            ...cfg,
+            sessionDefaults: {
+              last: choice,
+              workspaces: { ...cfg.sessionDefaults?.workspaces, [`ws-${i}`]: choice },
+            },
+          })),
+        ),
+      )
+
+      const loaded = manager.loadConfig()!
+      expect(Object.keys(loaded.sessionDefaults!.workspaces).sort()).toEqual(
+        Array.from({ length: 10 }, (_, i) => `ws-${i}`).sort(),
+      )
+    })
+
+    it('creates the file when absent and returns the updated config', async () => {
+      const updated = await manager.mutateConfig((cfg) => ({ ...cfg, companyName: 'Acme' }))
+      expect(updated.companyName).toBe('Acme')
+      expect(manager.loadConfig()!.companyName).toBe('Acme')
+    })
+
+    it('a throwing mutation rejects its own call but does not block the next', async () => {
+      manager.saveConfig(manager.getDefaultConfig())
+      const failing = manager.mutateConfig(() => {
+        throw new Error('boom')
+      })
+      const next = manager.mutateConfig((cfg) => ({ ...cfg, companyName: 'After' }))
+      await expect(failing).rejects.toThrow('boom')
+      await expect(next).resolves.toMatchObject({ companyName: 'After' })
+      expect(manager.loadConfig()!.companyName).toBe('After')
+    })
+
+    it('updateConfig shares the queue: a burst of updateConfig and mutateConfig calls all persist, in order', async () => {
+      manager.saveConfig(manager.getDefaultConfig())
+
+      const calls = Array.from({ length: 12 }, (_, i) =>
+        i % 2 === 0 ? manager.updateConfig({ companyName: `name-${i}` }) : manager.mutateConfig((cfg) => ({ ...cfg, companyName: `name-${i}` })),
+      )
+      await Promise.all(calls)
+
+      expect(manager.loadConfig()!.companyName).toBe('name-11')
+    })
+
+    it('updateConfig creates the file when absent, keeps the other fields, and still sanitizes the realm', async () => {
+      const updated = await manager.updateConfig({ companyName: 'Acme' })
+      expect(updated.companyName).toBe('Acme')
+      expect(updated.realm).toEqual(manager.getDefaultConfig().realm)
+      expect(manager.loadConfig()!.companyName).toBe('Acme')
+    })
+  })
 })

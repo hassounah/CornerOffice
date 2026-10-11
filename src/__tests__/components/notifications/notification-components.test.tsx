@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { NotificationItem } from '@main/types/gamification'
+import { expectNoAxeViolations } from '../../helpers/a11y'
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -308,6 +309,26 @@ describe('NotificationItem — sandbox provenance', () => {
     expect(screen.getByText('(from the sandbox)')).toBeInTheDocument()
     expect(screen.queryByText(/for \)/)).toBeNull()
     expect(screen.getByText('Sandbox image is ready')).toBeInTheDocument()
+  })
+
+  it('a quarantine notice (D9) renders its copy as plain text with a copy button for the mv command, with no axe violations', async () => {
+    const body =
+      'Codex in the sandbox added AGENTS.override.md to ~/.codex. Codex on your computer could load it, so Corner Office moved it to ~/.corner-office/sandbox/ws/codex-quarantine/AGENTS.override.md-1. Nothing was deleted. If you trust it, review it and then move it back.'
+    const command = 'mv ~/.corner-office/sandbox/ws/codex-quarantine/AGENTS.override.md-1 ~/.codex/AGENTS.override.md'
+    const { container } = render(
+      <ul>
+        <NotificationItemComponent item={makeNotification({ tier: 'requiresAction', title: 'Files moved out of ~/.codex', body, command, source: 'sandbox' })} />
+      </ul>,
+    )
+    expect(screen.getByText(body)).toBeInTheDocument()
+    expect(screen.getByText(command)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `Copy command ${command}` })).toBeInTheDocument()
+    await expectNoAxeViolations(container)
+  })
+
+  it('shows no copy button when the notice has no command', () => {
+    render(<ul><NotificationItemComponent item={makeNotification({ source: 'sandbox' })} /></ul>)
+    expect(screen.queryByRole('button', { name: /^Copy command/ })).toBeNull()
   })
 
   it('renders an agent-influenced title as plain text next to the tag', () => {

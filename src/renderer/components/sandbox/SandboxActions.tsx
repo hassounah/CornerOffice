@@ -6,7 +6,7 @@ import { DisabledReason } from '../shared/DisabledReason'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { RefName } from '../code/RefName'
 import { RecreateDialog } from './RecreateDialog'
-import { DELETE_FAILURE_COPY, HAND_OFF_FAILURE_COPY, RECREATE_FAILURE_COPY, RECREATED_COPY, SANDBOX_UNAVAILABLE_COPY, STILL_STOPPING, isSessionStopping } from '../../utils/sandbox-copy'
+import { DELETE_FAILURE_COPY, deleteConfirmCopy, HAND_OFF_FAILURE_COPY, RECREATE_FAILURE_COPY, RECREATED_COPY, SANDBOX_UNAVAILABLE_COPY, STILL_STOPPING, isSessionStopping } from '../../utils/sandbox-copy'
 
 // ---------------------------------------------------------------------------
 // SandboxActions — Hand off branch, Delete sandbox and Recreate (TRD §3.15.2,
@@ -32,7 +32,8 @@ export interface SandboxActionsProps {
 
 const HANDED_OFF_COPY = 'Handed off. The branch is free to check out.'
 const SESSION_NOTE = "The agent's next commits won't be on this branch."
-const DELETE_BRANCHES_COPY = 'These branches stay in your repository; review or merge them first.'
+const DELETE_QUARANTINE_COPY = 'Files an agent added to your agent folder were moved aside, and Delete keeps them. You can review or remove them here:'
+const DELETE_BRANCHES_COPY ='These branches stay in your repository; review or merge them first.'
 
 /** Used to ask main for the current plan when only `recreatePending` is known: no real plan hash can equal it, so main answers PLAN_CHANGED and exposes the plan in the status. */
 const PLAN_PROBE_HASH = '0'.repeat(64)
@@ -288,7 +289,20 @@ function DeleteDialog({
             Delete the sandbox?
           </h2>
           <div id={bodyId} className="space-y-2">
-            <p>This removes the sandbox container and its worktree.</p>
+            <p>{deleteConfirmCopy()}</p>
+
+            {preview.quarantineFolders.length > 0 && (
+              <div data-testid="delete-quarantine-note">
+                <p>{DELETE_QUARANTINE_COPY}</p>
+                <ul className="mt-1 space-y-0.5 text-xs">
+                  {preview.quarantineFolders.map((folder) => (
+                    <li key={folder}>
+                      <code>{folder}</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             {preview.unmergedBranches.length > 0 && (
               <div>

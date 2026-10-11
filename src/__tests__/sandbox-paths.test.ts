@@ -84,13 +84,19 @@ describe('sandbox-paths', () => {
       }
     })
 
-    it('rwMountRoots is exactly claudeDir, sandboxesRoot, sandboxStateRoot and eventsRoot', async () => {
+    it('rwMountRoots is exactly every agent home dir (claudeDir, codexDir), sandboxesRoot, sandboxStateRoot and eventsRoot', async () => {
       const { sandboxPaths } = await import('../main/services/sandbox-paths')
       const paths = sandboxPaths(path.join(path.sep, 'home', 'test'))
 
-      expect(paths.rwMountRoots).toEqual([paths.claudeDir, paths.sandboxesRoot, paths.sandboxStateRoot, paths.eventsRoot])
+      expect(paths.codexDir).toBe(path.join(path.sep, 'home', 'test', '.codex'))
+      expect(paths.rwMountRoots).toEqual([paths.claudeDir, paths.codexDir, paths.sandboxesRoot, paths.sandboxStateRoot, paths.eventsRoot])
       // claudeJson is a single-file bind mount, not a directory root — must not be a refusal root.
       expect(paths.rwMountRoots).not.toContain(paths.claudeJson)
+    })
+
+    it('hiddenHomeSegments is .corner-office plus every agent home entry (security-reviewed snapshot)', async () => {
+      const { hiddenHomeSegments } = await import('../main/services/sandbox-paths')
+      expect(hiddenHomeSegments()).toEqual(['.corner-office', '.claude', '.claude.json', '.codex'])
     })
 
     it('every returned path (and every rwMountRoots entry) sits under a symlinked realHome once resolved', async () => {

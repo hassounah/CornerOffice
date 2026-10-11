@@ -1,4 +1,6 @@
 import type { IPty } from 'node-pty'
+import type { AgentId } from '../agents/descriptors'
+import type { AppPermissionMode } from '../agents/types'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -15,6 +17,8 @@ export interface TerminalSession {
   workspaceSlug: string
   /** §3.12: the map stays keyed by workspaceSlug, enforcing one session per workspace across both kinds. */
   kind: TerminalSessionKind
+  /** The agent this session runs; unset for plain shells and (until A6) sandbox sessions. */
+  agentId?: AgentId
   pty: IPty
   scrollback: string
   pendingData: string
@@ -27,6 +31,10 @@ export interface TerminalSpawnOptions {
   workspaceSlug: string
   cols: number
   rows: number
+  /** Defaults to `claude`. */
+  agentId?: AgentId
+  /** Defaults to `default`; must be one of the agent's host modes. */
+  permissionMode?: AppPermissionMode
 }
 
 export interface TerminalSpawnResult {

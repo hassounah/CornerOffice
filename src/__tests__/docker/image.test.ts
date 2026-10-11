@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import {
+  TEST_IMAGE,
   dockerOk,
   docker,
   makeIdentity,
@@ -57,6 +58,11 @@ describe.skipIf(!process.env.CO_DOCKER_TESTS || !dockerOk())('sandbox image — 
     // unrelated system paths that would drown out the actual assertion.
     const result = await d.run(execAsRootArgv(container.name, ['find', '/', '-xdev', '-perm', '/6000', '-type', 'f']))
     expect(result.stdout.trim()).toBe('')
+  })
+
+  it('the image is labelled with both agents it holds (#0037)', async () => {
+    const result = await d.run(['image', 'inspect', '--format', '{{ index .Config.Labels "co.sandbox.agents" }}', TEST_IMAGE])
+    expect(result.stdout.trim().split(',')).toEqual(expect.arrayContaining(['claude', 'codex']))
   })
 
   it('$HOME/.corner-office/{sandboxes,events} are pre-created and agent-owned (TRD §14.6 #13)', async () => {

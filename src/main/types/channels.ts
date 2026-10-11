@@ -4,8 +4,7 @@ import { z } from 'zod'
 // Constants
 // ────────────────────────────────────────────────────────────
 
-/** Minimum plugin version that supports the channels protocol. */
-export const MINIMUM_PLUGIN_VERSION = '1.31.0'
+export { MINIMUM_PLUGIN_VERSION } from './plugin-version'
 
 /** Valid short-ID format: alphanumeric + hyphens, 1–64 chars. */
 export const SHORTID_REGEX = /^[a-zA-Z0-9-]{1,64}$/

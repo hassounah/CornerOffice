@@ -54,10 +54,13 @@ import React from 'react'
 import type { Workspace } from '@main/types/workspace'
 import type { ActivityFeedItem } from '@main/types/events'
 import { WorkspaceCard } from '../../../renderer/components/dashboard/WorkspaceCard'
+import { ActivityTrackingNote } from '../../../renderer/components/shared/ActivityTrackingNote'
+import { expectNoAxeViolations } from '../../helpers/a11y'
 import { ActivityFeed } from '../../../renderer/components/dashboard/ActivityFeed'
 import { ActivityItem } from '../../../renderer/components/dashboard/ActivityItem'
 import { useSettingsStore } from '../../../renderer/stores/settings-store'
 import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
+import { useTerminalStore } from '../../../renderer/stores/terminal-store'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -105,6 +108,105 @@ function makeActivityItem(overrides: Partial<ActivityFeedItem> = {}): ActivityFe
 // ---------------------------------------------------------------------------
 // WorkspaceCard
 // ---------------------------------------------------------------------------
+
+describe('WorkspaceCard activity tracking note (#0037 C6)', () => {
+  const getPluginStatus = vi.fn()
+
+  beforeEach(() => {
+    Object.defineProperty(window, 'cornerOffice', { value: { plugin: { getStatus: getPluginStatus } }, writable: true, configurable: true })
+    getPluginStatus.mockReset()
+    useTerminalStore.setState({ sessions: {}, sessionAgent: {} })
+  })
+
+  const plugin = (codexInstalled: boolean) => ({
+    data: {
+      claude: { installed: true, meetsMinimumVersion: true, eventsEnabled: true },
+      codex: { installed: codexInstalled, meetsMinimumVersion: codexInstalled, eventsEnabled: false },
+    },
+    error: null,
+  })
+
+  // UX-M10: the note lives in the workspace and terminal headers only, not on every card.
+  it('shows no activity-tracking note on the card, even for a Codex session without its plugin, and never asks for plugin status', () => {
+    getPluginStatus.mockResolvedValue(plugin(false))
+    useTerminalStore.setState({ sessions: { 'test-ws': 'running' }, sessionAgent: { 'test-ws': 'codex' } })
+
+    render(<WorkspaceCard workspace={makeWorkspace()} />)
+
+    expect(screen.queryByTestId('activity-tracking-off')).not.toBeInTheDocument()
+    expect(getPluginStatus).not.toHaveBeenCalled()
+  })
+})
+
+describe('ActivityTrackingNote (#0037 C6, UX-M10)', () => {
+  const getPluginStatus = vi.fn()
+
+  beforeEach(() => {
+    Object.defineProperty(window, 'cornerOffice', { value: { plugin: { getStatus: getPluginStatus } }, writable: true, configurable: true })
+    getPluginStatus.mockReset()
+    useTerminalStore.setState({ sessions: {}, sessionAgent: {} })
+  })
+
+  const plugin = (codexInstalled: boolean) => ({
+    data: {
+      claude: { installed: true, meetsMinimumVersion: true, eventsEnabled: true },
+      codex: { installed: codexInstalled, meetsMinimumVersion: codexInstalled, eventsEnabled: false },
+    },
+    error: null,
+  })
+
+  it('says "Codex running · activity tracking off" while a Codex session runs without its plugin, with one focusable reason', async () => {
+    getPluginStatus.mockResolvedValue(plugin(false))
+    useTerminalStore.setState({ sessions: { 'test-ws': 'running' }, sessionAgent: { 'test-ws': 'codex' } })
+
+    const { container } = render(<ActivityTrackingNote slug="test-ws" />)
+
+    const note = await screen.findByTestId('activity-tracking-off')
+    expect(note).toHaveTextContent('Codex running · activity tracking off')
+    expect(note).not.toHaveAttribute('title')
+    expect(note).toHaveAccessibleDescription(expect.stringContaining('plugin for Codex'))
+    expect(container.querySelectorAll('[id]')).toHaveLength(1) // a single description, not a title plus a hidden copy
+    note.focus()
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('plugin for Codex')
+    await expectNoAxeViolations(container)
+  })
+
+  it('shows nothing when the Codex plugin is installed', async () => {
+    getPluginStatus.mockResolvedValue(plugin(true))
+    useTerminalStore.setState({ sessions: { 'test-ws': 'running' }, sessionAgent: { 'test-ws': 'codex' } })
+
+    render(<ActivityTrackingNote slug="test-ws" />)
+    await vi.waitFor(() => expect(getPluginStatus).toHaveBeenCalled())
+
+    expect(screen.queryByTestId('activity-tracking-off')).not.toBeInTheDocument()
+  })
+
+  it('shows nothing for a Claude session, and never asks for plugin status', () => {
+    useTerminalStore.setState({ sessions: { 'test-ws': 'running' }, sessionAgent: { 'test-ws': 'claude' } })
+
+    render(<ActivityTrackingNote slug="test-ws" />)
+
+    expect(screen.queryByTestId('activity-tracking-off')).not.toBeInTheDocument()
+    expect(getPluginStatus).not.toHaveBeenCalled()
+  })
+
+  it('shows nothing when there is no live session', () => {
+    useTerminalStore.setState({ sessions: { 'test-ws': 'none' }, sessionAgent: { 'test-ws': 'codex' } })
+    render(<ActivityTrackingNote slug="test-ws" />)
+    expect(screen.queryByTestId('activity-tracking-off')).not.toBeInTheDocument()
+    expect(getPluginStatus).not.toHaveBeenCalled()
+  })
+
+  it('shows nothing when the plugin lookup fails', async () => {
+    getPluginStatus.mockRejectedValue(new Error('boom'))
+    useTerminalStore.setState({ sessions: { 'test-ws': 'running' }, sessionAgent: { 'test-ws': 'codex' } })
+
+    render(<ActivityTrackingNote slug="test-ws" />)
+    await vi.waitFor(() => expect(getPluginStatus).toHaveBeenCalled())
+
+    expect(screen.queryByTestId('activity-tracking-off')).not.toBeInTheDocument()
+  })
+})
 
 describe('WorkspaceCard', () => {
   beforeEach(() => {

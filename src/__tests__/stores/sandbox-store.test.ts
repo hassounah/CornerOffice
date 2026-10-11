@@ -44,10 +44,13 @@ function makeStatus(slug: string, state: SandboxStatus['session']['state'] = 'id
     exists: true,
     container: 'running',
     worktree: 'ready',
-    session: { state, permissionMode: 'skip', networkMode: 'allowlist', lastExit: null },
+    session: { state, agentId: 'claude', permissionMode: 'skip', networkMode: 'allowlist', lastExit: null },
     git: null,
     recreatePending: false,
     recreatePlan: null,
+    containers: {},
+    agentReadiness: {},
+    recreatePlans: [],
     channel: 'none',
   }
 }

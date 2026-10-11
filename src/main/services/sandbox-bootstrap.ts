@@ -1,6 +1,6 @@
 import net from 'net'
 import { configManager } from './config-manager'
-import { containerName } from './sandbox-spec'
+import { parseContainerName } from './sandbox-spec'
 import type { SandboxPaths } from './sandbox-paths'
 import type { SandboxManagerConfigDeps, SandboxManagerService } from './sandbox-manager'
 import type { BuildResult } from './sandbox-image'
@@ -141,9 +141,9 @@ export interface ImageBuildDoneHooks {
  */
 export function onImageBuildDone(result: BuildResult, manager: Pick<SandboxManagerService, 'markRecreatePending'>, hooks: ImageBuildDoneHooks): void {
   if (result.ok) {
-    const prefix = containerName('')
     for (const name of result.recreatePendingNames) {
-      if (name.startsWith(prefix)) manager.markRecreatePending(name.slice(prefix.length))
+      const parsed = parseContainerName(name)
+      if (parsed) manager.markRecreatePending(parsed.slug, parsed.agentId)
     }
   }
   if (result.ok) hooks.onImageReady()
