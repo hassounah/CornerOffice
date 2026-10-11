@@ -2,7 +2,8 @@ import log from 'electron-log/main'
 import crypto from 'crypto'
 import { z } from 'zod'
 import { readRegularFileCappedSync } from './safe-fs'
-import { AGENT_IDS, AgentIdSchema } from '../agents/descriptors'
+import { AGENT_IDS } from '../agents/descriptors'
+import { AgentIdSchema } from '../agents/agent-id-schema'
 import type { HookEvent, HookEventName, ActivityFeedItem, ActivityType } from '../types'
 
 // Read at most 1 MB per call (H2, §10.8, Appendix C item 2); the rest is

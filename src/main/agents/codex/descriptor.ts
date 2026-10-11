@@ -3,8 +3,9 @@ import type { AgentDescriptor } from '../types'
 // ---------------------------------------------------------------------------
 // codex/descriptor.ts — Codex CLI's pure data (TRD §4.6, §4.7, §4.9.5). The
 // sandbox mode list is non-empty, which is what makes the handler's `sandbox`
-// half required (contract test). Descriptor files may import only zod,
-// ../types, sibling descriptors and src/main/types/*.
+// half required (contract test). Descriptor files may import only ../types,
+// sibling descriptors and zod-free src/main/types/* modules: the renderer
+// loads them at startup.
 // ---------------------------------------------------------------------------
 
 export const CODEX_DESCRIPTOR = {

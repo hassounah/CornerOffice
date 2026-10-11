@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { AGENT_DESCRIPTORS, AGENT_IDS, AgentIdSchema, LEGACY_AGENT_ID, getDescriptor } from '@main/agents/descriptors'
+import { AGENT_DESCRIPTORS, AGENT_IDS, LEGACY_AGENT_ID, getDescriptor } from '@main/agents/descriptors'
+import { AgentIdSchema } from '@main/agents/agent-id-schema'
 import { CLAUDE_DESCRIPTOR, TRUST_PROMPT_COPY } from '@main/agents/claude/descriptor'
 import { CODEX_DESCRIPTOR } from '@main/agents/codex/descriptor'
 import { MINIMUM_PLUGIN_VERSION } from '@main/types/channels'

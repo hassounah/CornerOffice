@@ -1,9 +1,10 @@
 import type { AgentDescriptor } from '../types'
-import { MINIMUM_PLUGIN_VERSION } from '../../types/channels'
+import { MINIMUM_PLUGIN_VERSION } from '../../types/plugin-version'
 
 // ---------------------------------------------------------------------------
 // claude/descriptor.ts — Claude Code's pure data (TRD §4.5, §4.6). Descriptor
-// files may import only zod, ../types, sibling descriptors and src/main/types/*.
+// files may import only ../types, sibling descriptors and zod-free
+// src/main/types/* modules: the renderer loads them at startup.
 // ---------------------------------------------------------------------------
 
 /** Shown in sandbox mode: the first session in a new sandbox stops at Claude Code's folder-trust prompt (README, First-run prompts). */

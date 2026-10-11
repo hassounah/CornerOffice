@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { AgentIdSchema, LEGACY_AGENT_ID, getDescriptor } from '../agents/descriptors'
+import { LEGACY_AGENT_ID, getDescriptor } from '../agents/descriptors'
+import { AgentIdSchema } from '../agents/agent-id-schema'
 import { hasGitSegment } from '../services/repo-path'
 import { AllowlistEntrySchema } from '../services/sandbox-allowlist'
 import { SANDBOX_SLUG_RE } from '../services/sandbox-spec'
