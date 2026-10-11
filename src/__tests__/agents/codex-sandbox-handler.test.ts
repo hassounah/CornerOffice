@@ -61,10 +61,14 @@ describe('codex sandbox handler: mounts', () => {
       '.codex/skills': true,
       '.codex/prompts': true,
       '.codex/agents': true,
+      '.codex/packages': true,
       '.codex/AGENTS.md': true,
       '.codex/rules': true,
       '.codex/app-server-daemon': true,
       '.codex/log': false,
+      '.codex/tmp': false,
+      '.codex/.tmp': false,
+      '.codex/shell_snapshots': false,
       [path.relative(home, s.sqlite)]: false,
     })
     // The overlays and shadows come from the per-workspace state, never from the host's own files.
@@ -74,6 +78,23 @@ describe('codex sandbox handler: mounts', () => {
     expect(bySource['.codex/rules']).toBe(s.rulesDir)
     expect(bySource['.codex/app-server-daemon']).toBe(s.daemon)
     expect(bySource['.codex/log']).toBe(s.log)
+    expect(bySource['.codex/tmp']).toBe(path.join(s.state, 'codex-tmp'))
+    expect(bySource['.codex/.tmp']).toBe(path.join(s.state, 'codex-dottmp'))
+    expect(bySource['.codex/shell_snapshots']).toBe(path.join(s.state, 'codex-shell-snapshots'))
+    // packages is the host's own directory, mounted read-only over itself.
+    expect(bySource['.codex/packages']).toBe(path.join(H, 'packages'))
+  })
+
+  it('refuses a symlinked ~/.codex/packages at prepare and at mounts()', () => {
+    const real = path.join(home, 'real-packages')
+    fs.mkdirSync(real)
+    fs.symlinkSync(real, path.join(H, 'packages'))
+
+    expect(sandbox().prepare(ctx, 'plan')).toEqual({
+      ok: false,
+      detail: '~/.codex/packages is a symbolic link. Replace it with a real file or folder, then Start again.',
+    })
+    expect(() => sandbox().mounts(ctx)).toThrow('~/.codex/packages is a symbolic link')
   })
 
   it('also mounts every pre-existing name-set file read-only over itself, but not absent names', () => {
@@ -221,7 +242,7 @@ describe('codex sandbox handler: cleanup', () => {
 
     sandbox().cleanup(ctx)
 
-    for (const gone of [s.configOverlay, s.env, s.rulesDir, s.daemon, s.log, s.sqlite, path.join(s.state, GUARD_BASELINE_FILE)]) expect(fs.existsSync(gone)).toBe(false)
+    for (const gone of [s.configOverlay, s.env, s.rulesDir, s.daemon, s.log, s.sqlite, ...['codex-tmp', 'codex-dottmp', 'codex-shell-snapshots'].map((d) => path.join(s.state, d)), path.join(s.state, GUARD_BASELINE_FILE)]) expect(fs.existsSync(gone)).toBe(false)
     expect(fs.readFileSync(path.join(victim, 'precious'), 'utf8')).toBe('keep')
     expect(fs.readFileSync(path.join(s.quarantine, 'kept'), 'utf8')).toBe('moved earlier')
   })

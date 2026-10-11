@@ -19,11 +19,28 @@ import { CODEX_DESCRIPTOR } from './descriptor'
 
 /** Mount targets in `H`, precreated empty when absent. */
 const HOST_FILES = ['.env', 'AGENTS.md', 'config.toml'] as const
+/** `H` entries that are mounted read-only over themselves from the host: the code, prompts and instructions Codex loads. `packages` holds the standalone Codex binaries and the daemon package. */
+const HOST_READONLY_ENTRIES = ['plugins', 'skills', 'prompts', 'agents', 'packages', 'AGENTS.md'] as const
+
+/**
+ * Directories of `H` that the container gets a per-workspace copy of instead (name in `H` -> dir in `S`). The one
+ * list behind the mounts, the precreate, the cleanup and the socket walk. `tmp` holds the `arg0` PATH dirs and
+ * `.tmp` the curated plugin clone: both feed code the host's Codex runs.
+ */
+const CODEX_SHADOWS = [
+  { name: 'rules', dir: 'codex-rules', readonly: true },
+  { name: 'app-server-daemon', dir: 'codex-daemon', readonly: true },
+  { name: 'log', dir: 'codex-log', readonly: false },
+  { name: 'tmp', dir: 'codex-tmp', readonly: false },
+  { name: '.tmp', dir: 'codex-dottmp', readonly: false },
+  { name: 'shell_snapshots', dir: 'codex-shell-snapshots', readonly: false },
+] as const
+
 /** Directories in `H` mounted read-only or shadowed, precreated 0700 when absent. */
-const HOST_DIRS = ['plugins', 'skills', 'prompts', 'agents', 'rules', 'app-server-daemon', 'log'] as const
+const HOST_DIRS = [...HOST_READONLY_ENTRIES.filter((name) => name !== 'AGENTS.md'), ...CODEX_SHADOWS.map((shadow) => shadow.name)]
 
 const STATE_FILES = ['codex-config.toml', 'codex-env'] as const
-const STATE_DIRS = ['codex-rules', 'codex-daemon', 'codex-log', 'codex-sqlite', 'codex-quarantine'] as const
+const STATE_DIRS = [...CODEX_SHADOWS.map((shadow) => shadow.dir), 'codex-sqlite', 'codex-quarantine']
 
 /** Top-level keys of the host `config.toml` the sandbox keeps (everything else, and every other key, is dropped). */
 const CARRIED_KEYS = ['model', 'model_provider', 'model_reasoning_effort', 'model_reasoning_summary', 'model_verbosity', 'features', 'tui', 'plugins'] as const
@@ -43,7 +60,7 @@ const PUSH_GUARD_RULES = [
 const SOCKET_WALK_MAX_DEPTH = 2
 const SOCKET_WALK_MAX_ENTRIES = 5_000
 /** Top-level entries of `H` the socket walk does not look into: shadowed (`app-server-daemon`, `log`) or session data. */
-const SOCKET_WALK_SKIP = new Set(['app-server-daemon', 'sessions', 'archived_sessions', 'log'])
+export const SOCKET_WALK_SKIP = new Set<string>(['sessions', 'archived_sessions', ...CODEX_SHADOWS.map((shadow) => shadow.name)])
 
 // `fs.constants` is read inside the functions, never at import: several suites mock `fs` and import the registry.
 
@@ -93,7 +110,15 @@ function ensureFile(p: string, mode: number, where: string): AgentConfigResult {
 function ensureDir(p: string, mode: number, where: string): AgentConfigResult {
   try {
     fs.mkdirSync(p, { mode })
-    fs.chmodSync(p, mode) // the umask must not widen it
+    // The umask must not widen it. Through a descriptor opened with O_NOFOLLOW, so a link swapped in for the new
+    // directory is refused instead of having its target's mode changed.
+    const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW } = fs.constants
+    const fd = fs.openSync(p, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+    try {
+      fs.fchmodSync(fd, mode)
+    } finally {
+      fs.closeSync(fd)
+    }
     return { ok: true }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return couldNotCreate(where)
@@ -135,6 +160,20 @@ export function codexStatePaths(paths: SandboxPaths, slug: string) {
     sqlite: path.join(state, 'codex-sqlite'),
     quarantine: path.join(state, 'codex-quarantine'),
   }
+}
+
+/**
+ * The quarantine folder as the user sees it, when it exists and holds something (Delete keeps it: the confirm says
+ * so). `null` otherwise. Pure: an lstat and a listing, never a write.
+ */
+export function codexQuarantineFolder(paths: SandboxPaths, slug: string): string | null {
+  const dir = codexStatePaths(paths, slug).quarantine
+  try {
+    if (!fs.lstatSync(dir).isDirectory() || fs.readdirSync(dir).length === 0) return null
+  } catch {
+    return null
+  }
+  return `~/.corner-office/sandbox/${slug}/${path.basename(dir)}`
 }
 
 /** `H` exists and is a real directory (a symlink is not): the only case in which anything under it is touched. */
@@ -315,6 +354,11 @@ function authStore(paths: SandboxPaths): unknown {
 }
 
 export const GUARD_BASELINE_FILE = 'codex-guard-baseline.json'
+/**
+ * Written the first time a guard opens for a workspace and removed only by Delete (with the baseline). Its presence
+ * with no readable baseline means the baseline was lost or damaged, which the guard must not mistake for a first run.
+ */
+export const GUARD_ACTIVE_FILE = 'codex-guard-active'
 
 /**
  * What the host's Codex would load, or run, if the sandbox created it. A `.config.toml` of any other prefix, but never
@@ -326,16 +370,13 @@ export function inGuardNameSet(name: string): boolean {
   return n === 'agents.override.md' || n === 'hooks.json' || n.startsWith('.env') || (n.endsWith('.config.toml') && n !== 'config.toml')
 }
 
-/** `H` entries that are mounted read-only over themselves from the host: the code, prompts and instructions Codex loads. */
-const HOST_READONLY_ENTRIES = ['plugins', 'skills', 'prompts', 'agents', 'AGENTS.md'] as const
-
 /**
  * Codex's mounts (TRD §4.9.2): `H` read-write, then read-only overlays, shadows and the sqlite home on top.
  *
- *  - ro: the overlay over `config.toml`, the empty `S/codex-env` over `.env`, the code/prompt entries, and every
- *    pre-existing name-set file (decision 15), which the container can then not modify;
+ *  - ro: the overlay over `config.toml`, the empty `S/codex-env` over `.env`, the code/prompt entries (including
+ *    `packages`), and every pre-existing name-set file (decision 15), which the container can then not modify;
  *  - ro shadows: `rules` (push guard) and `app-server-daemon` (empty, D20);
- *  - rw shadow: `log`; rw: `S/codex-sqlite`, at the same path as `CODEX_SQLITE_HOME` (D25).
+ *  - rw shadows: `log`, `tmp`, `.tmp` and `shell_snapshots`; rw: `S/codex-sqlite`, at the same path as `CODEX_SQLITE_HOME` (D25).
  *
  * Only regular files are mounted over themselves: a symlink is the guard's business, never a mount source.
  */
@@ -347,9 +388,7 @@ export function codexMounts(paths: SandboxPaths, slug: string): { source: string
     { source: s.configOverlay, target: h('config.toml'), readonly: true },
     { source: s.env, target: h('.env'), readonly: true },
     ...HOST_READONLY_ENTRIES.map((name) => ({ source: h(name), target: h(name), readonly: true })),
-    { source: s.rulesDir, target: h('rules'), readonly: true },
-    { source: s.daemon, target: h('app-server-daemon'), readonly: true },
-    { source: s.log, target: h('log'), readonly: false },
+    ...CODEX_SHADOWS.map((shadow) => ({ source: path.join(s.state, shadow.dir), target: h(shadow.name), readonly: shadow.readonly })),
     { source: s.sqlite, target: s.sqlite, readonly: false },
   ]
   // Defense in depth behind prepare: never hand a symlink or wrong-type entry to a mount (assertMountSafe also refuses it).
@@ -418,8 +457,8 @@ function preexistingGuardedFiles(home: string): string[] {
 /** Removes the workspace's Codex state, without following a link. `codex-quarantine` is kept: "nothing was deleted" must stay true. */
 export function clearCodexState(paths: SandboxPaths, slug: string, keepBaseline = false): void {
   const s = codexStatePaths(paths, slug)
-  const targets = [s.configOverlay, s.env, s.rulesDir, s.daemon, s.log, s.sqlite]
-  if (!keepBaseline) targets.push(path.join(s.state, GUARD_BASELINE_FILE))
+  const targets = [s.configOverlay, s.env, s.sqlite, ...CODEX_SHADOWS.map((shadow) => path.join(s.state, shadow.dir))]
+  if (!keepBaseline) targets.push(path.join(s.state, GUARD_BASELINE_FILE), path.join(s.state, GUARD_ACTIVE_FILE))
   for (const target of targets) {
     fs.rmSync(target, { recursive: true, force: true }) // rmSync removes a symlink itself and never descends through it
   }

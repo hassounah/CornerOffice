@@ -8,7 +8,7 @@ import type { AppConfig, RealmLocation } from '../types'
 import type { SandboxConfig } from '../types/config'
 import { AllowlistSchema } from './sandbox-allowlist'
 import { SANDBOX_SLUG_RE, CHANNEL_PORT_RANGE } from './sandbox-spec'
-import { terminalSlug } from '../ipc/schemas'
+import { terminalSlug } from '../types/slugs'
 
 // ---------------------------------------------------------------------------
 // Zod schema for AppConfig (used for parse + migration validation)
@@ -520,31 +520,11 @@ export class ConfigManager {
     }
   }
 
-  async updateConfig(partial: Partial<AppConfig>): Promise<AppConfig> {
-    this.ensureDataDir()
-    const cfgPath = configPath()
-
+  /** Shallow top-level replacement, in the same queue as `mutateConfig` so every writer is serialized together. */
+  updateConfig(partial: Partial<AppConfig>): Promise<AppConfig> {
     // Validate and sanitize realm field before writing
-    if (partial.realm !== undefined) {
-      partial = { ...partial, realm: this._sanitizeRealm(partial.realm) }
-    }
-
-    // Ensure file exists before locking
-    if (!fs.existsSync(cfgPath)) {
-      const defaults = this.getDefaultConfig()
-      this.saveConfig(defaults)
-    }
-
-    let release: (() => Promise<void>) | null = null
-    try {
-      release = await lockfile.lock(cfgPath, { retries: { retries: 5, minTimeout: 50 } })
-      const current = this.loadConfig() ?? this.getDefaultConfig()
-      const updated: AppConfig = { ...current, ...partial }
-      this.saveConfig(updated)
-      return updated
-    } finally {
-      if (release) await release()
-    }
+    const sanitized = partial.realm !== undefined ? { ...partial, realm: this._sanitizeRealm(partial.realm) } : partial
+    return this.mutateConfig((current) => ({ ...current, ...sanitized }))
   }
 
   getDefaultConfig(): AppConfig {

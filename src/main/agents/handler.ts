@@ -24,18 +24,23 @@ export interface AgentMountSpec {
   target: string
   readonly: boolean
 }
-/** `detail` is fixed copy, never file contents. */
-export type AgentConfigResult = { ok: true; quarantine?: QuarantineOutcome } | { ok: false; detail: string }
+/** `detail` is fixed copy, never file contents. A refusal can still carry what the guard moved before it refused, so the user hears about it. */
+export type AgentConfigResult = { ok: true; quarantine?: QuarantineOutcome } | { ok: false; detail: string; quarantine?: QuarantineOutcome }
 
 /**
  * What an agent's guard moved out of the host's agent home (D9). `shown` is the original name when exactly one file
- * moved and its name is plain; `destination` is where a single file went, in the form the user sees. Both are null
- * for several files. Data only: the notice copy is fixed in the notification service.
+ * moved and its name is plain, else null. `destination` is where a single file went, or the quarantine folder when
+ * several went there (null when some were renamed in place), in the form the user sees. Data only: the notice copy
+ * is fixed in the notification service. `incomplete` is set when the guard could not finish its check (a walk over its
+ * bounds): it moved what it could, left its record open, and will check again.
  */
 export interface QuarantineOutcome {
   quarantined: number
   shown: string | null
   destination: string | null
+  incomplete?: boolean
+  /** With `incomplete`: the guard's record of which files are the user's was lost or damaged, so it won't start until the sandbox is reset. */
+  lostBaseline?: boolean
 }
 /** `code` ∈ descriptor.copy.readiness. */
 export type AgentReadiness = { ok: true } | { ok: false; code: string }
@@ -58,10 +63,17 @@ export interface AgentHandler {
     prepare(ctx: SandboxCtx, phase: 'plan' | 'create'): AgentConfigResult
     mounts(ctx: SandboxCtx): readonly AgentMountSpec[]
     launch(ctx: SandboxCtx, opts: LaunchOptions): { env: readonly string[]; argv: readonly string[] }
-    /** Delete: remove this agent's files in S. */
-    cleanup(ctx: SandboxCtx): void
+    /**
+     * Delete: remove this agent's files in S. `containerAbsent` is false when the agent's container could not be
+     * confirmed removed: an agent with an after-stop sweep must then leave its sweep record for a later reconcile.
+     */
+    cleanup(ctx: SandboxCtx, opts?: { containerAbsent: boolean }): void
     /** Called by the manager only after a confirmed stop, and in reconcile. */
     afterStop?(ctx: SandboxCtx): QuarantineOutcome
+    /** Pure: the user-visible path of this agent's quarantine folder when it holds something, which Delete keeps; else `null`. */
+    quarantineFolder?(ctx: SandboxCtx): string | null
+    /** Pure: did a session end without its `afterStop` sweep? Reconcile runs `afterStop` for such an agent whose container is not running. */
+    sweepPending?(ctx: SandboxCtx): boolean
   }
   /** Must never throw (D21). */
   plugin?: { detect(): Promise<PluginStatus> }

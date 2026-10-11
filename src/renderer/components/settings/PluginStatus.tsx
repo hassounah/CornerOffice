@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { MINIMUM_PLUGIN_VERSION } from '@main/types/channels'
 import type { PluginStatus as PluginStatusType } from '@main/types/channels'
 import { unwrapIpc } from '../../utils/ipc'
+import { isFoundOnHost } from '../../utils/host-availability'
 import { AGENT_DESCRIPTORS, LEGACY_AGENT_ID } from '@main/agents/descriptors'
 import type { AgentDescriptor } from '@main/agents/types'
 
@@ -27,6 +28,13 @@ const PLUGIN_BADGE_STYLES: Record<'green' | 'yellow' | 'gray', BadgeStyle> = {
   },
 }
 
+/** Neutral, not a warning: nothing is wrong, the plugin does not exist yet. */
+const UNPUBLISHED_BADGE_STYLE: BadgeStyle = {
+  wrapper: 'bg-stone-800/60 text-stone-300',
+  dot: 'bg-stone-500',
+  label: 'Not available yet',
+}
+
 const EVENTS_BADGE_STYLES: Record<'green' | 'orange', BadgeStyle> = {
   green: {
     wrapper: 'bg-green-900/40 text-green-300',
@@ -50,7 +58,7 @@ function eventsBadgeVariant(status: PluginStatusType): 'green' | 'orange' {
   return status.eventsEnabled ? 'green' : 'orange'
 }
 
-type HostAvailability = Record<string, 'found' | 'not-found'>
+type HostAvailability = Record<string, string>
 
 interface LoadedStatuses {
   statuses: Record<string, PluginStatusType>
@@ -61,7 +69,7 @@ interface LoadedStatuses {
 async function loadStatuses(): Promise<LoadedStatuses> {
   const statuses = unwrapIpc(await window.cornerOffice.plugin.getStatus())
   try {
-    return { statuses, availability: unwrapIpc(await window.cornerOffice.agents.getHostAvailability(false)) }
+    return { statuses, availability: unwrapIpc(await window.cornerOffice.agents.getHostAvailability()) }
   } catch {
     return { statuses, availability: null }
   }
@@ -70,8 +78,9 @@ async function loadStatuses(): Promise<LoadedStatuses> {
 /** One row for an agent other than Claude: shown only when the agent is found on the host, because the plugin is only useful then. */
 function AgentPluginRow({ descriptor, status }: { descriptor: AgentDescriptor; status: PluginStatusType }): React.ReactElement {
   const headingId = `plugin-row-${descriptor.id}`
-  const variant = pluginBadgeVariant(status)
-  const styles = PLUGIN_BADGE_STYLES[variant]
+  // An agent with no published plugin has nothing to install: "Not installed" would promise a remedy that does not exist.
+  const unpublished = !status.installed && descriptor.plugin?.installCommands.length === 0
+  const styles = unpublished ? UNPUBLISHED_BADGE_STYLE : PLUGIN_BADGE_STYLES[pluginBadgeVariant(status)]
   return (
     <div className="mb-4" role="group" aria-labelledby={headingId} data-testid={`plugin-row-${descriptor.id}`}>
       <h4 id={headingId} className="text-sm font-semibold text-co-text-secondary mb-1">
@@ -184,7 +193,7 @@ export function PluginStatus(): React.ReactElement {
 
   const otherAgentRows = loading
     ? []
-    : AGENT_DESCRIPTORS.filter((d) => d.id !== LEGACY_AGENT_ID && d.plugin !== null && others?.availability?.[d.id] === 'found')
+    : AGENT_DESCRIPTORS.filter((d) => d.id !== LEGACY_AGENT_ID && d.plugin !== null && isFoundOnHost(others?.availability?.[d.id]))
 
   return (
     <section aria-labelledby="plugin-status-heading">

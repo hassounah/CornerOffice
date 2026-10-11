@@ -332,6 +332,21 @@ describe('FileWatcherService', () => {
       await new Promise((r) => setTimeout(r, 150))
       expect(callbacks.onEventStreamChange).toHaveBeenCalledWith('/home/test/.corner-office/events/my-ws.jsonl')
     })
+
+    it('does not drop an earlier file when a second one changes within the debounce window', async () => {
+      vi.useFakeTimers()
+      try {
+        const callbacks = makeCallbacks()
+        new FileWatcherService(callbacks).startGlobal()
+        const eventWatcher = mockWatcherInstances[1]
+        eventWatcher.emit('change', '/home/test/.corner-office/events/a.jsonl')
+        eventWatcher.emit('change', '/home/test/.corner-office/events/b.jsonl')
+        await vi.advanceTimersByTimeAsync(150)
+        expect(callbacks.onEventStreamChange).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 
   describe('sandbox event watcher (D23)', () => {
@@ -361,6 +376,24 @@ describe('FileWatcherService', () => {
       watcher.emit('change', `${STATE_ROOT}/my-ws/events/s1.jsonl`)
       await new Promise((r) => setTimeout(r, 150))
       expect(callbacks.onEventStreamChange).toHaveBeenCalledWith(`${STATE_ROOT}/my-ws/events/s1.jsonl`)
+    })
+
+    it('reports two containers\' event files that change within the debounce window, one call each', async () => {
+      vi.useFakeTimers()
+      try {
+        const { callbacks, watcher } = startWithSandboxRoot()
+        const a = `${STATE_ROOT}/ws-a/events/s1.jsonl`
+        const b = `${STATE_ROOT}/ws-b/events/s2.jsonl`
+        watcher.emit('change', a)
+        watcher.emit('change', b)
+        watcher.emit('change', a) // a repeat for one file still collapses to one call
+        await vi.advanceTimersByTimeAsync(150)
+        expect(callbacks.onEventStreamChange).toHaveBeenCalledTimes(2)
+        expect(callbacks.onEventStreamChange).toHaveBeenCalledWith(a)
+        expect(callbacks.onEventStreamChange).toHaveBeenCalledWith(b)
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it.each([

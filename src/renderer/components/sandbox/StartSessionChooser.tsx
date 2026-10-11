@@ -4,6 +4,8 @@ import { useTerminalStore } from '../../stores/terminal-store'
 import { DisabledReason } from '../shared/DisabledReason'
 import { RecreateDialog } from './RecreateDialog'
 import { CopyCommand } from './CopyCommand'
+import { InlineCode } from '../shared/InlineCode'
+import { writableRootPath } from '../../utils/host-availability'
 import { AGENT_DESCRIPTORS, LEGACY_AGENT_ID, getDescriptor } from '@main/agents/descriptors'
 import type { AgentId } from '@main/agents/descriptors'
 import type { AgentDescriptor, AppPermissionMode, PermissionChoice, SessionLocation } from '@main/agents/types'
@@ -26,9 +28,11 @@ import {
   CHECKING_COPY,
   forSkin,
   STATUS_CHECK_TIMEOUT_MS,
+  SANDBOX_CHOICE_WAIT_MS,
   SANDBOX_UNAVAILABLE_COPY,
   agentReadinessMessage,
   agentReadinessCommand,
+  agentReadinessCommandLead,
   imageUpdatedForAgentCopy,
   isDockerReason,
   PORT_CONFLICT_NO_RECREATE_COPY,
@@ -84,7 +88,8 @@ const SOURCE_LABEL: Record<ChoiceSource, string | null> = {
   builtin: null,
 }
 
-const RESET_TOOLTIP = 'Resets these choices. Nothing is saved until you start.'
+/** Shown beside Reset (UX-M6): a visible hint, not a hover-only tooltip. */
+const RESET_HINT = 'Resets these choices. Nothing is saved until you start.'
 
 // A focusable control that is not a roving-tabindex radio (those use `tabIndex=-1`).
 const TABBABLE = 'button:not([tabindex="-1"]), [tabindex="0"]'
@@ -298,6 +303,7 @@ function StartSessionChooserInner({
   const statusChecked = checkedSlug === slug
   const [restoredFor, setRestoredFor] = useState<unknown>(null)
   const titleId = useId()
+  const resetHintId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
   // Synchronous guards: a second click in the same tick must not start a second spawn or build.
   const startInFlight = useRef(false)
@@ -333,31 +339,52 @@ function StartSessionChooserInner({
    * when a fetch fails, so "still no status once the fetch settled" means it failed.
    */
   const fetchAll = useCallback(
-    (onSettled: (defaults: SessionDefaultsView | null) => void): (() => void) => {
+    (onSettled: (defaults: SessionDefaultsView | null) => void, onEarly?: (defaults: SessionDefaultsView | null) => void): (() => void) => {
       let live = true
       let settled = false
+      let early = onEarly === undefined // nothing to fire without a callback
       let defaults: SessionDefaultsView | null = null
+      const fireEarly = (): void => {
+        if (!live || early) return
+        early = true
+        onEarly?.(defaults)
+      }
       const settle = (): void => {
         if (!live || settled) return
+        fireEarly() // a fetch that never answered still ends in a resolved chooser
         settled = true
         onSettled(defaults)
       }
+      // The status reads the Docker state the refresh just probed, so it waits for the environment.
+      const statusFetch = fetchEnvironment(true).then(() => fetchStatus(slug))
+      const defaultsFetch = loadDefaults(slug).then((view) => {
+        defaults = view
+      })
       const fetched = [
-        // The status reads the Docker state the refresh just probed, so it waits for the environment.
-        fetchEnvironment(true).then(() => fetchStatus(slug)),
-        loadDefaults(slug).then((view) => {
-          defaults = view
-        }),
-        loadAvailability(true).then((found) => {
+        statusFetch,
+        defaultsFetch,
+        loadAvailability().then((found) => {
           if (live) setAvailability(found)
         }),
       ]
+      let waitTimer: ReturnType<typeof setTimeout> | undefined
+      if (onEarly) {
+        // First paint needs only the remembered options. A Host or built-in choice is resolved as soon as they
+        // arrive, without waiting for Docker (UX-H1); a remembered Sandbox choice waits for the status, but only so long.
+        void defaultsFetch.then(async () => {
+          if (defaults?.choice?.location === 'sandbox') {
+            await Promise.race([statusFetch, new Promise<void>((resolve) => (waitTimer = setTimeout(resolve, SANDBOX_CHOICE_WAIT_MS)))])
+          }
+          fireEarly()
+        })
+      }
       void Promise.all(fetched).then(settle)
-      // A fetch that never settles must not leave the skeleton or "Checking…" with no way out.
+      // A fetch that never settles must not leave "Checking…" with no way out.
       const timer = setTimeout(settle, STATUS_CHECK_TIMEOUT_MS)
       return () => {
         live = false
         clearTimeout(timer)
+        clearTimeout(waitTimer)
       }
     },
     [slug, fetchStatus, fetchEnvironment],
@@ -365,10 +392,12 @@ function StartSessionChooserInner({
 
   useEffect(
     () =>
-      fetchAll((defaults) => {
-        setCheckedSlug(slug)
-        if (!preResolved) resolveWith(defaults, useSandboxStore.getState().status[slug])
-      }),
+      fetchAll(
+        () => setCheckedSlug(slug),
+        (defaults) => {
+          if (!preResolved) resolveWith(defaults, useSandboxStore.getState().status[slug])
+        },
+      ),
     [fetchAll, slug, preResolved, resolveWith],
   )
 
@@ -407,8 +436,6 @@ function StartSessionChooserInner({
   const statusFailed = !status && statusChecked
   const ineligibleReason = eligibility && !eligibility.ok ? ELIGIBILITY_COPY[eligibility.reason] : !status ? (statusChecked ? SANDBOX_UNAVAILABLE_COPY : CHECKING_COPY) : null
   const dockerIneligible = eligibility && !eligibility.ok && isDockerReason(eligibility.reason)
-  // Docker reasons and a failed status fetch both end in "try again": one button serves both.
-  const canCheckAgain = dockerIneligible || statusFailed
   const sandboxEligible = eligibility?.ok === true
   const warnings = eligibility?.ok ? eligibility.warnings : []
   const ending = isSessionStopping(status?.session.state)
@@ -422,11 +449,16 @@ function StartSessionChooserInner({
   const agentHasSandbox = descriptor.permissionModes.sandbox.length > 0
   // Why Sandbox can't be chosen right now: the workspace or Docker first, then this agent's own readiness (UX-M8: the
   // descriptor's copy is the one source). `null` means it can.
-  const readinessCode = status?.agentReadiness?.[agentId]?.code
+  const readinessCode = status?.agentReadiness[agentId]?.code
   const readinessReason = readinessCode ? (agentReadinessMessage(agentId, readinessCode) ?? SANDBOX_UNAVAILABLE_COPY) : null
   const sandboxReason = !agentHasSandbox ? `${descriptor.displayName} isn't available in the sandbox yet.` : (ineligibleReason ?? readinessReason)
   // The fix, when this agent's own readiness is what blocks the sandbox (not Docker or the workspace).
+  const writableInstallPath = writableRootPath(availability?.[agentId])
   const readinessCommand = agentHasSandbox && !ineligibleReason && readinessCode ? agentReadinessCommand(agentId, readinessCode) : null
+  // The agent's own readiness is what blocks the sandbox: the user fixes it outside the app (UX-H2).
+  const readinessBlocked = agentHasSandbox && !ineligibleReason && readinessCode !== undefined
+  // Docker reasons, a failed status fetch and a readiness problem all end in "try again": one button serves them.
+  const canCheckAgain = dockerIneligible || statusFailed || readinessBlocked
   const warnStart = permissionMode === 'skip' || (sandbox && networkMode === 'open')
   const willStartId = `${titleId}-will-start`
   const networkWarningId = `${titleId}-network-warning`
@@ -656,11 +688,14 @@ function StartSessionChooserInner({
         </DisabledReason>
       )}
 
-      <div className="flex items-center justify-between gap-2 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
         <span data-testid="choice-source">{SOURCE_LABEL[source]}</span>
-        <button type="button" title={RESET_TOOLTIP} className={`underline ${FOCUS}`} onClick={choice.resetChoices}>
-          Reset
-        </button>
+        <span className="flex items-center gap-2">
+          <span id={resetHintId}>{RESET_HINT}</span>
+          <button type="button" aria-describedby={resetHintId} className={`underline ${FOCUS}`} onClick={choice.resetChoices}>
+            Reset
+          </button>
+        </span>
       </div>
 
       {agents.length > 1 && (
@@ -680,6 +715,19 @@ function StartSessionChooserInner({
       {!sandbox && availability?.[agentId] === 'not-found' && (
         <p data-testid="path-warning" className="text-xs">
           <code>{descriptor.binaryName}</code> wasn&apos;t found on your PATH, so it may not be installed. Start may still work if your shell finds it.
+        </p>
+      )}
+
+      {!sandbox && writableInstallPath !== null && (
+        <p data-testid="writable-install-warning" className="text-xs">
+          <code>{descriptor.binaryName}</code> is installed in <code>{writableInstallPath}</code>, a folder that sandbox sessions can change. Start still works.
+          {descriptor.copy.reinstallCommand && (
+            <>
+              {' '}
+              To install it somewhere sandbox sessions can&apos;t change, run:{' '}
+              <CopyCommand command={descriptor.copy.reinstallCommand} buttonClass={buttonClass} buttonStyle={buttonStyle} />
+            </>
+          )}
         </p>
       )}
 
@@ -705,9 +753,17 @@ function StartSessionChooserInner({
         }
       />
 
-      {readinessCommand && (
-        <p data-testid="readiness-command" className="text-xs">
-          To use the sandbox with {descriptor.displayName}, run: <CopyCommand command={readinessCommand} buttonClass={buttonClass} buttonStyle={buttonStyle} />
+      {/* The readiness message is the real step; its command, when it has one, comes after it (UX-H3). */}
+      {readinessReason !== null && !ineligibleReason && agentHasSandbox && (
+        <p data-testid="readiness-message" className="text-xs">
+          <InlineCode text={readinessReason} />
+          {readinessCommand && readinessCode && (
+            <span data-testid="readiness-command">
+              {' '}
+              {agentReadinessCommandLead(agentId, readinessCode)}{' '}
+              <CopyCommand command={readinessCommand} buttonClass={buttonClass} buttonStyle={buttonStyle} />
+            </span>
+          )}
         </p>
       )}
 

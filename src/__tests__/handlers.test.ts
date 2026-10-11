@@ -13,11 +13,35 @@ import { TERMINAL_IPC } from '../main/ipc/channels'
 // Mocks
 // ---------------------------------------------------------------------------
 
+// 'real' reads the actual PATH; the recording tests pin what the PATH check says.
+const mockAvailability = vi.hoisted(() => ({ value: 'real' as 'real' | 'found' | 'not-found' }))
+vi.mock('../main/agents/availability', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../main/agents/availability')>()
+  return {
+    ...original,
+    getHostAvailability: (deps?: Parameters<typeof original.getHostAvailability>[0]) => {
+      const real = original.getHostAvailability(deps)
+      if (mockAvailability.value === 'real') return real
+      return Object.fromEntries(Object.keys(real).map((id) => [id, mockAvailability.value])) as typeof real
+    },
+  }
+})
+
+// The one shared plugin detector (the hook handlers and the agents' handlers read the same service).
+const mockDetector = vi.hoisted(() => ({
+  installHooks: vi.fn(),
+  uninstallHooks: vi.fn(),
+  getStatus: vi.fn().mockResolvedValue({ installed: false, meetsMinimumVersion: false, eventsEnabled: false }),
+  getCodexStatus: vi.fn().mockResolvedValue({ installed: false, meetsMinimumVersion: false, eventsEnabled: false }),
+}))
+vi.mock('../main/services/plugin-detector', () => ({ pluginDetectorService: mockDetector }))
+
 vi.mock('fs', () => ({
   default: {
     readdirSync: vi.fn(),
     statSync: vi.fn(),
     readFileSync: vi.fn(),
+    realpathSync: vi.fn((p: string) => p),
     promises: {
       realpath: vi.fn(),
       stat: vi.fn(),
@@ -138,7 +162,6 @@ beforeEach(() => {
       discover: vi.fn().mockResolvedValue({ paths: ['/home/user/test-ws'] }),
     } as unknown as AppState['discoveryService'],
     channelDiscovery: null,
-    pluginDetector: null,
     channelConnection: null,
     terminalManager: null,
     sandboxManager: null,
@@ -545,7 +568,10 @@ describe('plugin:getStatus (one status per agent)', () => {
     HANDLERS.codex = originalCodex
   })
 
-  it('returns a "not installed" status for every agent when pluginDetector is null', async () => {
+  it('returns a status for every agent (the handlers read the one shared service)', async () => {
+    HANDLERS.claude = { ...originalClaude, plugin: { detect: async () => NOT_INSTALLED } }
+    HANDLERS.codex = { ...originalCodex, plugin: { detect: async () => NOT_INSTALLED } }
+    handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
     const handler = getHandler('plugin:getStatus')
     const result = await handler(fakeEvent, undefined) as IpcResponse<Record<string, PluginStatus>>
     expect(result.error).toBeNull()
@@ -556,7 +582,6 @@ describe('plugin:getStatus (one status per agent)', () => {
   it('keys each agent\'s own detection result by agent id', async () => {
     const claude: PluginStatus = { installed: true, version: '1.29.0', pluginPath: '/path/to/plugin', meetsMinimumVersion: true, eventsEnabled: false }
     const codex: PluginStatus = { installed: true, version: '0.2.0', pluginPath: '/codex/plugin', meetsMinimumVersion: true, eventsEnabled: true }
-    appState.pluginDetector = {} as unknown as AppState['pluginDetector']
     HANDLERS.claude = { ...originalClaude, plugin: { detect: async () => claude } }
     HANDLERS.codex = { ...originalCodex, plugin: { detect: async () => codex } }
     handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
@@ -567,7 +592,6 @@ describe('plugin:getStatus (one status per agent)', () => {
   })
 
   it('reports "not installed" for an agent without a plugin handler', async () => {
-    appState.pluginDetector = {} as unknown as AppState['pluginDetector']
     HANDLERS.codex = { host: originalCodex.host }
     handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
 
@@ -582,23 +606,20 @@ describe('plugin:getStatus (one status per agent)', () => {
 // ---------------------------------------------------------------------------
 
 describe('plugin:installHooks', () => {
-  it('returns error when pluginDetector is null', async () => {
-    const handler = getHandler('plugin:installHooks')
-    const result = await handler(fakeEvent, undefined) as IpcResponse<unknown>
-    expect(result.error).not.toBeNull()
-    expect(result.error!.message).toMatch(/Plugin detector not initialized/)
-  })
-
-  it('calls pluginDetector.installHooks()', async () => {
-    const installHooks = vi.fn().mockResolvedValue(undefined)
-    appState.pluginDetector = { installHooks } as unknown as AppState['pluginDetector']
-    handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
+  it('calls the shared detector\'s installHooks()', async () => {
+    mockDetector.installHooks.mockReset().mockResolvedValue(undefined)
 
     const handler = getHandler('plugin:installHooks')
     const result = await handler(fakeEvent, undefined) as IpcResponse<{ installed: boolean }>
     expect(result.error).toBeNull()
     expect(result.data).toEqual({ installed: true })
-    expect(installHooks).toHaveBeenCalledTimes(1)
+    expect(mockDetector.installHooks).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns the error when installHooks() fails', async () => {
+    mockDetector.installHooks.mockReset().mockRejectedValue(new Error('disk full'))
+    const result = await getHandler('plugin:installHooks')(fakeEvent, undefined) as IpcResponse<unknown>
+    expect(result.error!.message).toMatch(/disk full/)
   })
 })
 
@@ -607,23 +628,14 @@ describe('plugin:installHooks', () => {
 // ---------------------------------------------------------------------------
 
 describe('plugin:uninstallHooks', () => {
-  it('returns error when pluginDetector is null', async () => {
-    const handler = getHandler('plugin:uninstallHooks')
-    const result = await handler(fakeEvent, undefined) as IpcResponse<unknown>
-    expect(result.error).not.toBeNull()
-    expect(result.error!.message).toMatch(/Plugin detector not initialized/)
-  })
-
-  it('calls pluginDetector.uninstallHooks()', async () => {
-    const uninstallHooks = vi.fn().mockResolvedValue(undefined)
-    appState.pluginDetector = { uninstallHooks } as unknown as AppState['pluginDetector']
-    handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
+  it('calls the shared detector\'s uninstallHooks()', async () => {
+    mockDetector.uninstallHooks.mockReset().mockResolvedValue(undefined)
 
     const handler = getHandler('plugin:uninstallHooks')
     const result = await handler(fakeEvent, undefined) as IpcResponse<{ uninstalled: boolean }>
     expect(result.error).toBeNull()
     expect(result.data).toEqual({ uninstalled: true })
-    expect(uninstallHooks).toHaveBeenCalledTimes(1)
+    expect(mockDetector.uninstallHooks).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -661,6 +673,25 @@ describe('terminal:spawn session recording', () => {
 
   beforeEach(() => {
     vi.mocked(configManager.mutateConfig).mockClear()
+    mockAvailability.value = 'found'
+  })
+
+  afterEach(() => {
+    mockAvailability.value = 'real'
+  })
+
+  it('spawns but does not remember a start when the PATH check says the agent is not found (BE-M2)', async () => {
+    mockAvailability.value = 'not-found'
+    const spawn = vi.fn().mockReturnValue({ workspaceSlug: 'test-ws' })
+    appState.workspaces = new Map([['test-ws', makeWorkspace()]])
+    appState.terminalManager = { spawn } as unknown as AppState['terminalManager']
+    handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
+
+    const result = await getHandler('terminal:spawn')(fakeEvent, input) as IpcResponse<unknown>
+
+    expect(result.error).toBeNull()
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(configManager.mutateConfig).not.toHaveBeenCalled()
   })
 
   it('records the validated host start after a successful spawn', async () => {
@@ -692,16 +723,16 @@ describe('terminal:spawn session recording', () => {
 
 describe('agents:getHostAvailability', () => {
   it('returns found or not-found for every registered agent', async () => {
-    const result = await getHandler('agents:getHostAvailability')(fakeEvent, { refresh: true }) as IpcResponse<Record<string, string>>
+    const result = await getHandler('agents:getHostAvailability')(fakeEvent, {}) as IpcResponse<Record<string, string>>
     expect(result.error).toBeNull()
     expect(Object.keys(result.data!).sort()).toEqual(['claude', 'codex'])
-    for (const state of Object.values(result.data!)) expect(['found', 'not-found']).toContain(state)
+    for (const state of Object.values(result.data!)) expect(state).toMatch(/^(found|not-found|found-in-writable-root:.+)$/)
   })
 
-  it('rejects a missing flag and an extra key', async () => {
+  it('takes no input: an extra key is rejected', async () => {
     const handler = getHandler('agents:getHostAvailability')
-    expect(((await handler(fakeEvent, {})) as IpcResponse<unknown>).error).not.toBeNull()
-    expect(((await handler(fakeEvent, { refresh: false, extra: 1 })) as IpcResponse<unknown>).error).not.toBeNull()
+    expect(((await handler(fakeEvent, { refresh: false })) as IpcResponse<unknown>).error).not.toBeNull()
+    expect(((await handler(fakeEvent, { extra: 1 })) as IpcResponse<unknown>).error).not.toBeNull()
   })
 })
 

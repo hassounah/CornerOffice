@@ -3,6 +3,7 @@ import { AgentIdSchema, LEGACY_AGENT_ID, getDescriptor } from '../agents/descrip
 import { hasGitSegment } from '../services/repo-path'
 import { AllowlistEntrySchema } from '../services/sandbox-allowlist'
 import { SANDBOX_SLUG_RE } from '../services/sandbox-spec'
+import { terminalSlug } from '../types/slugs'
 
 // ---------------------------------------------------------------------------
 // Workspace
@@ -205,7 +206,6 @@ export const ChannelSendPermissionVerdictSchema = z.object({
 // Terminal
 // ---------------------------------------------------------------------------
 
-export const terminalSlug = z.string().min(1).max(256).regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/)
 const shellSessionKey = z.string().regex(/^shell:(house_[1-4]|office_shell)$/)
 const terminalSessionKey = z.union([terminalSlug, shellSessionKey])
 
@@ -416,8 +416,8 @@ export const SandboxGetEnvironmentSchema = z.object({ refresh: z.boolean() }).st
 export const SandboxGetStatusSchema = SandboxSlugOnly
 /** `session:getDefaults` (#0037 TRD §6): the remembered chooser options for one workspace. */
 export const SessionGetDefaultsSchema = SandboxSlugOnly
-/** `agents:getHostAvailability`; `refresh` is for shape only (there is no cache to bypass). */
-export const AgentsGetHostAvailabilitySchema = z.object({ refresh: z.boolean() }).strict()
+/** `agents:getHostAvailability`: no input. Every call scans the PATH afresh, so there is no cache to bypass. */
+export const AgentsGetHostAvailabilitySchema = z.object({}).strict()
 export const SandboxGetSummariesSchema = SandboxNoInput
 export const SandboxStartSessionSchema = z
   .object({

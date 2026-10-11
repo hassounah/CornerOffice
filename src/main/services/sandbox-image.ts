@@ -3,6 +3,9 @@ import fs from 'fs'
 import path from 'path'
 import log from 'electron-log/main'
 import { z } from 'zod'
+import { AGENT_IDS } from '../agents/descriptors'
+import type { AgentId } from '../agents/descriptors'
+import { getHandler } from '../agents/registry'
 import { DockerError } from './docker-runner'
 import type { DockerRunner } from './docker-runner'
 import { SANDBOX_IMAGE, LABEL, buildArgv, imageInspectArgv, psArgv, inspectArgv, parseInspect } from './sandbox-spec'
@@ -63,13 +66,20 @@ export const CODEX_SHA512 = {
   arm64: '4aced6fd2acab5014d68cb52a233688b2909817fa20c2f1d68cf98adcbe0989003b503e4d1c777c3a0e76b80981f6098bdff6742b6a78faf5fa5c4f3677b1021',
 } as const
 
-/** Agents installed in the image, written to its `co.sandbox.agents` label. */
-export const IMAGE_AGENTS = ['claude', 'codex'] as const
+/** Agents installed in the image, written to its `co.sandbox.agents` label: every registered agent that has a sandbox half. */
+export const IMAGE_AGENTS: readonly AgentId[] = AGENT_IDS.filter((id) => getHandler(id).sandbox !== undefined)
 
 /** A pre-Codex image has no `co.sandbox.agents` label: it holds Claude only. */
 const LEGACY_IMAGE_AGENTS: readonly string[] = ['claude']
 
-const CODEX_PINS = { version: CODEX_VERSION, sha512: CODEX_SHA512 }
+/**
+ * Install pins per agent, as the Dockerfile's build args (name -> value, in this order). Generic on purpose:
+ * `buildArgv` validates and passes whatever is here, and the build hash covers it, so a new agent adds a line here
+ * and its `ARG`s to the Dockerfile.
+ */
+export const INSTALL_PINS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  codex: { CODEX_VERSION, CODEX_SHA512_X64: CODEX_SHA512.x64, CODEX_SHA512_ARM64: CODEX_SHA512.arm64 },
+}
 
 const ASSET_FILENAMES = ['Dockerfile', 'co-entrypoint.sh', 'dnsmasq-base.conf', 'init-firewall.sh'] as const
 
@@ -188,9 +198,9 @@ function parseImageInspect(json: string): ParsedImageInspect | null {
 
 // ── Build hash (D15) ─────────────────────────────────────────────────────
 
-/** The Codex pins as build-arg lines, so both the build hash and its cache signature move when a pin does. */
-function codexPinLines(): string[] {
-  return [`CODEX_VERSION=${CODEX_PINS.version}`, `CODEX_SHA512_X64=${CODEX_PINS.sha512.x64}`, `CODEX_SHA512_ARM64=${CODEX_PINS.sha512.arm64}`]
+/** The install pins as build-arg lines, so both the build hash and its cache signature move when a pin does. */
+function installPinLines(): string[] {
+  return Object.values(INSTALL_PINS).flatMap((pins) => Object.entries(pins).map(([name, value]) => `${name}=${value}`))
 }
 
 /** Cheap cache key for `computeBuildHash`: each asset's mtime and size plus the same build args and version. A change to any of them changes the key; the service also drops the cached hash when a build finishes, so correctness never rests on mtimes alone. */
@@ -201,7 +211,7 @@ export async function buildHashSignature(ctx: string, identity: SandboxImageIden
     parts.push(`${filename}:${stat.mtimeMs}:${stat.size}`)
   }
   parts.push(`${toolchains.node}:${toolchains.go}:${toolchains.buildBase}:${identity.uid}:${identity.gid}:${identity.home}:${ASSET_VERSION}`)
-  parts.push(codexPinLines().join(':'))
+  parts.push(installPinLines().join(':'))
   return parts.join('|')
 }
 
@@ -223,7 +233,7 @@ export async function computeBuildHash(ctx: string, identity: SandboxImageIdenti
     `AGENT_UID=${identity.uid}`,
     `AGENT_GID=${identity.gid}`,
     `AGENT_HOME=${identity.home}`,
-    ...codexPinLines(),
+    ...installPinLines(),
   ].sort()
   hash.update(args.join('\n'))
   hash.update(String(ASSET_VERSION))
@@ -330,7 +340,7 @@ export function createSandboxImageService(deps: SandboxImageDeps, callbacks: San
       home: ids.home,
       buildHash,
       ctx,
-      codex: CODEX_PINS,
+      installPins: INSTALL_PINS,
       agents: IMAGE_AGENTS,
       image,
     })

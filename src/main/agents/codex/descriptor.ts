@@ -24,6 +24,7 @@ export const CODEX_DESCRIPTOR = {
   copy: {
     notFound:
       "`codex` may not be installed: install it with `pnpm add -g @openai/codex`. If it is installed, check your shell startup files.",
+    reinstallCommand: 'pnpm add -g @openai/codex',
     // One message per readiness code (TRD §4.9.5); the sandbox option and the Start refusal both read these (UX-M8).
     readiness: {
       'never-run': { message: 'Run Codex on this computer once first.', command: 'codex' },
@@ -31,6 +32,7 @@ export const CODEX_DESCRIPTOR = {
         message:
           'Codex keeps its sign-in in the system keyring, which the sandbox can\'t use. Set `cli_auth_credentials_store = "file"` in `~/.codex/config.toml`, then sign in again.',
         command: 'codex login',
+        commandLead: 'After that, run:',
       },
       'not-signed-in': { message: 'Sign in to Codex on this computer.', command: 'codex login' },
       'config-invalid': {

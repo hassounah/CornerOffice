@@ -243,5 +243,23 @@ describe('ConfigManager durability (real filesystem)', () => {
       await expect(next).resolves.toMatchObject({ companyName: 'After' })
       expect(manager.loadConfig()!.companyName).toBe('After')
     })
+
+    it('updateConfig shares the queue: a burst of updateConfig and mutateConfig calls all persist, in order', async () => {
+      manager.saveConfig(manager.getDefaultConfig())
+
+      const calls = Array.from({ length: 12 }, (_, i) =>
+        i % 2 === 0 ? manager.updateConfig({ companyName: `name-${i}` }) : manager.mutateConfig((cfg) => ({ ...cfg, companyName: `name-${i}` })),
+      )
+      await Promise.all(calls)
+
+      expect(manager.loadConfig()!.companyName).toBe('name-11')
+    })
+
+    it('updateConfig creates the file when absent, keeps the other fields, and still sanitizes the realm', async () => {
+      const updated = await manager.updateConfig({ companyName: 'Acme' })
+      expect(updated.companyName).toBe('Acme')
+      expect(updated.realm).toEqual(manager.getDefaultConfig().realm)
+      expect(manager.loadConfig()!.companyName).toBe('Acme')
+    })
   })
 })

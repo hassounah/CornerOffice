@@ -76,6 +76,8 @@ describe('versionArgv / infoArgv / imageInspectArgv', () => {
   })
 })
 
+const PINS = { codex: { CODEX_VERSION: '0.162.1', CODEX_SHA512_X64: 'a'.repeat(128), CODEX_SHA512_ARM64: 'b'.repeat(128) } }
+
 describe('buildArgv', () => {
   function baseOpts(home: string, ctx: string): BuildArgvOptions {
     return {
@@ -86,7 +88,7 @@ describe('buildArgv', () => {
       home,
       buildHash: 'abc123',
       ctx,
-      codex: { version: '0.162.1', sha512: { x64: 'a'.repeat(128), arm64: 'b'.repeat(128) } },
+      installPins: PINS,
       agents: ['claude', 'codex'],
     }
   }
@@ -118,15 +120,30 @@ describe('buildArgv', () => {
   })
 
   it.each([
-    ['an empty version', { version: '', sha512: { x64: 'a'.repeat(128), arm64: 'b'.repeat(128) } }],
-    ['a version with shell metacharacters', { version: '1.0;rm', sha512: { x64: 'a'.repeat(128), arm64: 'b'.repeat(128) } }],
-    ['an empty x64 hash', { version: '0.162.1', sha512: { x64: '', arm64: 'b'.repeat(128) } }],
-    ['a short arm64 hash', { version: '0.162.1', sha512: { x64: 'a'.repeat(128), arm64: 'b'.repeat(127) } }],
-    ['an upper-case hash', { version: '0.162.1', sha512: { x64: 'A'.repeat(128), arm64: 'b'.repeat(128) } }],
+    ['an empty version', { ...PINS.codex, CODEX_VERSION: '' }],
+    ['a version with shell metacharacters', { ...PINS.codex, CODEX_VERSION: '1.0;rm' }],
+    ['an empty x64 hash', { ...PINS.codex, CODEX_SHA512_X64: '' }],
+    ['a short arm64 hash', { ...PINS.codex, CODEX_SHA512_ARM64: 'b'.repeat(127) }],
+    ['an upper-case hash', { ...PINS.codex, CODEX_SHA512_X64: 'A'.repeat(128) }],
+    ['a lower-case pin name', { ...PINS.codex, codex_version: '1.0.0' }],
   ])('refuses %s (fail closed)', (_label, codex) => {
     const home = mkTmp('co-argv-home-')
     const ctx = mkTmp('co-argv-ctx-')
-    expect(() => buildArgv({ ...baseOpts(home, ctx), codex })).toThrow(/Codex/)
+    expect(() => buildArgv({ ...baseOpts(home, ctx), installPins: { codex } })).toThrow(/install pin/)
+  })
+
+  it('refuses pins for an agent that is not in the image', () => {
+    const home = mkTmp('co-argv-home-')
+    const ctx = mkTmp('co-argv-ctx-')
+    expect(() => buildArgv({ ...baseOpts(home, ctx), agents: ['claude'], installPins: PINS })).toThrow(/not in the image/)
+  })
+
+  it('passes any agent\'s pins in order, and none for an agent without any', () => {
+    const home = mkTmp('co-argv-home-')
+    const ctx = mkTmp('co-argv-ctx-')
+    const argv = buildArgv({ ...baseOpts(home, ctx), agents: ['claude', 'codex', 'gemini'], installPins: { ...PINS, gemini: { GEMINI_VERSION: '1.2.3' } } })
+    const buildArgs = argv.filter((_, i) => argv[i - 1] === '--build-arg')
+    expect(buildArgs.slice(-4)).toEqual(['CODEX_VERSION=0.162.1', `CODEX_SHA512_X64=${'a'.repeat(128)}`, `CODEX_SHA512_ARM64=${'b'.repeat(128)}`, 'GEMINI_VERSION=1.2.3'])
   })
 
   it.each([[[]], [['Claude']], [['a,b']]])('refuses an invalid agents label %j', (agents) => {

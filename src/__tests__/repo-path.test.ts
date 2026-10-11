@@ -30,7 +30,6 @@ function makeAppState(workspaces: Record<string, string>): AppState {
     homunculusState: null,
     discoveryService: {} as unknown as AppState['discoveryService'],
     channelDiscovery: null,
-    pluginDetector: null,
     channelConnection: null,
     terminalManager: null,
     sandboxManager: null,

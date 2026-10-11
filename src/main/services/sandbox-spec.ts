@@ -645,36 +645,43 @@ export interface BuildArgvOptions {
   buildHash: string
   /** The build context directory (resolved by sandbox-image.ts, step 2.2). */
   ctx: string
-  /** The pinned Codex release: version plus the hex sha512 of each platform tarball (D11, SL-1). */
-  codex: CodexPins
+  /**
+   * Install pins per agent: build-arg name -> value (for Codex the version and the hex sha512 of each platform
+   * tarball, D11, SL-1). Each pin is passed as `--build-arg NAME=value`, in the order given.
+   */
+  installPins: Readonly<Record<string, Readonly<Record<string, string>>>>
   /** Agent ids installed in the image, written to the `co.sandbox.agents` label. */
   agents: readonly string[]
   image?: string
 }
 
-export interface CodexPins {
-  version: string
-  sha512: { x64: string; arm64: string }
-}
-
-const CODEX_VERSION_RE = /^[0-9A-Za-z.+-]{1,64}$/
+const PIN_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/
+const PIN_VALUE_RE = /^[0-9A-Za-z.+-]{1,200}$/
 const SHA512_HEX_RE = /^[0-9a-f]{128}$/
 const AGENT_ID_LABEL_RE = /^[a-z][a-z0-9-]{0,31}$/
 
+/** Fail closed: an empty or malformed pin must never reach a Dockerfile verification step. A `*SHA512*` pin must be 128 lower-case hex digits. */
+function assertInstallPins(pins: BuildArgvOptions['installPins'], agents: readonly string[]): void {
+  for (const [agent, values] of Object.entries(pins)) {
+    if (!agents.includes(agent)) throw new Error(`sandbox-spec: install pins for ${agent}, which is not in the image, for buildArgv`)
+    for (const [name, value] of Object.entries(values)) {
+      if (!PIN_NAME_RE.test(name)) throw new Error(`sandbox-spec: invalid install pin name for ${agent} for buildArgv`)
+      if (!PIN_VALUE_RE.test(value)) throw new Error(`sandbox-spec: invalid install pin ${name} for ${agent} for buildArgv`)
+      if (name.includes('SHA512') && !SHA512_HEX_RE.test(value)) throw new Error(`sandbox-spec: invalid install pin ${name} (sha512) for ${agent} for buildArgv`)
+    }
+  }
+}
+
 /** `--pull` always; `--no-cache` only on `rebuild` (D15). */
 export function buildArgv(opts: BuildArgvOptions): string[] {
-  const { rebuild, toolchains, uid, gid, home, buildHash, ctx, codex, agents, image = SANDBOX_IMAGE } = opts
+  const { rebuild, toolchains, uid, gid, home, buildHash, ctx, installPins, agents, image = SANDBOX_IMAGE } = opts
 
   if (!validateBuildIds({ uid, gid })) throw new Error('sandbox-spec: invalid AGENT_UID/AGENT_GID for buildArgv')
   if (!isSafeAbsolutePath(home)) throw new Error('sandbox-spec: invalid AGENT_HOME for buildArgv')
-  // Fail closed: an empty or malformed pin must never reach the Dockerfile's verification step.
-  if (!CODEX_VERSION_RE.test(codex.version)) throw new Error('sandbox-spec: invalid Codex version pin for buildArgv')
-  if (!SHA512_HEX_RE.test(codex.sha512.x64) || !SHA512_HEX_RE.test(codex.sha512.arm64)) {
-    throw new Error('sandbox-spec: invalid Codex sha512 pin for buildArgv')
-  }
   if (agents.length === 0 || !agents.every((a) => AGENT_ID_LABEL_RE.test(a))) {
     throw new Error('sandbox-spec: invalid agents label for buildArgv')
   }
+  assertInstallPins(installPins, agents)
 
   const toolchainNames = [
     toolchains.node ? 'node' : null,
@@ -693,9 +700,7 @@ export function buildArgv(opts: BuildArgvOptions): string[] {
     '--build-arg', `AGENT_UID=${uid}`,
     '--build-arg', `AGENT_GID=${gid}`,
     '--build-arg', `AGENT_HOME=${home}`,
-    '--build-arg', `CODEX_VERSION=${codex.version}`,
-    '--build-arg', `CODEX_SHA512_X64=${codex.sha512.x64}`,
-    '--build-arg', `CODEX_SHA512_ARM64=${codex.sha512.arm64}`,
+    ...Object.values(installPins).flatMap((values) => Object.entries(values).flatMap(([name, value]) => ['--build-arg', `${name}=${value}`])),
     '--label', `${LABEL.build}=${buildHash}`,
     '--label', `${LABEL.toolchains}=${toolchainNames.join(',')}`,
     '--label', `${LABEL.agents}=${agents.join(',')}`,

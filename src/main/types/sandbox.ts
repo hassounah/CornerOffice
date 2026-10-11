@@ -69,9 +69,12 @@ export interface RecreatePlan {
   specHash: string
   newHostMounts: { path: string; readonly: boolean; source: 'settings' | 'memory.md' | 'app' }[]
   removedHostMounts: string[]
-  /** Which agent's container the plan is for; set on the plans `getStatus` reports (absent = the legacy agent). */
-  agentId?: AgentId
+  /** Which agent's container the plan is for. Always set by main. */
+  agentId: AgentId
 }
+
+/** A plan as the container check builds it; the manager adds the agent when it stores and reports it. */
+export type RecreatePlanBody = Omit<RecreatePlan, 'agentId'>
 
 export interface SandboxStatus {
   workspaceSlug: string
@@ -83,17 +86,17 @@ export interface SandboxStatus {
   /** The aggregate over `containers`: running if any is, else stopped if any is, else unknown if any is, else absent. */
   container: 'absent' | 'stopped' | 'running' | 'unknown'
   /** One container per agent (D22), keyed by agent id. Always set by main. */
-  containers?: Record<string, 'absent' | 'stopped' | 'running' | 'unknown'>
+  containers: Record<string, 'absent' | 'stopped' | 'running' | 'unknown'>
   /**
    * Per agent: `null` when it can start in the sandbox, else the handler's readiness `code`, which keys
    * `descriptor.copy.readiness` (the one source of the message, UX-M8). Always set by main.
    */
-  agentReadiness?: Record<string, { code: string } | null>
+  agentReadiness: Record<string, { code: string } | null>
   worktree: 'absent' | 'ready' | 'missing' | 'corrupt'
   session: {
     state: SessionState
-    /** The agent of the current session (absent when there is none, or from a build that predates agents). */
-    agentId?: AgentId | null
+    /** The agent of the current session; `null` when there is none. */
+    agentId: AgentId | null
     permissionMode: 'skip' | 'auto' | null
     networkMode: 'allowlist' | 'open' | null
     lastExit: { kind: 'unexpected'; reason: 'docker-unavailable' | 'exited'; at: string } | null
@@ -103,7 +106,7 @@ export interface SandboxStatus {
   /** Non-null => the next start returns `RECREATE_REQUIRED`. The last-started agent's plan, kept for compatibility; see `recreatePlans`. */
   recreatePlan: RecreatePlan | null
   /** Every agent's pending plan, each tagged with its `agentId`. Always set by main. */
-  recreatePlans?: RecreatePlan[]
+  recreatePlans: RecreatePlan[]
   /**
    * `unavailable` (TRD §14.5 #5, SEC-H4): this workspace's sandbox channel
    * card was rejected (for example a `shortId`/filename mismatch).
@@ -156,6 +159,8 @@ export interface DeletePreview {
   sessionRunning: boolean
   dirtyCount: number
   unmergedBranches: string[]
+  /** Quarantine folders (user-visible paths) that hold files and are kept by Delete. */
+  quarantineFolders: string[]
 }
 
 export type DeleteResult = { ok: true } | { ok: false; code: 'SESSION_RUNNING' | 'DIRTY_NOT_ACKNOWLEDGED' | 'FAILED' }
@@ -201,6 +206,8 @@ export type SandboxNotice =
    * and the name is plain; `destination` is where that one went. Both are null for several.
    */
   | { kind: 'agent-files-quarantined'; slug: string; agentId: AgentId; count: number; file: string | null; destination: string | null }
+  /** The agent's guard could not finish checking its home (too many entries to walk). Nothing was deleted; it checks again later. */
+  | { kind: 'agent-guard-incomplete'; slug: string; agentId: AgentId; lostBaseline?: boolean }
 
 // ── Push payloads ───────────────────────────────────────────────────────────
 

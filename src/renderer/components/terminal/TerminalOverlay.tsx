@@ -5,6 +5,7 @@ import type { TerminalPanelHandle } from './TerminalPanel'
 import { ShimmerOverlay } from './ShimmerOverlay'
 import { SandboxBadge } from '../sandbox/SandboxBadge'
 import { ActivityTrackingNote } from '../shared/ActivityTrackingNote'
+import { InlineCode } from '../shared/InlineCode'
 import { unwrapIpc } from '../../utils/ipc'
 import type { TerminalWindowBounds } from '@main/types/config'
 
@@ -21,6 +22,15 @@ const RESIZE_HANDLE_PX = 8
 const SEARCH_DEBOUNCE_MS = 150
 /** The exit banner's buttons are inline-styled, so the visible keyboard focus ring comes from a class. */
 const BANNER_BUTTON_FOCUS = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#fbbf24]'
+const BANNER_COPY_BUTTON_STYLE: React.CSSProperties = {
+  padding: '2px 8px',
+  fontSize: '12px',
+  borderRadius: '4px',
+  border: 'none',
+  cursor: 'pointer',
+  backgroundColor: '#27272a',
+  color: '#e4e4e7',
+}
 
 type ResizeEdge =
   | 'n' | 's' | 'e' | 'w'
@@ -653,7 +663,9 @@ export function TerminalOverlay({
               fontSize: '13px',
             }}
           >
-            <span id={`${workspaceSlug}-exit-banner-text`} style={{ flex: 1, minWidth: 0 }}>{exitBanner}</span>
+            <span id={`${workspaceSlug}-exit-banner-text`} style={{ flex: 1, minWidth: 0 }}>
+              <InlineCode text={exitBanner} copyCommands={{ buttonClass: BANNER_BUTTON_FOCUS, buttonStyle: BANNER_COPY_BUTTON_STYLE }} />
+            </span>
             <button
               ref={retryButtonRef}
               aria-describedby={`${workspaceSlug}-exit-banner-text`}

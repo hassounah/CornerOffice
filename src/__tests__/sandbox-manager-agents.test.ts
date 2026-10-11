@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
+import fs from 'fs'
 
 const mockLog = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }))
 vi.mock('electron-log/main', () => ({ default: mockLog }))
@@ -12,7 +13,7 @@ import { containerName } from '../main/services/sandbox-spec'
 import type { DockerRunner, DockerResult, DockerRunOpts } from '../main/services/docker-runner'
 import { AGENT_IDS } from '../main/agents/descriptors'
 import { HANDLERS } from '../main/agents/registry'
-import type { AgentHandler, QuarantineOutcome } from '../main/agents/handler'
+import type { AgentConfigResult, AgentHandler, QuarantineOutcome } from '../main/agents/handler'
 import { cleanupHarness, setup, prepareRepo, NOT_FOUND_ERROR } from './helpers/sandbox-session-harness'
 import type { Harness } from './helpers/sandbox-session-harness'
 
@@ -30,6 +31,9 @@ const originalClaude = HANDLERS.claude
 const originalCodex = HANDLERS.codex
 const codexAfterStop = vi.fn((): QuarantineOutcome => ({ quarantined: 0, shown: null, destination: null }))
 const claudeAfterStop = vi.fn((): QuarantineOutcome => ({ quarantined: 0, shown: null, destination: null }))
+const codexPrepare = vi.fn((): AgentConfigResult => ({ ok: true }))
+const codexCleanup = vi.fn((): void => {})
+const codexSweepPending = vi.fn((): boolean => false)
 
 function inspectJson(running: boolean, image = 'sha256:image1'): string {
   return JSON.stringify({
@@ -44,15 +48,20 @@ function inspectJson(running: boolean, image = 'sha256:image1'): string {
 beforeEach(() => {
   codexAfterStop.mockClear()
   claudeAfterStop.mockClear()
+  codexPrepare.mockClear()
+  codexCleanup.mockClear()
+  codexSweepPending.mockReset()
+  codexSweepPending.mockReturnValue(false)
   HANDLERS.codex = {
     ...originalCodex,
     sandbox: {
       readiness: () => ({ ok: true }),
-      prepare: () => ({ ok: true }),
+      prepare: codexPrepare,
       mounts: () => [],
       launch: () => ({ env: [], argv: ['codex'] }),
-      cleanup: () => {},
+      cleanup: codexCleanup,
       afterStop: codexAfterStop,
+      sweepPending: codexSweepPending,
     },
   } satisfies AgentHandler
   HANDLERS.claude = { ...originalClaude, sandbox: { ...originalClaude.sandbox!, afterStop: claudeAfterStop } }
@@ -108,6 +117,28 @@ describe('a Codex sandbox start', () => {
     const status = await manager.getStatus('myslug')
 
     expect(status.session.agentId).toBe('codex')
+    expect(Object.keys(status.containers ?? {})).toEqual([...AGENT_IDS])
+  })
+
+  it('status inspects every agent container at once, so a slow Docker costs one wait, not one per agent (BE-H2)', async () => {
+    const h = prepared()
+    const manager = createSandboxManager(h.makeDeps())
+    await manager.getEnvironment({ refresh: true })
+    const original = h.docker.run.bind(h.docker)
+    let inFlight = 0
+    let maxInFlight = 0
+    vi.spyOn(h.docker, 'run').mockImplementation(async (args, opts) => {
+      if (args[0] !== 'inspect') return original(args, opts)
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      inFlight -= 1
+      return original(args, opts)
+    })
+
+    const status = await manager.getStatus('myslug')
+
+    expect(maxInFlight).toBe(AGENT_IDS.length)
     expect(Object.keys(status.containers ?? {})).toEqual([...AGENT_IDS])
   })
 
@@ -181,6 +212,21 @@ describe('ending a session', () => {
     expect(new Set(stopTargets(h))).toEqual(new Set([CLAUDE]))
   })
 
+  it('raises a "couldn\'t finish checking" notice when the guard\'s check was incomplete, alongside the moved files', async () => {
+    const h = prepared()
+    const notices: unknown[] = []
+    const manager = createSandboxManager(h.makeDeps({ notify: (notice) => notices.push(notice) }))
+    await manager.startSession(h.opts({ agentId: 'codex' }))
+    h.docker.script(['inspect'], { result: { stdout: inspectJson(false), stderr: '', exitCode: 0 } })
+    codexAfterStop.mockReturnValueOnce({ quarantined: 1, shown: 'hooks.json', destination: '~/.corner-office/sandbox/myslug/codex-quarantine/hooks.json-1', incomplete: true })
+
+    await manager.endSession('myslug')
+
+    const kinds = notices.map((n) => (n as { kind: string }).kind).filter((k) => k.startsWith('agent-'))
+    expect(kinds).toEqual(['agent-files-quarantined', 'agent-guard-incomplete'])
+    expect(notices).toContainEqual({ kind: 'agent-guard-incomplete', slug: 'myslug', agentId: 'codex' })
+  })
+
   it('an afterStop that throws never fails the stop', async () => {
     const h = prepared()
     codexAfterStop.mockImplementationOnce(() => {
@@ -221,6 +267,38 @@ describe('ending a session', () => {
     await manager.startSession(h.opts({ agentId: 'codex' }))
     await manager.endSession('myslug')
     expect(notices.some((n) => (n as { kind: string }).kind === 'agent-files-quarantined')).toBe(false)
+  })
+
+  it('raises both notices when the guard refuses a start after moving files: nothing it moved is silent', async () => {
+    const h = prepared()
+    const notices: unknown[] = []
+    codexPrepare.mockReturnValueOnce({
+      ok: false,
+      detail: "Corner Office couldn't check ~/.codex before starting, so nothing was started.",
+      quarantine: { quarantined: 2, shown: null, destination: null, incomplete: true },
+    })
+    const manager = createSandboxManager(h.makeDeps({ notify: (notice) => notices.push(notice) }))
+
+    const result = await manager.startSession(h.opts({ agentId: 'codex' }))
+
+    expect(result).toMatchObject({ ok: false, code: 'AGENT_CONFIG_INVALID' })
+    expect(notices).toContainEqual({ kind: 'agent-files-quarantined', slug: 'myslug', agentId: 'codex', count: 2, file: null, destination: null })
+    expect(notices).toContainEqual({ kind: 'agent-guard-incomplete', slug: 'myslug', agentId: 'codex' })
+  })
+
+  it('passes a lost baseline through to the incomplete notice', async () => {
+    const h = prepared()
+    const notices: unknown[] = []
+    codexPrepare.mockReturnValueOnce({
+      ok: false,
+      detail: "Corner Office couldn't check ~/.codex before starting, so nothing was started.",
+      quarantine: { quarantined: 0, shown: null, destination: null, incomplete: true, lostBaseline: true },
+    })
+    const manager = createSandboxManager(h.makeDeps({ notify: (notice) => notices.push(notice) }))
+
+    await manager.startSession(h.opts({ agentId: 'codex' }))
+
+    expect(notices).toContainEqual({ kind: 'agent-guard-incomplete', slug: 'myslug', agentId: 'codex', lostBaseline: true })
   })
 
   it('raises the notice for files a prepare sweep moved (a crashed session), and still starts', async () => {
@@ -357,5 +435,261 @@ describe('reconcile by container name', () => {
 
     expect(stopTargets(h)).toEqual([CODEX])
     expect(codexAfterStop).not.toHaveBeenCalled()
+  })
+})
+
+// ── The guard's lifecycle (#0037 fix round F3) ────────────────────────────
+
+type ContainerState = 'running' | 'stopped' | 'absent'
+
+/** A Docker whose containers have a state: `stop` takes (unless it is in `stubborn`), `rm` removes (unless it is in `keepOnRm`). */
+function statefulDocker(
+  h: Harness,
+  states: Record<string, ContainerState>,
+  flags: { stubborn?: string[]; keepOnRm?: string[]; stopRemoves?: boolean; garbledInspect?: string[] } = {},
+): DockerRunner {
+  const lastArg = (args: readonly string[]): string => args[args.length - 1]
+  return {
+    binary: () => h.docker.binary(),
+    run: async (args: readonly string[], opts?: DockerRunOpts): Promise<DockerResult> => {
+      const name = lastArg(args)
+      const ok = { stdout: '', stderr: '', exitCode: 0 }
+      // An inspect Docker answers with something unparseable: the container's state is unknown.
+      if (args[0] === 'inspect' && flags.garbledInspect?.includes(name)) return { stdout: 'not json', stderr: '', exitCode: 0 }
+      if (args[0] === 'inspect' && states[name] && states[name] !== 'absent') {
+        return { stdout: inspectJson(states[name] === 'running'), stderr: '', exitCode: 0 }
+      }
+      if (args[0] === 'ps') {
+        const rows = Object.entries(states).filter(([, s]) => s !== 'absent')
+        const namesOnly = name === '{{.Names}}'
+        return { stdout: rows.map(([n, s]) => (namesOnly ? `${n}\n` : `${n}\t${s === 'running' ? 'running' : 'exited'}\tx\n`)).join(''), stderr: '', exitCode: 0 }
+      }
+      if (args[0] === 'stop' && !flags.stubborn?.includes(name)) {
+        states[name] = flags.stopRemoves ? 'absent' : 'stopped'
+        return ok
+      }
+      if (args[0] === 'rm' && !flags.keepOnRm?.includes(name)) {
+        states[name] = 'absent'
+        return ok
+      }
+      return h.docker.run(args, opts)
+    },
+    stream: (args, onLine, signal) => h.docker.stream(args, onLine, signal),
+  }
+}
+
+describe('a start with an orphaned container (scan-2b)', () => {
+  it('stops a running Codex container with no session and sweeps it before prepare opens the guard', async () => {
+    const h = prepared()
+    const states: Record<string, ContainerState> = { [CODEX]: 'running' }
+    const manager = createSandboxManager(h.makeDeps({ docker: statefulDocker(h, states, { stopRemoves: true }) }))
+
+    const result = await manager.startSession(h.opts({ agentId: 'codex' }))
+
+    expect(result).toMatchObject({ ok: true })
+    expect(codexAfterStop).toHaveBeenCalledTimes(1)
+    expect(codexAfterStop.mock.invocationCallOrder[0]).toBeLessThan(codexPrepare.mock.invocationCallOrder[0])
+  })
+
+  it('fails closed with CONTAINER_FAILED when the stop cannot be confirmed: no sweep, no prepare, slug idle', async () => {
+    const h = prepared()
+    const states: Record<string, ContainerState> = { [CODEX]: 'running' }
+    const manager = createSandboxManager(h.makeDeps({ docker: statefulDocker(h, states, { stubborn: [CODEX] }) }))
+
+    const result = await manager.startSession(h.opts({ agentId: 'codex' }))
+
+    expect(result).toMatchObject({ ok: false, code: 'CONTAINER_FAILED' })
+    expect(codexAfterStop).not.toHaveBeenCalled()
+    expect(codexPrepare).not.toHaveBeenCalled()
+    expect(manager.isBusy('myslug')).toBe(false)
+  })
+
+  it('fails closed when Docker cannot say whether the container runs (unknown inspect): no sweep, no prepare', async () => {
+    const h = prepared()
+    const manager = createSandboxManager(h.makeDeps({ docker: statefulDocker(h, { [CODEX]: 'running' }, { garbledInspect: [CODEX] }) }))
+
+    const result = await manager.startSession(h.opts({ agentId: 'codex' }))
+
+    expect(result).toMatchObject({ ok: false, code: 'CONTAINER_FAILED' })
+    expect(codexAfterStop).not.toHaveBeenCalled()
+    expect(codexPrepare).not.toHaveBeenCalled()
+  })
+
+  it('leaves an absent or stopped container alone', async () => {
+    const h = prepared()
+    const manager = createSandboxManager(h.makeDeps({ docker: statefulDocker(h, { [CODEX]: 'stopped' }) }))
+    await manager.ensureContainer('myslug', 'codex')
+    expect(codexAfterStop).not.toHaveBeenCalled()
+  })
+})
+
+describe('reconcile and the guard (SEC-M1, SEC-M2)', () => {
+  async function reconcileWith(h: Harness, states: Record<string, ContainerState>, prep?: (manager: SandboxManagerService) => Promise<void>): Promise<SandboxManagerService> {
+    const manager = createSandboxManager(h.makeDeps({ docker: statefulDocker(h, states) }))
+    await manager.getEnvironment({ refresh: true })
+    await prep?.(manager)
+    await manager.reconcile()
+    return manager
+  }
+
+  it('a host session does not shield an orphaned Codex container', async () => {
+    const h = prepared()
+    h.terminal.sessionExists = true
+    const states: Record<string, ContainerState> = { [CODEX]: 'running' }
+
+    await reconcileWith(h, states)
+
+    expect(states[CODEX]).toBe('stopped')
+    expect(codexAfterStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('a Claude sandbox session does not shield an orphaned Codex container, and its own container is left running', async () => {
+    const h = prepared()
+    const states: Record<string, ContainerState> = {}
+    const manager = createSandboxManager(h.makeDeps({ docker: statefulDocker(h, states) }))
+    await manager.getEnvironment({ refresh: true })
+    expect((await manager.startSession(h.opts())).ok).toBe(true)
+    states[CODEX] = 'running'
+    states[CLAUDE] = 'running'
+
+    await manager.reconcile()
+
+    expect(states[CODEX]).toBe('stopped')
+    expect(states[CLAUDE]).toBe('running')
+  })
+
+  it('a tracked Codex session shields its own container', async () => {
+    const h = prepared()
+    const states: Record<string, ContainerState> = {}
+    const manager = createSandboxManager(h.makeDeps({ docker: statefulDocker(h, states) }))
+    await manager.getEnvironment({ refresh: true })
+    expect((await manager.startSession(h.opts({ agentId: 'codex' }))).ok).toBe(true)
+    states[CODEX] = 'running'
+
+    await manager.reconcile()
+
+    expect(states[CODEX]).toBe('running')
+    expect(codexAfterStop).not.toHaveBeenCalled()
+  })
+
+  describe('an ended session whose sweep never ran', () => {
+    function stateDir(h: Harness): void {
+      fs.mkdirSync(`${sandboxPaths(h.realHome).sandboxStateRoot}/myslug`, { recursive: true })
+    }
+
+    it('runs the Codex afterStop when the baseline is open and the container is exited or gone', async () => {
+      for (const state of ['stopped', 'absent'] as const) {
+        codexAfterStop.mockClear()
+        // The first reconcile (on the first sign of Docker) sweeps; a real afterStop then closes the baseline.
+        codexSweepPending.mockImplementation(() => codexAfterStop.mock.calls.length === 0)
+        const h = prepared()
+        stateDir(h)
+        await reconcileWith(h, { [CODEX]: state })
+        expect(codexAfterStop).toHaveBeenCalledTimes(1)
+        cleanupHarness()
+      }
+    })
+
+    it('does nothing when no sweep is pending', async () => {
+      const h = prepared()
+      stateDir(h)
+      await reconcileWith(h, { [CODEX]: 'stopped' })
+      expect(codexAfterStop).not.toHaveBeenCalled()
+    })
+
+    it('does not sweep against a container that is still running after the stop', async () => {
+      codexSweepPending.mockReturnValue(true)
+      const h = prepared()
+      stateDir(h)
+      const states: Record<string, ContainerState> = { [CODEX]: 'running' }
+      const manager = createSandboxManager(h.makeDeps({ docker: statefulDocker(h, states, { stubborn: [CODEX] }) }))
+      await manager.getEnvironment({ refresh: true })
+      await manager.reconcile()
+      expect(codexAfterStop).not.toHaveBeenCalled()
+    })
+
+    it('leaves a workspace with a tracked Codex session to that session', async () => {
+      codexSweepPending.mockReturnValue(true)
+      const h = prepared()
+      const states: Record<string, ContainerState> = {}
+      const manager = createSandboxManager(h.makeDeps({ docker: statefulDocker(h, states) }))
+      await manager.getEnvironment({ refresh: true })
+      expect((await manager.startSession(h.opts({ agentId: 'codex' }))).ok).toBe(true)
+      states[CODEX] = 'stopped'
+      await manager.reconcile()
+      expect(codexAfterStop).not.toHaveBeenCalled()
+    })
+
+    it('a sweepPending that throws is logged and does not stop the reconcile', async () => {
+      codexSweepPending.mockImplementation(() => {
+        throw new Error('unreadable')
+      })
+      const h = prepared()
+      stateDir(h)
+      await reconcileWith(h, { [CODEX]: 'stopped' })
+      expect(mockLog.warn).toHaveBeenCalledWith(expect.stringContaining('codex sweepPending failed for myslug'))
+    })
+  })
+})
+
+describe('Delete and the guard (SEC-M4, BE-M1)', () => {
+  it('passes containerAbsent: true when the container is confirmed gone', async () => {
+    const h = prepared()
+    await prepareWorktree(h)
+    const states: Record<string, ContainerState> = { [CODEX]: 'stopped' }
+    const manager = createSandboxManager(h.makeDeps({ docker: statefulDocker(h, states) }))
+
+    expect(await manager.delete('myslug', false)).toEqual({ ok: true })
+
+    expect(codexCleanup).toHaveBeenCalledWith(expect.objectContaining({ slug: 'myslug' }), { containerAbsent: true })
+  })
+
+  it('passes containerAbsent: false when the container is still there after rm', async () => {
+    const h = prepared()
+    await prepareWorktree(h)
+    const states: Record<string, ContainerState> = { [CODEX]: 'running' }
+    const manager = createSandboxManager(h.makeDeps({ docker: statefulDocker(h, states, { keepOnRm: [CODEX] }) }))
+
+    expect(await manager.delete('myslug', false)).toEqual({ ok: true })
+
+    expect(codexCleanup).toHaveBeenCalledWith(expect.objectContaining({ slug: 'myslug' }), { containerAbsent: false })
+  })
+
+  it('passes containerAbsent: false when Docker cannot say what is left after rm (unknown inspect)', async () => {
+    const h = prepared()
+    await prepareWorktree(h)
+    const states: Record<string, ContainerState> = { [CODEX]: 'stopped' }
+    const manager = createSandboxManager(h.makeDeps({ docker: statefulDocker(h, states, { garbledInspect: [CODEX] }) }))
+
+    expect(await manager.delete('myslug', false)).toEqual({ ok: true })
+
+    expect(codexCleanup).toHaveBeenCalledWith(expect.objectContaining({ slug: 'myslug' }), { containerAbsent: false })
+  })
+
+  it('one agent\'s throwing cleanup is logged and the others still run', async () => {
+    const h = prepared()
+    await prepareWorktree(h)
+    codexCleanup.mockImplementationOnce(() => {
+      throw new Error('cleanup boom')
+    })
+    const claudeCleanup = vi.spyOn(HANDLERS.claude.sandbox!, 'cleanup')
+    const manager = createSandboxManager(h.makeDeps())
+
+    expect(await manager.delete('myslug', false)).toEqual({ ok: true })
+
+    expect(mockLog.warn).toHaveBeenCalledWith(expect.stringContaining('codex cleanup failed during delete for myslug'))
+    expect(claudeCleanup).toHaveBeenCalled()
+  })
+
+  it('clears the recreate-pending mark even when removing the worktree fails', async () => {
+    const h = prepared()
+    await prepareWorktree(h)
+    const manager = createSandboxManager(h.makeDeps({ worktree: { ...h.makeDeps().worktree, remove: async () => { throw new Error('rm worktree') } } }))
+    onImageBuildDone({ ok: true, imageId: 'sha256:x', recreatePendingNames: [CODEX] }, manager, { onChanged: vi.fn(), onImageReady: vi.fn() })
+    expect((await manager.getStatus('myslug')).recreatePending).toBe(true)
+
+    await expect(manager.delete('myslug', false)).rejects.toThrow('rm worktree')
+
+    expect((await manager.getStatus('myslug')).recreatePending).toBe(false)
   })
 })

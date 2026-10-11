@@ -150,6 +150,8 @@ export class TerminalManagerService {
     }
     const handler = getHandler(agentId)
     const argv = handler.host.argv({ permissionMode })
+    // Checked twice on purpose: `defineAgent` validates every mode's argv at module load (a bad handler never ships),
+    // and this checks the argv that is actually about to be joined into a shell command line (a handler is a function).
     for (const token of argv) assertArgvToken(token)
 
     // Build sanitized environment

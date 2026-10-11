@@ -148,7 +148,7 @@ export const api = {
   },
 
   agents: {
-    getHostAvailability: (refresh: boolean) => ipcRenderer.invoke('agents:getHostAvailability', { refresh }),
+    getHostAvailability: () => ipcRenderer.invoke('agents:getHostAvailability', {}),
   },
 
   session: {

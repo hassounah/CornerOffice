@@ -9,6 +9,7 @@ vi.mock('electron-log/main', () => ({ default: { info: vi.fn(), warn: vi.fn(), e
 import { parse } from 'smol-toml'
 import {
   buildOverlay,
+  codexQuarantineFolder,
   codexReadiness,
   codexStatePaths,
   findHostSocket,
@@ -60,6 +61,27 @@ afterEach(() => {
 
 const mode = (p: string): number => fs.statSync(p).mode & 0o777
 
+describe('codexQuarantineFolder', () => {
+  it('is null when the folder is absent or empty, and the user-visible path once it holds something', () => {
+    expect(codexQuarantineFolder(paths, SLUG)).toBeNull()
+    const dir = codexStatePaths(paths, SLUG).quarantine
+    fs.mkdirSync(dir, { recursive: true })
+    expect(codexQuarantineFolder(paths, SLUG)).toBeNull()
+    fs.writeFileSync(path.join(dir, 'AGENTS.override.md-1'), 'x')
+    expect(codexQuarantineFolder(paths, SLUG)).toBe(`~/.corner-office/sandbox/${SLUG}/codex-quarantine`)
+  })
+
+  it('is null for a symlink in its place', () => {
+    const dir = codexStatePaths(paths, SLUG).quarantine
+    const target = path.join(home, 'elsewhere')
+    fs.mkdirSync(target)
+    fs.writeFileSync(path.join(target, 'f'), 'x')
+    fs.mkdirSync(path.dirname(dir), { recursive: true })
+    fs.symlinkSync(target, dir)
+    expect(codexQuarantineFolder(paths, SLUG)).toBeNull()
+  })
+})
+
 describe('precreateCodexHome', () => {
   it('does nothing, and never creates ~/.codex, when it is missing', () => {
     expect(precreateCodexHome(paths)).toEqual({ ok: true })
@@ -82,9 +104,33 @@ describe('precreateCodexHome', () => {
       expect(fs.readFileSync(path.join(paths.codexDir, file), 'utf8')).toBe('')
       expect(mode(path.join(paths.codexDir, file))).toBe(0o600)
     }
-    for (const dir of ['plugins', 'skills', 'prompts', 'agents', 'rules', 'app-server-daemon', 'log']) {
+    for (const dir of ['plugins', 'skills', 'prompts', 'agents', 'packages', 'rules', 'app-server-daemon', 'log', 'tmp', '.tmp', 'shell_snapshots']) {
       expect(fs.statSync(path.join(paths.codexDir, dir)).isDirectory()).toBe(true)
       expect(mode(path.join(paths.codexDir, dir))).toBe(0o700)
+    }
+  })
+
+  it('refuses a link swapped in for a directory it just created, and leaves the link target\'s mode alone (L1)', () => {
+    fs.mkdirSync(paths.codexDir)
+    const target = path.join(home, 'elsewhere')
+    fs.mkdirSync(target, { mode: 0o755 })
+    fs.chmodSync(target, 0o755)
+    const realMkdir = fs.mkdirSync.bind(fs)
+    const spy = vi.spyOn(fs, 'mkdirSync').mockImplementation(((p: fs.PathLike, opts?: fs.MakeDirectoryOptions) => {
+      if (String(p) === path.join(paths.codexDir, 'plugins')) {
+        fs.symlinkSync(target, p) // the race: a link where the new directory should be
+        return undefined
+      }
+      return realMkdir(p, opts)
+    }) as typeof fs.mkdirSync)
+
+    try {
+      const result = precreateCodexHome(paths)
+
+      expect(result.ok).toBe(false)
+      expect(mode(target)).toBe(0o755)
+    } finally {
+      spy.mockRestore()
     }
   })
 
@@ -168,7 +214,8 @@ describe('precreateCodexState', () => {
       expect(fs.readFileSync(file, 'utf8')).toBe('')
       expect(mode(file)).toBe(0o600)
     }
-    for (const dir of [s.rulesDir, s.daemon, s.log, s.sqlite, s.quarantine]) {
+    const shadowDirs = ['codex-tmp', 'codex-dottmp', 'codex-shell-snapshots'].map((d) => path.join(s.state, d))
+    for (const dir of [s.rulesDir, s.daemon, s.log, s.sqlite, s.quarantine, ...shadowDirs]) {
       expect(fs.statSync(dir).isDirectory()).toBe(true)
       expect(mode(dir)).toBe(0o700)
     }
@@ -408,7 +455,7 @@ describe('socket refusal', () => {
     })
   })
 
-  it.each(['app-server-daemon', 'sessions', 'archived_sessions', 'log'])('a socket inside the shadowed or session dir %s is ignored', async (dir) => {
+  it.each(['app-server-daemon', 'sessions', 'archived_sessions', 'log', 'tmp', '.tmp', 'shell_snapshots'])('a socket inside the shadowed or session dir %s is ignored', async (dir) => {
     fs.mkdirSync(paths.codexDir)
     await listen(path.join(paths.codexDir, dir, 'x.sock'))
     expect(findHostSocket(paths.codexDir)).toBeNull()

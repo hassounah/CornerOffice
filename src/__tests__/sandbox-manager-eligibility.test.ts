@@ -461,6 +461,23 @@ describe('getEligibility — Claude home missing is readiness, not eligibility',
     await expectClaudeReadiness(createSandboxManager(makeDeps()), null)
   })
 
+  it('an explicit environment refresh ("Check again") re-reads readiness instead of serving the last 2 s of cache', async () => {
+    sandboxSettings.disabled = false
+    const { realHome, repo, makeDeps } = setup()
+    makeSimpleRepo(repo, 'main')
+    const manager = createSandboxManager(makeDeps())
+    // The first call probes Docker (which bumps the generation); the second one fills the cache.
+    expect((await manager.getStatus('myslug')).agentReadiness?.claude ?? null).toBeNull()
+    expect((await manager.getStatus('myslug')).agentReadiness?.claude ?? null).toBeNull()
+
+    fs.rmSync(path.join(realHome, '.claude'), { recursive: true, force: true })
+    // Within the window the answer is the cached one...
+    expect((await manager.getStatus('myslug')).agentReadiness?.claude ?? null).toBeNull()
+    // ...until an explicit refresh drops it.
+    await manager.getEnvironment({ refresh: true })
+    expect((await manager.getStatus('myslug')).agentReadiness?.claude).toEqual({ code: 'home-missing' })
+  })
+
   it('symlinked ~/.claude is home-missing readiness, and never unsafe-path', async () => {
     sandboxSettings.disabled = false
     const { realHome, repo, makeDeps } = setup()

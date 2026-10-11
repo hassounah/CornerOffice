@@ -2,6 +2,7 @@ import React from 'react'
 import type { NotificationItem as NotificationItemType } from '@main/types/gamification'
 import { RelativeTime } from '../shared/RelativeTime'
 import { SandboxTag } from '../sandbox/SandboxTag'
+import { CopyCommand } from '../sandbox/CopyCommand'
 import { isSandboxSource } from '../../utils/provenance'
 import { hasOpenTarget } from '../../utils/notification-target'
 import { useNotificationStore } from '../../stores/notification-store'
@@ -70,6 +71,12 @@ export function NotificationItem({ item, onDismiss }: NotificationItemProps): Re
         {item.body && (
           <p className="text-sm text-co-text-secondary mt-0.5 leading-snug">
             {item.body}
+          </p>
+        )}
+
+        {item.command && (
+          <p className="text-sm text-co-text-secondary mt-1.5">
+            <CopyCommand command={item.command} buttonClass="text-xs font-medium text-co-accent underline underline-offset-2 hover:no-underline" />
           </p>
         )}
 

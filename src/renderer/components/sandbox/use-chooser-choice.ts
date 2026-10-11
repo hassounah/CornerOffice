@@ -32,12 +32,13 @@ export async function loadDefaults(slug: string): Promise<SessionDefaultsView | 
   }
 }
 
-export type HostAvailability = Record<string, 'found' | 'not-found'>
+/** Per agent: 'found', 'not-found', or 'found-in-writable-root:<path>' (read it through `utils/host-availability`). */
+export type HostAvailability = Record<string, string>
 
 /** Which agents' binaries main finds on the host PATH; `null` when it can't be asked (nothing is then flagged). */
-export async function loadAvailability(refresh: boolean): Promise<HostAvailability | null> {
+export async function loadAvailability(): Promise<HostAvailability | null> {
   try {
-    return unwrapIpc((await window.cornerOffice.agents.getHostAvailability(refresh)) as IpcResponse<HostAvailability>)
+    return unwrapIpc((await window.cornerOffice.agents.getHostAvailability()) as IpcResponse<HostAvailability>)
   } catch {
     return null
   }
@@ -113,7 +114,7 @@ export function useChooserChoice({
         sandbox: availabilityOf(status),
         // The agent's own readiness, worded by its descriptor: the same source the Sandbox option and the Start refusal use.
         agentNotReady: (id) => {
-          const code = status?.agentReadiness?.[id]?.code
+          const code = status?.agentReadiness[id]?.code
           return code ? (agentReadinessMessage(id, code) ?? 'Not ready to run in the sandbox yet.') : null
         },
         descriptors: cur.agents,
@@ -191,7 +192,11 @@ export function useChooserChoice({
     setSandboxPermission(builtin.sandboxPermissionMode)
     setNetworkMode(builtin.networkMode)
     setSource('builtin')
+    // The notices and the recheck outcome explained the choices that were just thrown away (UX-M5). With none left,
+    // Start takes the autofocus again.
+    setNotices([])
     setReplaced([])
+    setRecheckOutcome(null)
   }
 
   return {

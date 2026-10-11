@@ -17,6 +17,7 @@ import { ENV_DENYLIST, isNeverAllowed } from '../../main/services/env-policy'
 import { CLAUDE_DESCRIPTOR } from '../../main/agents/claude/descriptor'
 import { sandboxPaths } from '../../main/services/sandbox-paths'
 import { assertMountSafe } from '../../main/services/sandbox-spec'
+import { IMAGE_AGENTS, INSTALL_PINS } from '../../main/services/sandbox-image'
 
 const hostOnlyDescriptor = (over: Partial<AgentDescriptor> = {}): AgentDescriptor => ({
   ...CLAUDE_DESCRIPTOR,
@@ -220,5 +221,15 @@ describe('defineAgent', () => {
 
   it('throws for an inconsistent handler', () => {
     expect(() => defineAgent('claude', { host: { argv: () => ['a b'] }, sandbox: sandboxStub })).toThrow(/^claude: agent argv token/)
+  })
+})
+
+describe('the sandbox image and the registry (BE-H1)', () => {
+  it('IMAGE_AGENTS is exactly the registered agents that have a sandbox half, in registry order', () => {
+    expect(IMAGE_AGENTS).toEqual(AGENT_IDS.filter((id) => getHandler(id).sandbox !== undefined))
+  })
+
+  it('install pins exist only for agents in the image', () => {
+    for (const agent of Object.keys(INSTALL_PINS)) expect(IMAGE_AGENTS).toContain(agent)
   })
 })

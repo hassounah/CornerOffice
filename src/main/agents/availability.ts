@@ -12,7 +12,12 @@ import type { AgentId } from './descriptors'
 // no nvm glob, no symlink handling beyond what `statSync` follows.
 // ---------------------------------------------------------------------------
 
-export type HostAvailability = 'found' | 'not-found'
+/**
+ * `found-in-writable-root:<real path>` means found, but the binary's real path lies inside a directory the sandbox
+ * container can write (SEC-M3): an agent in the sandbox could replace what the host then runs. It is a warning, not
+ * a refusal; every consumer treats it as found.
+ */
+export type HostAvailability = 'found' | 'not-found' | `found-in-writable-root:${string}`
 
 /** Directories agents commonly install into that a GUI-launched app's PATH often lacks. */
 const EXTRA_DIRS = ['.local/bin', '.npm-global/bin', '.bun/bin', '.local/share/pnpm'] as const
@@ -24,6 +29,8 @@ export interface PathDeps {
   /** The PATH value to scan; the process's own by default. */
   pathEnv?: string
   home?: string
+  /** Directories the sandbox container can write. A found binary whose real path is inside one is flagged. */
+  writableRoots?: readonly string[]
 }
 
 function candidateDirs({ pathEnv = process.env.PATH ?? '', home = os.homedir() }: PathDeps): string[] {
@@ -35,20 +42,42 @@ function candidateDirs({ pathEnv = process.env.PATH ?? '', home = os.homedir() }
   return dirs.filter((d) => d !== '' && path.isAbsolute(d))
 }
 
+/** The first regular file named `binary` with an execute bit in a PATH dir or fixed extra dir, or `null`. */
+function findOnHostPath(binary: string, deps: PathDeps): string | null {
+  for (const dir of candidateDirs(deps)) {
+    const candidate = path.join(dir, binary)
+    try {
+      const stat = fs.statSync(candidate)
+      if (stat.isFile() && (stat.mode & EXECUTE_BITS) !== 0) return candidate
+    } catch {
+      // not here: keep scanning
+    }
+  }
+  return null
+}
+
 /** True when a regular file named `binary` with an execute bit exists in any PATH dir or fixed extra dir. */
 export function isOnHostPath(binary: string, deps: PathDeps = {}): boolean {
-  return candidateDirs(deps).some((dir) => {
-    try {
-      const stat = fs.statSync(path.join(dir, binary))
-      return stat.isFile() && (stat.mode & EXECUTE_BITS) !== 0
-    } catch {
-      return false
-    }
-  })
+  return findOnHostPath(binary, deps) !== null
+}
+
+function realpathOrNull(p: string): string | null {
+  try {
+    return fs.realpathSync(p)
+  } catch {
+    return null
+  }
+}
+
+function availabilityOf(binary: string, deps: PathDeps, realRoots: readonly string[]): HostAvailability {
+  const found = findOnHostPath(binary, deps)
+  if (found === null) return 'not-found'
+  const real = realpathOrNull(found)
+  const inside = real !== null && realRoots.some((root) => real === root || real.startsWith(root + path.sep))
+  return inside ? `found-in-writable-root:${real}` : 'found'
 }
 
 export function getHostAvailability(deps: PathDeps = {}): Record<AgentId, HostAvailability> {
-  return Object.fromEntries(
-    AGENT_DESCRIPTORS.map((d) => [d.id, isOnHostPath(d.binaryName, deps) ? 'found' : 'not-found']),
-  ) as Record<AgentId, HostAvailability>
+  const realRoots = (deps.writableRoots ?? []).map(realpathOrNull).filter((r): r is string => r !== null)
+  return Object.fromEntries(AGENT_DESCRIPTORS.map((d) => [d.id, availabilityOf(d.binaryName, deps, realRoots)])) as Record<AgentId, HostAvailability>
 }

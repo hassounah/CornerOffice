@@ -20,6 +20,7 @@ import {
   recreateFailureMessage,
   agentDisplayName,
   agentReadinessCommand,
+  agentReadinessCommandLead,
   recreateTitle,
   deleteConfirmCopy,
   imageUpdatedForAgentCopy,
@@ -250,6 +251,12 @@ describe('agent-named dialogs and prompts (#0037 D11, UX-M5)', () => {
     expect(imageUpdatedForAgentCopy('codex')).toBe('The sandbox image was updated to include Codex. This is a one-time rebuild of a few minutes.')
   })
 
+  it('agentReadinessCommandLead is "Run:" unless the message names a step first', () => {
+    expect(agentReadinessCommandLead('codex', 'not-signed-in')).toBe('Run:')
+    expect(agentReadinessCommandLead('codex', 'keyring')).toBe('After that, run:')
+    expect(agentReadinessCommandLead('nope', 'x')).toBe('Run:')
+  })
+
   it('agentReadinessCommand returns the fix for a code that has one, else null', () => {
     expect(agentReadinessCommand('codex', 'not-signed-in')).toBe('codex login')
     expect(agentReadinessCommand('codex', 'never-run')).toBe('codex')
@@ -301,7 +308,7 @@ describe('startFailureMessage', () => {
 
 describe('describeRecreatePlan', () => {
   const mount = (path: string, readonly: boolean, source: 'settings' | 'memory.md' | 'app' = 'settings') => ({ path, readonly, source })
-  const plan = (overrides: Partial<RecreatePlan>): RecreatePlan => ({ reason: 'mount-plan', specHash: 'a'.repeat(64), newHostMounts: [], removedHostMounts: [], ...overrides })
+  const plan = (overrides: Partial<RecreatePlan>): RecreatePlan => ({ reason: 'mount-plan', specHash: 'a'.repeat(64), newHostMounts: [], removedHostMounts: [], agentId: 'claude', ...overrides })
 
   it.each(Object.keys(ALL_PLAN_REASONS) as RecreatePlan['reason'][])('gives one reason line for %s', (reason) => {
     expect(describeRecreatePlan(plan({ reason })).reasonLine).toBe(RECREATE_REASON_COPY[reason])

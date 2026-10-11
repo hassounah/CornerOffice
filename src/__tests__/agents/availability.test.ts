@@ -67,4 +67,26 @@ describe('getHostAvailability', () => {
     expect(result.codex).toBe('found')
     expect(result.claude).toBe('not-found')
   })
+
+  it('flags a binary whose real path is inside a sandbox-writable root, following a symlink (SEC-M3)', () => {
+    const root = fs.realpathSync(mkTmp())
+    const real = path.join(root, 'packages', 'bin')
+    writeBinary(real, 'codex', 0o755)
+    const bin = mkTmp()
+    fs.symlinkSync(path.join(real, 'codex'), path.join(bin, 'codex'))
+
+    const result = getHostAvailability({ pathEnv: bin, home: mkTmp(), writableRoots: [root] })
+
+    expect(result.codex).toBe(`found-in-writable-root:${path.join(real, 'codex')}`)
+  })
+
+  it('leaves a binary outside every writable root, and a sibling that only shares a prefix, as found', () => {
+    const root = fs.realpathSync(mkTmp())
+    const sibling = `${root}-other`
+    fs.mkdirSync(sibling)
+    dirs.push(sibling)
+    writeBinary(sibling, 'codex', 0o755)
+
+    expect(getHostAvailability({ pathEnv: sibling, home: mkTmp(), writableRoots: [root, path.join(root, 'missing')] }).codex).toBe('found')
+  })
 })

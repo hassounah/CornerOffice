@@ -80,7 +80,6 @@ beforeEach(() => {
     homunculusState: null,
     discoveryService: {} as unknown as import('../main/services/workspace-discovery').WorkspaceDiscoveryService,
     channelDiscovery: null,
-    pluginDetector: null,
     channelConnection: null,
     terminalManager: null,
     sandboxManager: null,

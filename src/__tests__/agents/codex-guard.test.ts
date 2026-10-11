@@ -6,8 +6,8 @@ import path from 'path'
 const { info, warn } = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn() }))
 vi.mock('electron-log/main', () => ({ default: { info, warn, error: vi.fn() } }))
 
-import { GUARD_BASELINE_FILE, cleanupCodexSession, closeCodexGuard, inGuardNameSet, openCodexGuard, prepareCodexSession } from '../../main/agents/codex/guard'
-import { codexStatePaths } from '../../main/agents/codex/sandbox-config'
+import { GUARD_BASELINE_FILE, cleanupCodexSession, closeCodexGuard, codexGuardIsOpen, inGuardNameSet, openCodexGuard, prepareCodexSession } from '../../main/agents/codex/guard'
+import { GUARD_ACTIVE_FILE, codexStatePaths } from '../../main/agents/codex/sandbox-config'
 import { sandboxPaths } from '../../main/services/sandbox-paths'
 import type { SandboxPaths } from '../../main/services/sandbox-paths'
 
@@ -25,6 +25,7 @@ let paths: SandboxPaths
 
 const baselineFile = (): string => path.join(codexStatePaths(paths, SLUG).state, GUARD_BASELINE_FILE)
 const readBaseline = (): { state: string; names: string[] } => JSON.parse(fs.readFileSync(baselineFile(), 'utf8'))
+const activeFile = (): string => path.join(codexStatePaths(paths, SLUG).state, GUARD_ACTIVE_FILE)
 const inHome = (name: string): string => path.join(paths.codexDir, name)
 const quarantined = (): string[] => fs.readdirSync(codexStatePaths(paths, SLUG).quarantine).sort()
 
@@ -92,7 +93,7 @@ describe('openCodexGuard / closeCodexGuard', () => {
 
     const outcome = closeCodexGuard(paths, SLUG, NOW)
 
-    expect(outcome).toEqual({ quarantined: 5, shown: null, destination: null })
+    expect(outcome).toEqual({ quarantined: 5, shown: null, destination: `~/.corner-office/sandbox/${SLUG}/codex-quarantine/` })
     expect(quarantined()).toEqual(
       [`AGENTS.override.md-${NOW}`, `x.config.toml-${NOW}`, `.env.local-${NOW}`, `hooks.json-${NOW}`, `sneaky-${NOW}`].sort(),
     )
@@ -246,28 +247,202 @@ describe('openCodexGuard / closeCodexGuard', () => {
     expect(readBaseline().state).toBe('open')
   })
 
-  it('an unreadable or malformed baseline means nothing is swept', () => {
+  it('a baseline from before the active marker existed, and unreadable, is treated as a first run (nothing swept)', () => {
     startSession()
+    fs.rmSync(activeFile())
     fs.writeFileSync(baselineFile(), '{ not json')
     fs.writeFileSync(inHome('AGENTS.override.md'), 'mine')
-    expect(openCodexGuard(paths, SLUG, NOW)).toEqual({ ok: true })
-    expect(fs.existsSync(inHome('AGENTS.override.md'))).toBe(true)
-
-    fs.writeFileSync(baselineFile(), JSON.stringify({ state: 'weird', names: [] }))
-    expect(openCodexGuard(paths, SLUG, NOW)).toEqual({ ok: true })
-    fs.writeFileSync(baselineFile(), JSON.stringify({ state: 'open', names: [1] }))
-    expect(openCodexGuard(paths, SLUG, NOW)).toEqual({ ok: true })
-    fs.writeFileSync(baselineFile(), 'null')
     expect(openCodexGuard(paths, SLUG, NOW)).toEqual({ ok: true })
     expect(fs.readFileSync(inHome('AGENTS.override.md'), 'utf8')).toBe('mine')
   })
 
-  it('closing without any baseline records one and moves nothing', () => {
+  it('closing a workspace that never opened its guard records a baseline and moves nothing', () => {
     prepareCodexSession(paths, SLUG, WT)
     fs.rmSync(baselineFile())
+    fs.rmSync(activeFile())
     fs.writeFileSync(inHome('AGENTS.override.md'), 'x')
     expect(closeCodexGuard(paths, SLUG, NOW)).toEqual({ quarantined: 0, shown: null, destination: null })
     expect(readBaseline().state).toBe('closed')
+  })
+
+  describe('a lost or damaged baseline in a workspace whose guard has opened before', () => {
+    it.each([
+      ['missing', undefined],
+      ['empty', ''],
+      ['not JSON', '{ not json'],
+      ['an unknown state', JSON.stringify({ state: 'weird', names: [] })],
+      ['bad names', JSON.stringify({ state: 'open', names: [1] })],
+      ['null', 'null'],
+    ])('%s: open refuses, moves what the sweep can see, reports it as incomplete, and does not bless the current files', (_label, content) => {
+      startSession()
+      if (content === undefined) fs.rmSync(baselineFile())
+      else fs.writeFileSync(baselineFile(), content)
+      fs.writeFileSync(inHome('hooks.json'), 'planted')
+      fs.symlinkSync('/etc', inHome('evil-link'))
+
+      const result = openCodexGuard(paths, SLUG, NOW)
+
+      expect(result).toMatchObject({ ok: false, quarantine: { incomplete: true, lostBaseline: true } })
+      expect(fs.existsSync(inHome('hooks.json'))).toBe(false)
+      expect(fs.existsSync(inHome('evil-link'))).toBe(false)
+      expect(quarantined()).toEqual(expect.arrayContaining([`hooks.json-${NOW}`, `evil-link-${NOW}`]))
+      if (content === undefined) expect(fs.existsSync(baselineFile())).toBe(false)
+      else expect(fs.readFileSync(baselineFile(), 'utf8')).toBe(content)
+    })
+
+    it('close does the same and keeps the state, and the guard counts as open so reconcile retries', () => {
+      startSession()
+      fs.writeFileSync(baselineFile(), '')
+      fs.writeFileSync(inHome('hooks.json'), 'planted')
+
+      const outcome = closeCodexGuard(paths, SLUG, NOW)
+
+      expect(outcome).toMatchObject({ incomplete: true, quarantined: expect.any(Number) })
+      expect(fs.existsSync(inHome('hooks.json'))).toBe(false)
+      expect(fs.readFileSync(baselineFile(), 'utf8')).toBe('')
+      expect(codexGuardIsOpen(paths, SLUG)).toBe(true)
+    })
+
+    it('Delete is the way back: with the container gone it sweeps what it can see, then removes the marker and the state', () => {
+      startSession()
+      fs.writeFileSync(baselineFile(), '')
+      fs.writeFileSync(inHome('hooks.json'), 'planted')
+
+      cleanupCodexSession(paths, SLUG)
+
+      expect(fs.existsSync(inHome('hooks.json'))).toBe(false)
+      expect(quarantined()).toEqual(expect.arrayContaining([expect.stringMatching(/^hooks\.json-\d+$/)]))
+      expect(fs.existsSync(activeFile())).toBe(false)
+      expect(fs.existsSync(baselineFile())).toBe(false)
+      // ...and the next start is a first run again.
+      expect(openCodexGuard(paths, SLUG, NOW)).toEqual({ ok: true })
+    })
+
+    it('Delete keeps the marker and the state when the link walk also went over its bounds', () => {
+      startSession()
+      fs.writeFileSync(baselineFile(), '')
+      fs.mkdirSync(inHome('many'))
+      for (let i = 0; i < 1001; i++) fs.symlinkSync('/t', inHome(`many/l${i}`))
+
+      cleanupCodexSession(paths, SLUG)
+
+      expect(fs.existsSync(activeFile())).toBe(true)
+      expect(fs.existsSync(baselineFile())).toBe(true)
+    })
+
+    it('the untrusted sweep also quarantines nested symlinks, which nothing known to be the user\'s excuses', () => {
+      fs.mkdirSync(inHome('memories'))
+      startSession()
+      fs.writeFileSync(baselineFile(), '')
+      fs.symlinkSync('/etc/passwd', inHome('memories/x'))
+
+      expect(closeCodexGuard(paths, SLUG, NOW)).toMatchObject({ incomplete: true, lostBaseline: true })
+      expect(fs.existsSync(inHome('memories/x'))).toBe(false)
+      expect(quarantined()).toContain(`memories_x-${NOW}`)
+    })
+
+    it('a lost baseline plus a walk over its bounds leaves skills/ and plugins/ in place, and still moves a planted hooks.json', () => {
+      fs.mkdirSync(inHome('skills'), { recursive: true })
+      startSession()
+      fs.writeFileSync(baselineFile(), '')
+      fs.mkdirSync(inHome('many'))
+      for (let i = 0; i < 1001; i++) fs.symlinkSync('/t', inHome(`many/l${i}`))
+      fs.writeFileSync(inHome('hooks.json'), 'planted')
+
+      const outcome = closeCodexGuard(paths, SLUG, NOW)
+
+      expect(outcome).toMatchObject({ incomplete: true, lostBaseline: true })
+      expect(fs.existsSync(inHome('skills'))).toBe(true)
+      expect(fs.existsSync(inHome('plugins'))).toBe(true)
+      expect(fs.existsSync(inHome('many'))).toBe(true)
+      expect(fs.existsSync(inHome('hooks.json'))).toBe(false)
+      expect(openCodexGuard(paths, SLUG, NOW)).toMatchObject({ ok: false })
+    })
+
+    it('a first open writes the baseline before the marker', () => {
+      const order: string[] = []
+      const realRename = fs.renameSync.bind(fs)
+      vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        if (String(to) === baselineFile()) order.push('baseline')
+        realRename(from, to)
+      })
+      const realOpen = fs.openSync.bind(fs)
+      vi.spyOn(fs, 'openSync').mockImplementation(((p: fs.PathLike, ...rest: unknown[]) => {
+        if (String(p) === activeFile()) order.push('marker')
+        return (realOpen as (...args: unknown[]) => number)(p, ...rest)
+      }) as typeof fs.openSync)
+
+      startSession()
+
+      expect(order).toEqual(['baseline', 'marker'])
+    })
+
+    it('a failure between the two leaves a baseline and no marker: the next open is still a normal one', () => {
+      startSession()
+      fs.rmSync(activeFile())
+      expect(openCodexGuard(paths, SLUG, NOW)).toEqual({ ok: true })
+    })
+
+    it('a finished Delete removes the marker with the baseline', () => {
+      startSession()
+      cleanupCodexSession(paths, SLUG)
+      expect(fs.existsSync(activeFile())).toBe(false)
+      expect(fs.existsSync(baselineFile())).toBe(false)
+    })
+  })
+
+  describe('the baseline write', () => {
+    it('is atomic: no temp file is left, and a stale temp symlink is replaced, never written through', () => {
+      startSession()
+      const victim = path.join(home, 'victim.txt')
+      fs.writeFileSync(victim, 'keep')
+      fs.symlinkSync(victim, `${baselineFile()}.tmp`)
+
+      expect(closeCodexGuard(paths, SLUG, NOW).quarantined).toBe(0)
+
+      expect(fs.readFileSync(victim, 'utf8')).toBe('keep')
+      expect(fs.existsSync(`${baselineFile()}.tmp`)).toBe(false)
+      expect(readBaseline().state).toBe('closed')
+    })
+
+    it('a baseline that cannot fit under the cap on close is reported as incomplete, never silently, and stays open', () => {
+      startSession()
+      for (let i = 0; i < 2100; i++) fs.writeFileSync(inHome(`${String(i).padStart(4, '0')}${'n'.repeat(250)}`), '')
+
+      const outcome = closeCodexGuard(paths, SLUG, NOW)
+
+      expect(outcome).toMatchObject({ incomplete: true })
+      expect(readBaseline().state).toBe('open')
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not record the closed baseline'))
+    })
+
+    it('a failed marker write after a finished sweep refuses to start and carries what the sweep moved', () => {
+      startSession()
+      fs.writeFileSync(inHome('hooks.json'), 'planted')
+      fs.rmSync(activeFile())
+      fs.mkdirSync(activeFile())
+
+      const result = openCodexGuard(paths, SLUG, NOW)
+
+      expect(result).toMatchObject({ ok: false, quarantine: { quarantined: 1, shown: 'hooks.json', incomplete: true } })
+      expect(fs.existsSync(inHome('hooks.json'))).toBe(false)
+    })
+  })
+
+  it('the in-place name for an entry renamed across a filesystem does not replace an earlier one', () => {
+    startSession()
+    fs.writeFileSync(inHome('AGENTS.override.md'), 'new')
+    fs.writeFileSync(inHome(`.AGENTS.override.md.co-quarantined-${NOW}`), 'earlier')
+    const realRename = fs.renameSync.bind(fs)
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(to).includes('codex-quarantine')) throw Object.assign(new Error('cross-device'), { code: 'EXDEV' })
+      realRename(from, to)
+    })
+
+    closeCodexGuard(paths, SLUG, NOW)
+
+    expect(fs.readFileSync(inHome(`.AGENTS.override.md.co-quarantined-${NOW}`), 'utf8')).toBe('earlier')
+    expect(fs.readFileSync(inHome(`.AGENTS.override.md.co-quarantined-${NOW}.1`), 'utf8')).toBe('new')
   })
 
   it('never logs file contents', () => {
@@ -332,6 +507,214 @@ describe('baselined entries swapped for symlinks', () => {
   })
 })
 
+describe('nested symlinks and retargeted links', () => {
+  const evil = (): string => {
+    const target = path.join(home, 'victim.txt')
+    fs.writeFileSync(target, 'keep')
+    return target
+  }
+
+  it('records user symlinks with their targets, top level and nested', () => {
+    fs.mkdirSync(inHome('memories'))
+    fs.symlinkSync('/a/b', inHome('memories/notes'))
+    fs.symlinkSync('/c', inHome('history.jsonl'))
+    startSession()
+    const { links } = JSON.parse(fs.readFileSync(baselineFile(), 'utf8')) as { links: Record<string, string> }
+    expect(links).toEqual({ 'memories/notes': '/a/b', 'history.jsonl': '/c' })
+  })
+
+  it('a new link nested in memories/ is quarantined as the link, never followed, and is not offered for restore', () => {
+    fs.mkdirSync(inHome('memories'))
+    startSession()
+    const target = evil()
+    fs.symlinkSync(target, inHome('memories/memory_summary.md'))
+
+    const outcome = closeCodexGuard(paths, SLUG, NOW)
+
+    expect(outcome).toEqual({
+      quarantined: 1,
+      shown: null,
+      destination: `~/.corner-office/sandbox/${SLUG}/codex-quarantine/memories_memory_summary.md-${NOW}`,
+    })
+    expect(fs.existsSync(inHome('memories/memory_summary.md'))).toBe(false)
+    expect(fs.readlinkSync(path.join(codexStatePaths(paths, SLUG).quarantine, `memories_memory_summary.md-${NOW}`))).toBe(target)
+    expect(fs.readFileSync(target, 'utf8')).toBe('keep')
+  })
+
+  it('finds a link four levels down but not five', () => {
+    fs.mkdirSync(inHome('a/b/c/d'), { recursive: true })
+    startSession()
+    fs.symlinkSync(evil(), inHome('a/b/c/l4'))
+    fs.symlinkSync(evil(), inHome('a/b/c/d/l5'))
+    expect(closeCodexGuard(paths, SLUG, NOW).quarantined).toBe(1)
+    expect(fs.existsSync(inHome('a/b/c/l4'))).toBe(false)
+    expect(fs.lstatSync(inHome('a/b/c/d/l5')).isSymbolicLink()).toBe(true)
+  })
+
+  it('a nested link renamed in place keeps its directory', () => {
+    fs.mkdirSync(inHome('memories'))
+    startSession()
+    fs.symlinkSync(evil(), inHome('memories/x'))
+    const realRename = fs.renameSync.bind(fs)
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(to).includes('codex-quarantine')) throw Object.assign(new Error('cross-device'), { code: 'EXDEV' })
+      realRename(from, to)
+    })
+    expect(closeCodexGuard(paths, SLUG, NOW).destination).toBe(`~/.codex/memories/.x.co-quarantined-${NOW}`)
+    expect(fs.lstatSync(inHome(`memories/.x.co-quarantined-${NOW}`)).isSymbolicLink()).toBe(true)
+  })
+
+  it('an unchanged nested user link is left alone', () => {
+    fs.mkdirSync(inHome('memories'))
+    fs.symlinkSync('/somewhere', inHome('memories/mine'))
+    startSession()
+    expect(closeCodexGuard(paths, SLUG, NOW).quarantined).toBe(0)
+    expect(fs.readlinkSync(inHome('memories/mine'))).toBe('/somewhere')
+  })
+
+  it('a nested user link pointed somewhere else is quarantined', () => {
+    fs.mkdirSync(inHome('memories'))
+    fs.symlinkSync('/somewhere', inHome('memories/mine'))
+    startSession()
+    fs.rmSync(inHome('memories/mine'))
+    fs.symlinkSync(evil(), inHome('memories/mine'))
+    expect(closeCodexGuard(paths, SLUG, NOW).quarantined).toBe(1)
+    expect(fs.existsSync(inHome('memories/mine'))).toBe(false)
+  })
+
+  it('a retargeted top-level user link is quarantined; an unchanged one is not', () => {
+    fs.symlinkSync('/old', inHome('history.jsonl'))
+    fs.symlinkSync('/same', inHome('notes.md'))
+    startSession()
+    fs.rmSync(inHome('history.jsonl'))
+    fs.symlinkSync(evil(), inHome('history.jsonl'))
+
+    const outcome = closeCodexGuard(paths, SLUG, NOW)
+
+    expect(outcome).toMatchObject({ quarantined: 1, shown: 'history.jsonl' })
+    expect(fs.readlinkSync(inHome('notes.md'))).toBe('/same')
+  })
+
+  it('does not enter the shadowed or session directories', () => {
+    for (const dir of ['tmp', 'sessions']) fs.mkdirSync(inHome(dir), { recursive: true })
+    startSession()
+    fs.symlinkSync(evil(), inHome('tmp/arg0'))
+    fs.symlinkSync(evil(), inHome('sessions/x'))
+    expect(closeCodexGuard(paths, SLUG, NOW).quarantined).toBe(0)
+  })
+
+  it('a baseline without links (older format) makes no link check', () => {
+    fs.mkdirSync(inHome('memories'))
+    fs.symlinkSync('/old', inHome('history.jsonl'))
+    startSession()
+    fs.writeFileSync(baselineFile(), JSON.stringify({ state: 'open', names: fs.readdirSync(paths.codexDir) }))
+    fs.symlinkSync(evil(), inHome('memories/x'))
+    fs.rmSync(inHome('history.jsonl'))
+    fs.symlinkSync(evil(), inHome('history.jsonl'))
+    expect(closeCodexGuard(paths, SLUG, NOW).quarantined).toBe(0)
+  })
+
+  it('a cap overflow fails closed at open, leaving the baseline open', () => {
+    startSession()
+    fs.mkdirSync(inHome('many'))
+    for (let i = 0; i < 1001; i++) fs.symlinkSync('/t', inHome(`many/l${i}`))
+    expect(openCodexGuard(paths, SLUG, NOW)).toMatchObject({ ok: false })
+    expect(readBaseline().state).toBe('open')
+  })
+
+  describe('a walk over its bounds does not stop the top-level check', () => {
+    function overflow(): void {
+      fs.mkdirSync(inHome('many'))
+      for (let i = 0; i < 1001; i++) fs.symlinkSync('/t', inHome(`many/l${i}`))
+    }
+
+    it('a planted hooks.json and a swapped top-level link are still quarantined, and the outcome is incomplete', () => {
+      startSession()
+      overflow()
+      fs.writeFileSync(inHome('hooks.json'), 'planted')
+      fs.rmSync(inHome('auth.json'))
+      fs.symlinkSync(evil(), inHome('auth.json'))
+
+      const outcome = closeCodexGuard(paths, SLUG, NOW)
+
+      expect(outcome).toMatchObject({ incomplete: true })
+      expect(fs.existsSync(inHome('hooks.json'))).toBe(false)
+      expect(fs.existsSync(inHome('auth.json'))).toBe(false)
+      expect(quarantined()).toEqual(expect.arrayContaining([`hooks.json-${NOW}`, `auth.json-${NOW}`]))
+      expect(readBaseline().state).toBe('open')
+    })
+
+    it('a new top-level directory (which may hold links the walk could not see) is moved aside too, a baselined one is not', () => {
+      fs.mkdirSync(inHome('memories'))
+      startSession()
+      overflow()
+      fs.mkdirSync(inHome('fresh'))
+
+      const outcome = closeCodexGuard(paths, SLUG, NOW)
+
+      expect(outcome).toMatchObject({ incomplete: true, quarantined: 2 }) // `many` and `fresh` are both new
+      expect(fs.existsSync(inHome('fresh'))).toBe(false)
+      expect(fs.existsSync(inHome('memories'))).toBe(true)
+    })
+
+    it('a Delete sweep that was incomplete keeps the baseline', () => {
+      startSession()
+      overflow()
+      cleanupCodexSession(paths, SLUG)
+      expect(readBaseline().state).toBe('open')
+    })
+
+    it('an open that cannot finish the check moves what it found but starts nothing', () => {
+      startSession()
+      overflow()
+      fs.writeFileSync(inHome('hooks.json'), 'planted')
+      expect(openCodexGuard(paths, SLUG, NOW)).toMatchObject({ ok: false, quarantine: { incomplete: true } })
+      expect(fs.existsSync(inHome('hooks.json'))).toBe(false)
+    })
+
+    it('links found before the bound are still quarantined from a baselined directory', () => {
+      fs.mkdirSync(inHome('memories'))
+      startSession()
+      for (let i = 0; i < 1001; i++) fs.symlinkSync(evil(), inHome(`memories/l${i}`))
+
+      const outcome = closeCodexGuard(paths, SLUG, NOW)
+
+      expect(outcome).toMatchObject({ incomplete: true })
+      expect(outcome.quarantined).toBeGreaterThan(900)
+      expect(fs.existsSync(inHome('memories'))).toBe(true)
+    })
+  })
+
+  it('two nested links whose flattened names collide both survive in the quarantine', () => {
+    fs.mkdirSync(inHome('a'))
+    fs.mkdirSync(inHome('a_b'))
+    startSession()
+    const target = evil()
+    fs.symlinkSync(target, inHome('a/b_c'))
+    fs.symlinkSync(`${target}.other`, inHome('a_b/c'))
+
+    expect(closeCodexGuard(paths, SLUG, NOW).quarantined).toBe(2)
+
+    const targets = quarantined().map((name) => fs.readlinkSync(path.join(codexStatePaths(paths, SLUG).quarantine, name)))
+    expect(quarantined()).toHaveLength(2)
+    expect(targets.sort()).toEqual([target, `${target}.other`].sort())
+  })
+
+  it('refuses to write a baseline over the read cap, so it can never read back as "no baseline"', () => {
+    for (let i = 0; i < 300; i++) fs.symlinkSync(`/${'x'.repeat(4000)}`.slice(0, 4000), inHome(`l${i}`))
+    expect(openCodexGuard(paths, SLUG, NOW)).toMatchObject({ ok: false })
+    expect(fs.existsSync(baselineFile())).toBe(false)
+  })
+
+  it('stores a long target whole (the OS limits it to under 4 KB) and does not flag it as changed', () => {
+    fs.symlinkSync('x'.repeat(4000), inHome('long'))
+    startSession()
+    const { links } = JSON.parse(fs.readFileSync(baselineFile(), 'utf8')) as { links: Record<string, string> }
+    expect(links.long).toHaveLength(4000)
+    expect(closeCodexGuard(paths, SLUG, NOW).quarantined).toBe(0)
+  })
+})
+
 describe('cleanupCodexSession (Delete)', () => {
   it('sweeps before removing the baseline, so a planted hooks.json does not survive', () => {
     startSession()
@@ -356,6 +739,28 @@ describe('cleanupCodexSession (Delete)', () => {
     expect(readBaseline().state).toBe('open')
     expect(fs.existsSync(inHome('AGENTS.override.md'))).toBe(true)
     expect(warn).toHaveBeenCalled()
+  })
+
+  it('with the container not confirmed gone, sweeps nothing, keeps the baseline open and clears the rest of the state', () => {
+    startSession()
+    fs.writeFileSync(inHome('hooks.json'), 'planted')
+
+    cleanupCodexSession(paths, SLUG, false)
+
+    expect(fs.existsSync(inHome('hooks.json'))).toBe(true)
+    expect(readBaseline().state).toBe('open')
+    expect(fs.existsSync(codexStatePaths(paths, SLUG).sqlite)).toBe(false)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('not confirmed removed'))
+  })
+})
+
+describe('codexGuardIsOpen', () => {
+  it('is true only for an open baseline', () => {
+    expect(codexGuardIsOpen(paths, SLUG)).toBe(false) // no baseline
+    startSession()
+    expect(codexGuardIsOpen(paths, SLUG)).toBe(true)
+    closeCodexGuard(paths, SLUG, NOW)
+    expect(codexGuardIsOpen(paths, SLUG)).toBe(false)
   })
 })
 

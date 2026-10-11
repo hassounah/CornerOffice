@@ -22,6 +22,7 @@ import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
 const retryExited = vi.fn()
 const changeAgent = vi.fn()
 const BANNER = "`codex` may not be installed: install it with `pnpm add -g @openai/codex`."
+const BANNER_TEXT = 'codex may not be installed: install it with pnpm add -g @openai/codex'
 
 Object.defineProperty(window, 'cornerOffice', { value: { sandbox: {}, terminal: {}, on: vi.fn(() => vi.fn()) }, writable: true, configurable: true })
 
@@ -50,7 +51,11 @@ describe('TerminalOverlay exit-127 banner', () => {
   it('is a persistent alert with the agent copy', () => {
     renderOverlay()
     const alert = screen.getByRole('alert')
-    expect(alert).toHaveTextContent(BANNER)
+    // The backticks render as <code>, never as raw characters (UX-M4); the install command has a copy button.
+    expect(alert).toHaveTextContent(BANNER_TEXT)
+    expect(alert.textContent).not.toContain('`')
+    expect(alert.querySelector('code')).toHaveTextContent('codex')
+    expect(screen.getByRole('button', { name: 'Copy command pnpm add -g @openai/codex' })).toBeInTheDocument()
   })
 
   it('is absent without a banner', () => {
@@ -62,7 +67,7 @@ describe('TerminalOverlay exit-127 banner', () => {
   it('Retry and Change agent are real buttons inside the alert, and not nested in another control', () => {
     renderOverlay()
     const alert = screen.getByRole('alert')
-    expect(alert.querySelectorAll('button')).toHaveLength(2)
+    expect(alert.querySelectorAll('button')).toHaveLength(3) // Copy (the install command), Retry, Change agent
     expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Change agent' })).toBeEnabled()
     assertNoNestedInteractive(alert)
@@ -83,7 +88,7 @@ describe('TerminalOverlay exit-127 banner', () => {
   it('describes Retry by the banner text and gives both buttons a visible focus ring', () => {
     renderOverlay()
     const retry = screen.getByRole('button', { name: 'Retry' })
-    expect(retry).toHaveAccessibleDescription(BANNER)
+    expect(retry).toHaveAccessibleDescription(expect.stringContaining(BANNER_TEXT))
     for (const button of [retry, screen.getByRole('button', { name: 'Change agent' })]) {
       expect(button.className).toContain('focus-visible:outline')
     }

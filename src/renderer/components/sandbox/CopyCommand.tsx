@@ -4,7 +4,8 @@ import React, { useEffect, useRef, useState } from 'react'
 // CopyCommand — a command to run, with a copy button that has a name and a
 // polite "Copied" confirmation (#0037 D11, UX-H2). Used where a sandbox
 // readiness problem has a fix on the command line (for example `codex login`).
-// The live region exists before the confirmation does, so it is announced.
+// The live region exists before the confirmation does, so it is announced; a
+// failed copy says "Couldn't copy" there instead of staying silent (L12).
 // ---------------------------------------------------------------------------
 
 const COPIED_VISIBLE_MS = 2_000
@@ -18,7 +19,7 @@ export function CopyCommand({
   buttonClass: string
   buttonStyle?: React.CSSProperties
 }): React.ReactElement {
-  const [copied, setCopied] = useState(false)
+  const [result, setResult] = useState<'copied' | 'failed' | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(
@@ -29,14 +30,15 @@ export function CopyCommand({
   )
 
   async function copy(): Promise<void> {
+    let outcome: 'copied' | 'failed' = 'copied'
     try {
       await navigator.clipboard.writeText(command)
     } catch {
-      return // nothing was copied, so nothing is confirmed
+      outcome = 'failed' // nothing was copied: say so, and the command stays selectable beside the button
     }
-    setCopied(true)
+    setResult(outcome)
     if (timer.current !== null) clearTimeout(timer.current)
-    timer.current = setTimeout(() => setCopied(false), COPIED_VISIBLE_MS)
+    timer.current = setTimeout(() => setResult(null), COPIED_VISIBLE_MS)
   }
 
   return (
@@ -46,7 +48,7 @@ export function CopyCommand({
         Copy
       </button>
       <span role="status" aria-live="polite" data-testid="copy-confirmation" className="text-xs">
-        {copied ? 'Copied' : ''}
+        {result === 'copied' ? 'Copied' : result === 'failed' ? "Couldn't copy" : ''}
       </span>
     </span>
   )

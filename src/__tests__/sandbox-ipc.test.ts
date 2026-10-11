@@ -368,6 +368,7 @@ describe('sandbox:startSession with a real manager', () => {
       config: { get: () => h.sandboxConfig, update: async (mutator) => mutator(h.sandboxConfig) },
       workspaceSlugs: () => [SLUG],
       noteBuildRequester: () => {},
+      recordSessionStart: () => {},
     })
 
     const res = await handlers[SANDBOX_CHANNELS.START_SESSION](makeEvent(), { ...(VALID_INPUT[SANDBOX_CHANNELS.START_SESSION] as object) })

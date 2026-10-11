@@ -965,16 +965,15 @@ describe('WorkspaceDetail', () => {
       useTerminalStore.setState({ sessions: {}, sessionAgent: {} })
     })
 
-    it('swaps in the disabled chat entry with the reason for a Codex session, with an empty session list', async () => {
+    it('swaps in the chat-unavailable state with the reason for a Codex session, with an empty session list and no dead button', async () => {
       mockWorkspaceStore.workspaces = [makeWorkspace()]
       runSession('codex')
       render(<WorkspaceDetail />)
 
       const unavailable = await screen.findByTestId('chat-unavailable')
-      expect(within(unavailable).getByRole('button', { name: 'Chat' })).toHaveAttribute('aria-disabled', 'true')
-      // The reason is the session list's empty state and the disabled entry's explanation.
+      expect(within(unavailable).queryByRole('button', { name: 'Chat' })).toBeNull()
+      // The reason is the session list's empty state.
       expect(within(unavailable).getByRole('option', { name: CODEX_REASON })).toBeDisabled()
-      expect(within(unavailable).getAllByText(CODEX_REASON).length).toBeGreaterThanOrEqual(2)
       expect(await screen.findByText(/Codex running · activity tracking off/)).toBeInTheDocument()
     })
 
@@ -1186,10 +1185,13 @@ describe('WorkspaceDetail — sandbox sessions', () => {
       exists: (o.worktree ?? 'ready') !== 'absent',
       container: 'stopped',
       worktree: o.worktree ?? 'ready',
-      session: { state: o.state ?? 'idle', permissionMode: null, networkMode: null, lastExit: null },
+      session: { state: o.state ?? 'idle', agentId: null, permissionMode: null, networkMode: null, lastExit: null },
       git: { branch: 'feat/a', headShort: 'abc', ahead: 1, dirtyCount: 0, base: 'main' },
       recreatePending: false,
       recreatePlan: null,
+      containers: {},
+      agentReadiness: {},
+      recreatePlans: [],
       channel: 'none',
     }
   }

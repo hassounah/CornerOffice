@@ -1,8 +1,8 @@
 import { defineAgent } from '../handler'
 import type { AgentMountSpec, SandboxCtx } from '../handler'
 import { pluginDetectorService } from '../../services/plugin-detector'
-import { codexMounts, codexReadiness, codexStatePaths } from './sandbox-config'
-import { cleanupCodexSession, closeCodexGuard, prepareCodexSession } from './guard'
+import { codexMounts, codexQuarantineFolder, codexReadiness, codexStatePaths } from './sandbox-config'
+import { cleanupCodexSession, closeCodexGuard, codexGuardIsOpen, prepareCodexSession } from './guard'
 
 // ---------------------------------------------------------------------------
 // codex/handler.ts — Codex CLI's handler (TRD §4.7, §4.9). The host half is a
@@ -42,8 +42,10 @@ export const CODEX_HANDLER = defineAgent('codex', {
         argv: [...CODEX_SANDBOX_TOKENS, ...CODEX_SANDBOX_SKIP_FLAGS],
       }
     },
-    cleanup: ({ paths, slug }) => cleanupCodexSession(paths, slug),
+    cleanup: ({ paths, slug }, opts) => cleanupCodexSession(paths, slug, opts?.containerAbsent ?? true),
     afterStop: ({ paths, slug }) => closeCodexGuard(paths, slug),
+    quarantineFolder: ({ paths, slug }) => codexQuarantineFolder(paths, slug),
+    sweepPending: ({ paths, slug }) => codexGuardIsOpen(paths, slug),
   },
   plugin: { detect: () => pluginDetectorService.getCodexStatus() },
 })

@@ -80,7 +80,7 @@ export interface BuildSandboxHandlersDeps {
   /** Remembers which workspace asked for the build that is about to run (null when unknown). */
   noteBuildRequester: (slug: string | null) => void
   /** Remembers the chooser options of a start that succeeded (fire-and-forget; #0037 B2). */
-  recordSessionStart?: (start: SessionStart) => void
+  recordSessionStart: (start: SessionStart) => void
 }
 
 export interface SandboxPushSenders {
@@ -176,7 +176,7 @@ export function buildSandboxHandlers(manager: SandboxManagerService, deps: Build
         })
         // Only a start that actually succeeded is remembered.
         if (result.ok) {
-          recordSessionStart?.({
+          recordSessionStart({
             workspaceSlug: input.workspaceSlug,
             agentId: input.agentId,
             location: 'sandbox',

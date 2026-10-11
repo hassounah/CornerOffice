@@ -14,10 +14,11 @@ export interface PermissionChoice {
   label: string
   note: string
 }
-/** `command` is shown with a copy button. */
+/** `command` is shown with a copy button, after `message` and a short lead (`commandLead`, default "Run:"). */
 export interface ReadinessCopy {
   message: string
   command: string | null
+  commandLead?: string
 }
 
 export interface AgentDescriptor<Id extends string = string> {
@@ -32,6 +33,8 @@ export interface AgentDescriptor<Id extends string = string> {
   copy: {
     /** Host exit 127. */
     notFound: string
+    /** Offered with a warning when the host binary lies in a folder the sandbox can write (SEC-M3): installs it elsewhere. */
+    reinstallCommand?: string
     /** Keyed by handler readiness code. */
     readiness: Readonly<Record<string, ReadinessCopy>>
     /** Template: "{file} {problem}. Fix or remove it, then Start again." */

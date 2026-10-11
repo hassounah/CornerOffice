@@ -417,15 +417,18 @@ function sandboxStatus(overrides: { reason?: EligibilityReason; plan?: RecreateP
     exists: true,
     container: 'stopped',
     worktree: 'ready',
-    session: { state: overrides.state ?? 'idle', permissionMode: null, networkMode: null, lastExit: null },
+    session: { state: overrides.state ?? 'idle', agentId: null, permissionMode: null, networkMode: null, lastExit: null },
     git: null,
     recreatePending: false,
     recreatePlan: overrides.plan ?? null,
+    containers: {},
+    agentReadiness: {},
+    recreatePlans: [],
     channel: 'none',
   }
 }
 
-const PLAN: RecreatePlan = { reason: 'mount-plan', specHash: 'a'.repeat(64), newHostMounts: [], removedHostMounts: [] }
+const PLAN: RecreatePlan = { reason: 'mount-plan', specHash: 'a'.repeat(64), newHostMounts: [], removedHostMounts: [], agentId: 'claude' }
 
 describe('terminal-store — sandbox sessions', () => {
   beforeEach(() => {

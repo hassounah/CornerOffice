@@ -20,6 +20,22 @@ function debounce<T extends (...args: unknown[]) => void>(fn: T, ms: number): T 
   }) as T
 }
 
+/** One timer per key: two files that change within `ms` of each other are each reported once, instead of the earlier one being dropped. */
+function debouncePerKey(fn: (key: string) => void, ms: number): (key: string) => void {
+  const timers = new Map<string, ReturnType<typeof setTimeout>>()
+  return (key: string) => {
+    const pending = timers.get(key)
+    if (pending) clearTimeout(pending)
+    timers.set(
+      key,
+      setTimeout(() => {
+        timers.delete(key)
+        fn(key)
+      }, ms),
+    )
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Inotify watch limit check
 // ---------------------------------------------------------------------------
@@ -351,10 +367,7 @@ export class FileWatcherService {
     const eventsDir = path.join(os.homedir(), '.corner-office', 'events')
     if (!fs.existsSync(eventsDir)) return
 
-    const debouncedPush = debounce(
-      (filePath: unknown) => this._callbacks.onEventStreamChange(filePath as string),
-      100
-    )
+    const debouncedPush = debouncePerKey((filePath) => this._callbacks.onEventStreamChange(filePath), 100)
 
     // Valid workspace directory names: alphanumeric, hyphens, underscores only
     const VALID_DIR_RE = /^[a-zA-Z0-9_-]+$/
@@ -398,10 +411,7 @@ export class FileWatcherService {
       return
     }
 
-    const debouncedPush = debounce(
-      (filePath: unknown) => this._callbacks.onEventStreamChange(filePath as string),
-      100
-    )
+    const debouncedPush = debouncePerKey((filePath) => this._callbacks.onEventStreamChange(filePath), 100)
     const handleEventFile = (filePath: string): void => {
       if (sandboxEventSlug(root, filePath) === null) return
       debouncedPush(filePath)

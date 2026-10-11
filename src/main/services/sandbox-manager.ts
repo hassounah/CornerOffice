@@ -48,7 +48,7 @@ import { assertNoSymlinkOnPath } from './safe-fs'
 import type { PlanMountsFacts, DocsRootFacts, OldMount, ParsedInspect } from './sandbox-spec'
 import { AGENT_IDS, LEGACY_AGENT_ID, getDescriptor } from '../agents/descriptors'
 import type { AgentId } from '../agents/descriptors'
-import type { AgentConfigResult, AgentHandler, AgentMountSpec, QuarantineOutcome } from '../agents/handler'
+import type { AgentConfigResult, AgentHandler, AgentMountSpec, QuarantineOutcome, SandboxCtx } from '../agents/handler'
 import { getHandler } from '../agents/registry'
 import type { PermMode } from '../agents/claude/handler'
 import { effectiveAllowlist } from './sandbox-allowlist'
@@ -62,6 +62,7 @@ import type {
   EligibilityWarning,
   SandboxEnvironment,
   RecreatePlan,
+  RecreatePlanBody,
   DeletePreview,
   DeleteResult,
   RecreateResult,
@@ -211,7 +212,7 @@ export type EligibilityResult = { ok: true; baseBranch: string; warnings: Eligib
  *  on a workspace's genuinely first-ever creation. */
 export type EnsureContainerResult =
   | { ok: true; recreatedNotice: boolean; specHash: string }
-  | { ok: false; code: 'RECREATE_REQUIRED'; plan: RecreatePlan }
+  | { ok: false; code: 'RECREATE_REQUIRED'; plan: RecreatePlanBody }
   | { ok: false; code: 'CONTAINER_FAILED' }
   | { ok: false; code: 'DOCKER_UNAVAILABLE' }
   | { ok: false; code: 'AGENT_CONFIG_INVALID'; detail: string | null; agentId: AgentId }
@@ -802,8 +803,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
   /** §3.9.4 `recreatePending` — read by `ensureContainer`, set/cleared by future steps (see `markRecreatePending`'s doc comment). */
   const recreatePendingNames = new Set<string>()
   /** `recreatePending` is per container, so it is keyed by container name (one per workspace and agent, D22). */
-  const isRecreatePending = (slug: string, agentId: AgentId = LEGACY_AGENT_ID): boolean => recreatePendingNames.has(containerName(slug, agentId))
-  const clearRecreatePending = (slug: string, agentId: AgentId = LEGACY_AGENT_ID): void => {
+  const isRecreatePending = (slug: string, agentId: AgentId): boolean => recreatePendingNames.has(containerName(slug, agentId))
+  const clearRecreatePending = (slug: string, agentId: AgentId): void => {
     recreatePendingNames.delete(containerName(slug, agentId))
   }
   const anyRecreatePending = (slug: string): boolean => AGENT_IDS.some((id) => isRecreatePending(slug, id))
@@ -836,12 +837,12 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
   /** SEC-H4: slugs whose channel card was rejected; cleared by the next successful start. */
   const rejectedCardSlugs = new Set<string>()
   /** The plan from the last `ensureContainer` that returned `RECREATE_REQUIRED` — what `getStatus.recreatePlan` reports. Cleared when an ensure succeeds or the sandbox is recreated or deleted. Keyed by container name: one plan per workspace and agent (D22). */
-  const recreatePlans = new Map<string, RecreatePlan>()
-  const recreatePlanFor = (slug: string, agentId: AgentId = LEGACY_AGENT_ID): RecreatePlan | undefined => recreatePlans.get(containerName(slug, agentId))
-  const setRecreatePlan = (slug: string, agentId: AgentId, plan: RecreatePlan): void => {
+  const recreatePlans = new Map<string, RecreatePlanBody>()
+  const recreatePlanFor = (slug: string, agentId: AgentId): RecreatePlanBody | undefined => recreatePlans.get(containerName(slug, agentId))
+  const setRecreatePlan = (slug: string, agentId: AgentId, plan: RecreatePlanBody): void => {
     recreatePlans.set(containerName(slug, agentId), plan)
   }
-  const clearRecreatePlan = (slug: string, agentId: AgentId = LEGACY_AGENT_ID): void => {
+  const clearRecreatePlan = (slug: string, agentId: AgentId): void => {
     recreatePlans.delete(containerName(slug, agentId))
   }
   /** Every agent's pending plan for the workspace, tagged with its agent. */
@@ -1010,6 +1011,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
   async function getEnvironment(opts: { refresh: boolean }): Promise<SandboxEnvironment> {
     if (opts.refresh || !cachedDockerState) {
+      // An explicit refresh ("Check again") must also re-read the agents' readiness, not the answer cached for the last 2 s.
+      if (opts.refresh) statusEligibility.clear()
       await setDockerState(await probeDockerAvailability())
     }
     const imageState = await image.getImageState()
@@ -1171,6 +1174,26 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     })
   }
 
+  /**
+   * Before an agent's `prepare('plan')` (which may open its guard, and sweeps first when the last session never closed):
+   * a container of this agent that is running now has no tracked session (callers hold the slug's queue and have
+   * checked idleness), so it is an orphan from a crash. It is stopped and swept before anything starts. `false` when
+   * the stop cannot be confirmed: the start then fails closed, never sweeping or opening against a live container.
+   */
+  async function settleOrphanContainer(slug: string, agentId: AgentId): Promise<boolean> {
+    if (!getHandler(agentId).sandbox?.afterStop) return true
+    const c = containerName(slug, agentId)
+    const first = await observeContainer(c)
+    if (first === 'stopped' || first === 'absent') return true
+    // Running, or Docker can't say: either way it may be running, so it is stopped and confirmed down before anything opens the guard.
+    log.warn(`[sandbox-manager] ${agentId} container for ${slug} is ${first} with no session; stopping it before the start`)
+    await stopBestEffort(c)
+    const observed = await observeContainer(c)
+    if (observed !== 'stopped' && observed !== 'absent') return false
+    runAfterStop(slug, agentId)
+    return true
+  }
+
   async function ensureContainerInQueue(slug: string, agentId: AgentId): Promise<EnsureContainerResult> {
     const result = await ensureContainerUncached(slug, agentId)
     if (!result.ok && result.code === 'RECREATE_REQUIRED') setRecreatePlan(slug, agentId, result.plan)
@@ -1185,9 +1208,10 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const paths = sandboxPaths(realHome)
     const wt = worktreePath(paths, slug)
 
+    if (!(await settleOrphanContainer(slug, agentId))) return { ok: false, code: 'CONTAINER_FAILED' }
     const prepared = precreateMountTargets(paths, repo, wt, slug, agentId)
+    raiseQuarantine(slug, agentId, prepared.quarantine) // also when the guard refuses: what it moved is never silent
     if (!prepared.ok) return configInvalid(agentId, prepared)
-    raiseQuarantine(slug, agentId, prepared.quarantine)
 
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
     const baseResult = await worktree.resolveBase(git, repoCtx)
@@ -1303,9 +1327,10 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const paths = sandboxPaths(realHome)
     const wt = worktreePath(paths, slug)
 
+    if (!(await settleOrphanContainer(slug, agentId))) return { ok: false, code: 'FAILED' }
     const prepared = precreateMountTargets(paths, repo, wt, slug, agentId)
-    if (!prepared.ok) return configInvalid(agentId, prepared)
     raiseQuarantine(slug, agentId, prepared.quarantine)
+    if (!prepared.ok) return configInvalid(agentId, prepared)
 
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
     const baseResult = await worktree.resolveBase(git, repoCtx)
@@ -1395,12 +1420,13 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
   async function computeDeletePreview(slug: string): Promise<DeletePreview> {
     const sessionRunning = !sessionIsIdle(slug)
-    const workspace = appState.getWorkspace(slug)
-    if (!workspace) return { sessionRunning, dirtyCount: 0, unmergedBranches: [] }
-    const repo = workspace.path
     const paths = sandboxPaths(realHome)
     const wt = worktreePath(paths, slug)
-    if (!fs.existsSync(wt)) return { sessionRunning, dirtyCount: 0, unmergedBranches: [] }
+    const quarantineFolders = keptQuarantineFolders({ paths, slug, workTree: wt })
+    const workspace = appState.getWorkspace(slug)
+    if (!workspace) return { sessionRunning, dirtyCount: 0, unmergedBranches: [], quarantineFolders }
+    const repo = workspace.path
+    if (!fs.existsSync(wt)) return { sessionRunning, dirtyCount: 0, unmergedBranches: [], quarantineFolders }
 
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
     const baseResult = await worktree.resolveBase(git, repoCtx)
@@ -1413,7 +1439,21 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const pipelineBranches = readPipelineBranches(repo)
     const unmergedBranches = await worktree.unmerged(git, repoCtx, base, pipelineBranches, st.branch)
 
-    return { sessionRunning, dirtyCount: st.dirtyCount, unmergedBranches }
+    return { sessionRunning, dirtyCount: st.dirtyCount, unmergedBranches, quarantineFolders }
+  }
+
+  /** The quarantine folders Delete keeps (they hold files an agent moved out of the host's agent home), for the confirm to name. */
+  function keptQuarantineFolders(ctx: SandboxCtx): string[] {
+    const folders: string[] = []
+    for (const id of AGENT_IDS) {
+      try {
+        const folder = getHandler(id).sandbox?.quarantineFolder?.(ctx)
+        if (folder) folders.push(folder)
+      } catch (err) {
+        log.warn(`[sandbox-manager] quarantineFolder failed for ${id}: ${String(err)}`)
+      }
+    }
+    return folders
   }
 
   async function previewDelete(slug: string): Promise<DeletePreview> {
@@ -1464,6 +1504,13 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
     await removeWorkspaceContainers(slug)
 
+    // In-memory state goes first and unconditionally: a later failure must not leave a stale plan or mark behind.
+    for (const id of AGENT_IDS) {
+      clearRecreatePending(slug, id)
+      clearRecreatePlan(slug, id)
+    }
+    rejectedCardSlugs.delete(slug)
+
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
     await worktree.remove(git, repoCtx, paths, slug)
 
@@ -1471,11 +1518,16 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     clearCardDir(paths, slug)
     const cleanupCtx = { paths, slug, workTree: worktreePath(paths, slug) }
     for (const id of AGENT_IDS) {
-      getHandler(id).sandbox?.cleanup(cleanupCtx)
-      clearRecreatePending(slug, id)
-      clearRecreatePlan(slug, id)
+      const sandbox = getHandler(id).sandbox
+      if (!sandbox) continue
+      try {
+        // An agent with an after-stop sweep keeps its record unless its container is confirmed gone (SEC-M4).
+        const containerAbsent = sandbox.afterStop ? (await observeContainer(containerName(slug, id))) === 'absent' : true
+        sandbox.cleanup(cleanupCtx, { containerAbsent })
+      } catch (err) {
+        log.warn(`[sandbox-manager] ${id} cleanup failed during delete for ${slug}: ${String(err)}`)
+      }
     }
-    rejectedCardSlugs.delete(slug)
 
     return { ok: true }
   }
@@ -1773,18 +1825,24 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     }
   }
 
-  /**
-   * After a *confirmed* stop only (never while the container may still run): lets the agent's handler sweep what the
-   * session left behind. Best effort — a throwing hook is logged by agent and never fails the stop. The hook is a no-op
-   * until an agent defines `afterStop`.
-   */
   /** One notice per sweep that moved at least one file (so about one per session): it stays in the notification history. */
   function raiseQuarantine(slug: string, agentId: AgentId, outcome: QuarantineOutcome | undefined): void {
-    if (!outcome || outcome.quarantined === 0) return
-    log.info(`[sandbox-manager] ${agentId} guard for ${slug} quarantined ${outcome.quarantined} item(s)`)
-    notify({ kind: 'agent-files-quarantined', slug, agentId, count: outcome.quarantined, file: outcome.shown, destination: outcome.destination })
+    if (!outcome) return
+    if (outcome.quarantined > 0) {
+      log.info(`[sandbox-manager] ${agentId} guard for ${slug} quarantined ${outcome.quarantined} item(s)`)
+      notify({ kind: 'agent-files-quarantined', slug, agentId, count: outcome.quarantined, file: outcome.shown, destination: outcome.destination })
+    }
+    if (outcome.incomplete) {
+      log.warn(`[sandbox-manager] ${agentId} guard for ${slug} could not finish its check`)
+      notify({ kind: 'agent-guard-incomplete', slug, agentId, ...(outcome.lostBaseline ? { lostBaseline: true } : {}) })
+    }
   }
 
+  /**
+   * After a *confirmed* stop only (never while the container may still run): lets the agent's handler sweep what the
+   * session left behind, and raises the notices for what it found. Best effort: a throwing hook is logged by agent
+   * and never fails the stop. A no-op for an agent without `afterStop` (Claude's has none).
+   */
   function runAfterStop(slug: string, agentId: AgentId): void {
     const afterStop = getHandler(agentId).sandbox?.afterStop
     if (!afterStop) return
@@ -2022,6 +2080,46 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     return entries.filter((slug) => SANDBOX_SLUG_RE.test(slug) && appState.getWorkspace(slug) !== undefined)
   }
 
+  /** A tracked sandbox session of this agent for the slug. A host terminal, or a session of another agent, is not one. */
+  function hasTrackedSession(slug: string, agentId: AgentId): boolean {
+    return sessionStates.has(slug) && sessionModes.get(slug)?.agentId === agentId
+  }
+
+  /** Workspaces with per-agent state under `~/.corner-office/sandbox/<slug>` that are known workspaces. */
+  function stateSlugs(): string[] {
+    let entries: string[]
+    try {
+      entries = fs.readdirSync(sandboxPaths(realHome).sandboxStateRoot)
+    } catch {
+      return []
+    }
+    return entries.filter((slug) => SANDBOX_SLUG_RE.test(slug) && appState.getWorkspace(slug) !== undefined)
+  }
+
+  /** SEC-M1: for every agent with a pending sweep and a container that is not running, run its `afterStop`. */
+  async function sweepEndedSessions(): Promise<void> {
+    const paths = sandboxPaths(realHome)
+    for (const slug of stateSlugs()) {
+      for (const agentId of AGENT_IDS) {
+        const sandbox = getHandler(agentId).sandbox
+        if (!sandbox?.afterStop || !sandbox.sweepPending) continue
+        await runSerialized(slug, async () => {
+          if (hasTrackedSession(slug, agentId)) return
+          try {
+            if (!sandbox.sweepPending?.({ paths, slug, workTree: worktreePath(paths, slug) })) return
+          } catch (err) {
+            log.warn(`[sandbox-manager] ${agentId} sweepPending failed for ${slug}: ${String(err)}`)
+            return
+          }
+          const observed = await observeContainer(containerName(slug, agentId))
+          if (observed !== 'stopped' && observed !== 'absent') return
+          log.info(`[sandbox-manager] reconcile: sweeping the ended ${agentId} session for ${slug}`)
+          runAfterStop(slug, agentId)
+        })
+      }
+    }
+  }
+
   async function reconcile(): Promise<void> {
     if (!cachedDockerState || cachedDockerState.docker !== 'ok') return
 
@@ -2035,10 +2133,11 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     for (const { name, slug, agentId, running } of containers) {
       if (!running) continue
       // Serialized with startSession and re-checked inside the queue, so a
-      // start that begins mid-reconcile is never stopped under itself. Anything
-      // with a tracked session (even `preparing`) is not an orphan.
+      // start that begins mid-reconcile is never stopped under itself. Only a
+      // tracked sandbox session of this same agent (even `preparing`) shields
+      // its container: a host session or another agent's session never does.
       await runSerialized(slug, async () => {
-        if (!sessionIsIdle(slug)) return
+        if (hasTrackedSession(slug, agentId)) return
         log.info(`[sandbox-manager] reconcile: stopping orphan ${agentId} container for ${slug}`)
         await stopBestEffort(name)
         // The agent's after-stop sweep runs only once the container is confirmed down.
@@ -2046,6 +2145,9 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
         if (observed === 'stopped' || observed === 'absent') runAfterStop(slug, agentId)
       })
     }
+
+    // A session that ended without its closing sweep (power loss, OOM, daemon restart) left the guard baseline open.
+    await sweepEndedSessions()
 
     const slugs = new Set([...containers.map((row) => row.slug), ...worktreeSlugs()])
     for (const slug of slugs) {
@@ -2102,10 +2204,12 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
   async function observeAgentContainers(slug: string): Promise<Record<AgentId, SandboxStatus['container']>> {
     const containers = Object.fromEntries(AGENT_IDS.map((id) => [id, 'unknown'])) as Record<AgentId, SandboxStatus['container']>
     if (cachedDockerState?.docker !== 'ok') return containers
-    for (const id of AGENT_IDS) {
-      const observed = await observeContainer(containerName(slug, id))
-      containers[id] = observed === 'absent' ? 'absent' : observed === 'running' ? 'running' : observed === 'stopped' ? 'stopped' : 'unknown'
-    }
+    // In parallel: each inspect can take as long as a hung Docker lets it, and they add up when run one after another.
+    const observed = await Promise.all(AGENT_IDS.map((id) => observeContainer(containerName(slug, id))))
+    AGENT_IDS.forEach((id, i) => {
+      const state = observed[i]
+      containers[id] = state === 'absent' ? 'absent' : state === 'running' ? 'running' : state === 'stopped' ? 'stopped' : 'unknown'
+    })
     return containers
   }
 

@@ -206,6 +206,12 @@ export function agentReadinessCommand(agentId: string, code: string): string | n
   return readiness?.[code]?.command ?? null
 }
 
+/** The few words between a readiness message and its command ("Run:", or "After that, run:" when the message names a step first). */
+export function agentReadinessCommandLead(agentId: string, code: string): string {
+  const readiness: Readonly<Record<string, ReadinessCopy>> | undefined = AGENT_DESCRIPTORS.find((d) => d.id === agentId)?.copy.readiness
+  return readiness?.[code]?.commandLead ?? 'Run:'
+}
+
 /** The message for a failed recreate. `detail` is the fixed copy main built for `AGENT_CONFIG_INVALID`, e.g. "~/.claude/commands exists but isn't a folder." */
 export function recreateFailureMessage(code: RecreateFailureCode, detail?: string | null, agentId?: string): string {
   const message = code === 'AGENT_CONFIG_INVALID' ? configRecreateCopy(agentId) : RECREATE_FAILURE_COPY[code]
@@ -226,6 +232,8 @@ export { TRUST_PROMPT_COPY }
 export const CHECKING_COPY = 'Checking…'
 /** How long "Checking…" may last before the chooser gives up and offers Check again. */
 export const STATUS_CHECK_TIMEOUT_MS = 10_000
+/** How long a remembered Sandbox choice waits for the status before the chooser opens and falls back as it does for an unknown status. */
+export const SANDBOX_CHOICE_WAIT_MS = 3_000
 export const UNRESTRICTED_WARNING = 'Unrestricted network: the sandbox can reach any site on the internet. The firewall is off for this session.'
 
 // ── Channel badge copy (§3.15.2, SEC-H4) ────────────────────────────────────

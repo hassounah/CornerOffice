@@ -112,7 +112,6 @@ function makeAppState(workspaces: Workspace[] = []): AppState {
     homunculusState: null,
     discoveryService: {} as never,
     channelDiscovery: null,
-    pluginDetector: null,
     channelConnection: null,
     terminalManager: null,
     sandboxManager: null,

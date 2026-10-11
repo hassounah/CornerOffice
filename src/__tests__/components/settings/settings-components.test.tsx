@@ -468,7 +468,8 @@ describe('HookSettings', () => {
       const row = await screen.findByTestId('plugin-row-codex')
       expect(row).toHaveTextContent('No Corner Office plugin for Codex found. Sessions work, but activity tracking and idle alerts are off for Codex.')
       expect(row).toHaveTextContent("A Corner Office plugin for Codex isn't published yet.")
-      expect(screen.getByLabelText('Codex plugin status: Not installed')).toBeInTheDocument()
+      expect(screen.getByLabelText('Codex plugin status: Not available yet')).toBeInTheDocument()
+      expect(screen.queryByLabelText('Codex plugin status: Not installed')).not.toBeInTheDocument()
       expect(row.querySelector('button')).toBeNull()
     })
 

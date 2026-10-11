@@ -130,25 +130,16 @@ describe('SessionSelector empty state with a reason (#0037 C6)', () => {
 describe('ChatUnavailable (#0037 C6)', () => {
   const REASON = "Chat isn't available for Codex sessions yet."
 
-  it('shows the empty session list and a disabled chat entry carrying the reason', () => {
+  it('shows the empty session list carrying the reason, and no dead Chat button', () => {
     render(<ChatUnavailable reason={REASON} />)
     expect(screen.getAllByText(REASON).length).toBeGreaterThan(0)
-    const entry = screen.getByRole('button', { name: 'Chat' })
-    expect(entry).toHaveAttribute('aria-disabled', 'true')
-    expect(entry).not.toBeDisabled() // stays focusable (DisabledReason)
-    expect(entry).toHaveAccessibleDescription(REASON)
+    expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull()
   })
 
   it('shows no channel badge or connection dot', () => {
     const { container } = render(<ChatUnavailable reason={REASON} />)
     expect(container.querySelector('.bg-emerald-400, .bg-amber-400')).toBeNull()
     expect(screen.queryByText(/Connected|Connecting|Disconnected/)).not.toBeInTheDocument()
-  })
-
-  it('clicking the entry only reveals the reason', () => {
-    render(<ChatUnavailable reason={REASON} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
-    expect(screen.getByRole('tooltip')).toHaveTextContent(REASON)
   })
 
   it('has no axe violations', async () => {

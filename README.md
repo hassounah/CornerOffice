@@ -101,9 +101,11 @@ Corner Office starts sessions with a coding agent. Two are supported:
 | **Claude Code** | `claude` on your PATH (see Claude Code's own install guide) | host and sandbox |
 | **Codex** | `pnpm add -g @openai/codex` (or any install that puts `codex` on your PATH) | host and sandbox |
 
-Start Session shows an **Agent** row whenever more than one agent is available. An agent whose command isn't found on your PATH is labelled "(may not be installed)" and stays selectable: the check is advisory, because your shell may find it where the app can't. If a session exits with code 127 within ten seconds, the terminal shows a banner with the install hint, **Retry** and **Change agent**.
+Start Session asks **Where** to run: **Host** means this computer (your own shell, your own `~/.claude` or `~/.codex`), and **Sandbox** means a Docker container. It shows an **Agent** row whenever more than one agent is available. An agent whose command isn't found on your PATH is labelled "(may not be installed)" and stays selectable: the check is advisory, because your shell may find it where the app can't. If a session exits with code 127 within ten seconds, the terminal shows a banner with the install command (with a copy button), **Retry** (start the same agent again) and **Change agent** (back to the chooser).
 
-Your last choice is remembered per workspace (and as the default for new ones). If a remembered option isn't available any more, the chooser falls back and says what it changed. It never switches your agent silently.
+Your last choice is remembered per workspace (and as the default for new ones). If a remembered option isn't available any more, the chooser falls back and says what it changed. It never switches your agent silently. A host start of an agent whose command was not found on your PATH is not remembered, so a mistaken start doesn't become your default (if your shell finds the agent where the app can't, choose it again and it is remembered once the app can see it).
+
+The sandbox's risks, and what the Codex guard does and doesn't cover, are under [Sandbox Sessions](#sandbox-sessions): see [Accepted risks](#accepted-risks) and [Quarantine, Delete and rollback](#quarantine-delete-and-rollback).
 
 ### Permission modes
 
@@ -164,7 +166,7 @@ A sandbox limits the damage an unattended agent can do. It is not a guarantee. T
 - Connections opened before you shrink the allowlist stay open until the session ends.
 - **Unrestricted** network mode, chosen per session, removes the firewall.
 - The agent can move or delete refs, and can delete or corrupt `.git/objects`, `packed-refs` and `logs/`, which loses unpushed history. The reflog recovers refs. It does not recover deleted objects.
-- Files the agent writes on its branch (`package.json` scripts, `.husky/`, the Makefile) only run on your host once you check out or merge that branch, so review before you merge.
+- Files the agent writes on its branch (`package.json` scripts, `.husky/`, the Makefile, and the repository's own `.codex/` and `.claude/` config) only run on your host once you check out or merge that branch, so review before you merge.
 - Don't run `git` or git-aware tools (including your editor's git integration) inside directories the agent writes to, such as the worktree's subfolders, `.rix` or the docs folder. A nested `.git` the agent plants there can make git run code (hooks, config) on your host.
 - Events are labelled by where they were written. Each sandbox writes to its own events directory (`~/.corner-office/sandbox/<workspace>/events`), which the app watches separately from the host's `~/.corner-office/events`. Anything in the first is tagged Sandbox and anything in the second is tagged Host, whatever the event says about itself (including its `agent` field), so a sandbox agent can no longer pass its events off as host events.
   - History from before this change is the exception: in a workspace that has a sandbox, host-folder events older than the cutover (recorded once, as `sandbox.eventsSplitAt` in `config.json`) keep the old session-ID rule, so old sandbox events aren't relabelled as Host.
@@ -179,20 +181,27 @@ The Codex sandbox shares your real `~/.codex` (so you sign in once). That is con
 - **Your sign-in.** The agent in the sandbox can read, use and **replace** your Codex sign-in (`auth.json`).
 - **Your history.** It shares your Codex history, sessions and rollouts, and can read and change them.
 - **Files that reach your computer.** The Codex queue, memories and thread index in `~/.codex` can be written by the sandbox agent and reach Codex sessions you run on your computer. This is the same class of risk as `~/.claude/projects` for Claude.
+- **Plugin learning data.** A Codex container gets `~/.claude/homunculus` (the Corner Office plugin's learning data) when it is a real folder on your computer, and can read and change it. It gets nothing else from `~/.claude`.
 - **Network.** The OpenAI hosts are on the allowlist for every sandbox session, Claude's included.
 - **What the guard can and can't do.** A small guard moves files that Codex would load on your computer (`AGENTS.override.md`, `hooks.json`, `.env*`, `*.config.toml`, and symlinks at the top of `~/.codex`) out of the way. It is limited:
-  - It checks only when a Codex sandbox session starts and stops, and only top-level names in `~/.codex`.
+  - It checks only when a Codex sandbox session starts and stops. It looks at top-level names in `~/.codex`, plus symlinks (new or retargeted ones) up to four folders deep.
   - While a Codex sandbox is running, a file it plants can affect Codex sessions you start on your computer.
-  - Symlinks inside `sessions/` aren't checked.
-  - Files you create in `~/.codex` during a sandbox session may be moved to quarantine. Move them back with `mv`.
+  - A symlink the sandbox plants inside `~/.codex/sessions/` can make Codex on your computer write to another file; it isn't checked. The same goes for `archived_sessions/`.
+  - Links nested deeper than 4 folders inside `~/.codex` aren't checked. If the check hits its cap on entries, it still moves the links it found before the cap, any new top-level folder and the top-level entries, and then refuses the start with a "couldn't finish checking" notice.
+  - Files you create in `~/.codex` during a sandbox session may be moved to quarantine. The notice shows the exact `mv` command, with a copy button; review the file before you move it back.
 - **The socket check is bounded.** Before a Codex sandbox starts, Corner Office looks for a socket in `~/.codex` that the container could use to reach a program on your computer. It looks only a couple of levels deep and examines a limited number of entries, so a socket hidden deeper, or in a very large folder, can be missed.
 - **Future Codex versions.** A newer Codex may load files the guard doesn't know about. The image pins Codex 0.162.1 and checks its hash when building, but the guard's list of names is fixed in the app.
 
-What stays protected: `config.toml` (the container gets a sanitized copy), `.env` (it reads as empty), plugins, skills, prompts, agents, `AGENTS.md`, `rules` and the daemon directory are read-only or hidden from the container, and the container has no `~/.claude` and no GitHub credentials.
+What stays protected: `config.toml` (the container gets a sanitized copy), `.env` (it reads as empty), plugins, skills, prompts, agents, `packages` (the Codex binaries), `AGENTS.md`, `rules` and the daemon directory are read-only or hidden from the container, and the container has no `~/.claude` except the Corner Office plugin's `homunculus` learning data, which it can read and change, and no GitHub credentials. `tmp`, `.tmp` and `shell_snapshots` are private to each sandbox (a per-workspace folder replaces them), so nothing the container writes there reaches Codex on your computer.
+
+What stays writable from `~/.codex`: the sign-in (`auth.json`), `sessions/`, `archived_sessions/`, history, memories, the queue and thread index, and any other file or folder not listed above. That is the shared part described in the costs above.
+
+If your host `codex` binary itself lives inside a folder the sandbox can write (for example under `~/.codex/packages`), the chooser warns you, shows the path and offers a reinstall command. It is a warning, not a block: with `packages` read-only in the sandbox the risk is lower, but a reinstall elsewhere removes it.
 
 #### Quarantine, Delete and rollback
 
-- A file the guard moved is kept in `~/.corner-office/sandbox/<workspace>/codex-quarantine/`. The notice names the file and the folder. **That folder is kept when you Delete the sandbox** (nothing is deleted without you). To remove it, run `rm -rf ~/.corner-office/sandbox/<workspace>/codex-quarantine` once you have looked at the contents.
+- A file the guard moved is kept in `~/.corner-office/sandbox/<workspace>/codex-quarantine/`. The notice (it needs your attention, so it can't be turned off or silenced) names the file and the folder. **That folder is kept when you Delete the sandbox**, and the Delete confirmation names it (nothing is deleted without you). To remove it, run `rm -rf ~/.corner-office/sandbox/<workspace>/codex-quarantine` once you have looked at the contents.
+- If Corner Office loses its record of `~/.codex`, it moves your own top-level `.env*`, `hooks.json`, `AGENTS.override.md`, `*.config.toml` and symlinks anywhere below `~/.codex` (not only top-level ones) into the quarantine folder (nothing is deleted), and Codex in the sandbox stays off until you review `~/.codex` and delete that workspace's sandbox. The "couldn't finish checking" notice gives the same remedy: Delete is the way back.
 - To go back to Claude only, remove the Codex container: `docker rm co-sandbox-<workspace>.codex`. Older versions of Corner Office ignore it. The files Corner Office precreated in `~/.codex` are empty and harmless.
 
 ### Crash consistency

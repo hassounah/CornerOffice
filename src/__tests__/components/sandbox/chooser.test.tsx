@@ -30,6 +30,7 @@ import {
   forSkin,
   RECREATED_COPY,
   STATUS_CHECK_TIMEOUT_MS,
+  SANDBOX_CHOICE_WAIT_MS,
 } from '../../../renderer/utils/sandbox-copy'
 import type { SandboxStatus, RecreatePlan, EligibilityReason, EligibilityWarning } from '@main/types/sandbox'
 
@@ -59,7 +60,7 @@ const HASH = 'a'.repeat(64)
 const HASH2 = 'b'.repeat(64)
 
 function plan(overrides: Partial<RecreatePlan> = {}): RecreatePlan {
-  return { reason: 'mount-plan', specHash: HASH, newHostMounts: [], removedHostMounts: [], ...overrides }
+  return { reason: 'mount-plan', specHash: HASH, newHostMounts: [], removedHostMounts: [], agentId: 'claude', ...overrides }
 }
 
 function status(
@@ -79,10 +80,12 @@ function status(
     exists: false,
     container: 'absent',
     worktree: 'absent',
-    session: { state: opts.state ?? 'idle', permissionMode: null, networkMode: null, lastExit: null },
+    session: { state: opts.state ?? 'idle', agentId: null, permissionMode: null, networkMode: null, lastExit: null },
     git: null,
     recreatePending: false,
     recreatePlan: opts.plan ?? null,
+    containers: {},
+    recreatePlans: [],
     channel: 'none',
   }
 }
@@ -364,7 +367,10 @@ describe('StartSessionChooser — agent, permissions, "Will start" and Reset (B6
   it('shows a visible helper label for where the choice came from, with a Reset that explains itself', () => {
     const { unmount } = renderChooser({ initial: REMEMBERED })
     expect(screen.getByTestId('choice-source')).toHaveTextContent('Remembered for this workspace')
-    expect(screen.getByRole('button', { name: /^Reset/ })).toHaveAttribute('title', 'Resets these choices. Nothing is saved until you start.')
+    const reset = screen.getByRole('button', { name: /^Reset/ })
+    expect(reset).not.toHaveAttribute('title') // a visible hint, not a hover-only tooltip (UX-M6)
+    expect(screen.getByText('Resets these choices. Nothing is saved until you start.')).toBeVisible()
+    expect(reset).toHaveAccessibleDescription('Resets these choices. Nothing is saved until you start.')
     unmount()
 
     renderChooser({ initial: { ...REMEMBERED, source: 'last' } })
@@ -861,7 +867,7 @@ describe('StartSessionChooser — recreate flows', () => {
     expect(dialog).toHaveTextContent('/work/docs')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Recreate' }))
 
-    expect(api.recreate).toHaveBeenCalledWith('ws', false, HASH)
+    expect(api.recreate).toHaveBeenCalledWith('ws', false, HASH, 'claude')
     expect(await screen.findByText(RECREATED_COPY)).toBeInTheDocument()
     expect(api.startSession).toHaveBeenCalledTimes(1)
   })
@@ -895,7 +901,7 @@ describe('StartSessionChooser — recreate flows', () => {
     expect(dialog).toHaveTextContent("The sandbox's channel port changed.")
     await userEvent.click(within(dialog).getByRole('button', { name: 'Recreate' }))
 
-    expect(api.recreate).toHaveBeenCalledWith('ws', true, HASH)
+    expect(api.recreate).toHaveBeenCalledWith('ws', true, HASH, 'claude')
     await vi.waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
     expect(screen.getByText(RECREATED_COPY)).toBeInTheDocument()
     expect(screen.queryByText(START_FAILURE_COPY.PORT_CONFLICT as string)).toBeNull()
@@ -1103,11 +1109,11 @@ describe('RecreateDialog', () => {
     expect(api.recreate).toHaveBeenCalledWith('ws', false, expect.any(String), 'codex')
   })
 
-  it('a plan without an agent is the legacy agent\'s', async () => {
+  it('a Claude plan names the Claude Code sandbox and recreates that agent\'s container', async () => {
     renderDialog(plan({ reason: 'mount-plan' }))
     expect(screen.getByRole('alertdialog')).toHaveTextContent('Recreate the Claude Code sandbox?')
     await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Recreate' }))
-    expect(api.recreate).toHaveBeenCalledWith('ws', false, expect.any(String))
+    expect(api.recreate).toHaveBeenCalledWith('ws', false, expect.any(String), 'claude')
   })
 
   it('a plan with only an added read-only overlay says "Only read-only protections were added" and lists no path', () => {
@@ -1204,7 +1210,7 @@ describe('RecreateDialog', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Recreate' }))
 
-    expect(api.recreate).toHaveBeenCalledExactlyOnceWith('ws', false, HASH)
+    expect(api.recreate).toHaveBeenCalledExactlyOnceWith('ws', false, HASH, 'claude')
     await vi.waitFor(() => expect(onRecreated).toHaveBeenCalledTimes(1))
     expect(api.startSession).not.toHaveBeenCalled()
   })
@@ -1212,7 +1218,7 @@ describe('RecreateDialog', () => {
   it('passes newPort through', async () => {
     renderDialog(plan({ reason: 'port' }), { newPort: true })
     await userEvent.click(screen.getByRole('button', { name: 'Recreate' }))
-    expect(api.recreate).toHaveBeenCalledWith('ws', true, HASH)
+    expect(api.recreate).toHaveBeenCalledWith('ws', true, HASH, 'claude')
   })
 
   it('PLAN_CHANGED reopens with the new plan and the §3.15.3 line, and the next confirm uses the NEW hash', async () => {
@@ -1228,7 +1234,7 @@ describe('RecreateDialog', () => {
     expect(onRecreated).not.toHaveBeenCalled()
 
     await userEvent.click(screen.getByRole('button', { name: 'Recreate' }))
-    expect(api.recreate).toHaveBeenLastCalledWith('ws', false, HASH2)
+    expect(api.recreate).toHaveBeenLastCalledWith('ws', false, HASH2, 'claude')
     await vi.waitFor(() => expect(onRecreated).toHaveBeenCalled())
   })
 
@@ -1648,6 +1654,18 @@ describe.each(['office', 'realm'] as const)('StartSessionChooser — open-time r
     expect(screen.getByTestId('notices')).toBeInTheDocument()
   })
 
+  it('Reset clears the notices and the recheck outcome, and Start takes the autofocus again (UX-M5)', async () => {
+    remember(REMEMBERED_SANDBOX)
+    open(status({ reason: 'docker-daemon-down' }))
+    await screen.findByTestId('notices')
+
+    await userEvent.click(screen.getByRole('button', { name: /^Reset/ }))
+
+    expect(screen.queryByTestId('notices')).toBeNull()
+    expect(screen.queryByTestId('notices-outcome')).toBeNull()
+    expect(startButton()).toHaveAttribute('data-autofocus', 'true')
+  })
+
   it('an unregistered remembered agent is replaced with a notice naming both agents', async () => {
     remember({ ...REMEMBERED_SANDBOX, agentId: 'ghost', location: 'host' })
     open()
@@ -1720,6 +1738,72 @@ describe.each(['office', 'realm'] as const)('StartSessionChooser — open-time r
     }
   })
 
+  it('a Host or built-in choice opens at once while Docker is still hung: Start is usable and Sandbox says Checking… (UX-H1)', async () => {
+    api.getEnvironment.mockReturnValue(new Promise(() => {}))
+    open(null)
+
+    expect(await screen.findByRole('radio', { name: 'Host' })).toHaveAttribute('aria-checked', 'true')
+    expect(startButton()).toBeEnabled()
+    await vi.waitFor(() => expect(startButton()).toHaveFocus())
+    fireEvent.focus(radio('Sandbox'))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(CHECKING_COPY)
+  })
+
+  it('a remembered Host choice with an agent other than the default also opens at once', async () => {
+    api.getEnvironment.mockReturnValue(new Promise(() => {}))
+    remember({ ...REMEMBERED_SANDBOX, location: 'host', hostPermissionMode: 'auto' })
+    open(null)
+
+    expect(await screen.findByRole('radio', { name: 'Host' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('choice-source')).toHaveTextContent('Remembered for this workspace')
+  })
+
+  it('a remembered Sandbox choice waits for the status for 3 s, not 10 s, then falls back as for an unknown status', async () => {
+    vi.useFakeTimers()
+    try {
+      remember(REMEMBERED_SANDBOX)
+      open(null)
+      await act(async () => {})
+      await act(async () => { vi.advanceTimersByTime(SANDBOX_CHOICE_WAIT_MS - 1) })
+      expect(screen.getByTestId('chooser-skeleton')).toBeInTheDocument()
+
+      await act(async () => { vi.advanceTimersByTime(1) })
+
+      expect(screen.queryByTestId('chooser-skeleton')).toBeNull()
+      expect(screen.getByTestId('notices')).toHaveTextContent("Couldn't check your sandbox status, so Host is selected.")
+      expect(radio('Host')).toHaveAttribute('aria-checked', 'true')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a remembered Sandbox choice that gets its status in time is honored, with no fallback', async () => {
+    remember(REMEMBERED_SANDBOX)
+    open()
+    await screen.findByRole('radio', { name: 'Sandbox' })
+    expect(radio('Sandbox')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByTestId('notices')).toBeNull()
+  })
+
+  it('a readiness problem shows Check again, and pressing it asks for a fresh environment and status', async () => {
+    remember({ ...REMEMBERED_SANDBOX, agentId: 'codex', location: 'host' })
+    open(status({ readiness: { codex: { code: 'not-signed-in' } } }), { agents: AGENT_DESCRIPTORS })
+    await screen.findByTestId('readiness-message')
+    api.getEnvironment.mockClear()
+    api.getStatus.mockClear()
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Check again' }))
+
+    expect(api.getEnvironment).toHaveBeenCalledWith(true)
+    await vi.waitFor(() => expect(api.getStatus).toHaveBeenCalledWith('ws'))
+  })
+
+  it('shows no Check again when the agent is ready and Docker is fine', async () => {
+    open()
+    await screen.findByRole('radio', { name: 'Host' })
+    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
+  })
+
   it('falls back to the built-in choice when the remembered options cannot be read', async () => {
     getDefaults.mockRejectedValue(new Error('main unreachable'))
     open()
@@ -1749,7 +1833,7 @@ describe.each(['office', 'realm'] as const)('StartSessionChooser — open-time r
     it('asks for fresh availability on every open', async () => {
       openWithCodex()
       await screen.findByRole('radio', { name: 'Host' })
-      expect(getHostAvailability).toHaveBeenCalledWith(true)
+      expect(getHostAvailability).toHaveBeenCalledWith()
     })
 
     it('flags a missing binary on the option and inline, without swapping the agent', async () => {
@@ -1764,6 +1848,20 @@ describe.each(['office', 'realm'] as const)('StartSessionChooser — open-time r
       )
       expect(screen.queryByTestId('notices')).toBeNull()
       expect(screen.getByTestId('will-start')).toHaveTextContent('Will start: Codex')
+    })
+
+    it('warns, without blocking, when the host binary sits in a folder sandbox sessions can write, with the path and a reinstall command (SEC-M3)', async () => {
+      getHostAvailability.mockResolvedValue(ok({ claude: 'found', codex: 'found-in-writable-root:/home/u/.codex/packages/standalone/bin/codex' }))
+      remember(CODEX_HOST)
+      openWithCodex()
+
+      const warning = await screen.findByTestId('writable-install-warning')
+      expect(warning).toHaveTextContent('/home/u/.codex/packages/standalone/bin/codex')
+      expect(within(warning).getByRole('button', { name: 'Copy command pnpm add -g @openai/codex' })).toBeInTheDocument()
+      expect(screen.queryByTestId('path-warning')).toBeNull()
+      expect(screen.getByRole('radio', { name: 'Codex' })).toHaveAttribute('aria-checked', 'true') // it counts as found
+      await userEvent.click(startButton())
+      expect(terminalSpawn).toHaveBeenCalledWith('ws', 80, 24, expect.objectContaining({ agentId: 'codex' }))
     })
 
     it('stays selectable and Start still starts it', async () => {
@@ -1929,6 +2027,36 @@ describe.each(['office', 'realm'] as const)('StartSessionChooser — readiness c
     const row = screen.getByTestId('readiness-command')
     expect(row).toHaveTextContent('codex login')
     expect(within(row).getByRole('button', { name: 'Copy command codex login' })).toBeInTheDocument()
+  })
+
+  it('shows the readiness message inline, with the command after it (UX-H3)', () => {
+    open('not-signed-in')
+    const message = screen.getByTestId('readiness-message')
+    expect(message).toHaveTextContent('Sign in to Codex on this computer. Run: codex login')
+  })
+
+  it('for a keyring sign-in, the message carries the real step (no raw backticks) and the command reads "After that, run:"', () => {
+    open('keyring')
+    const message = screen.getByTestId('readiness-message')
+    expect(message.textContent).not.toContain('`')
+    expect(message.querySelector('code')).toHaveTextContent('cli_auth_credentials_store = "file"')
+    expect(message).toHaveTextContent('then sign in again. After that, run: codex login')
+  })
+
+  it('shows the message alone for a problem with no command', () => {
+    open('config-invalid')
+    expect(screen.getByTestId('readiness-message')).toHaveTextContent('An entry in ~/.codex is a symbolic link or the wrong type.')
+    expect(screen.queryByTestId('readiness-command')).toBeNull()
+  })
+
+  it('"Couldn\'t copy" is announced when the clipboard refuses (L12)', async () => {
+    const user = userEvent.setup()
+    open('not-signed-in')
+    vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValueOnce(new Error('denied'))
+
+    await user.click(screen.getByRole('button', { name: 'Copy command codex login' }))
+
+    expect(await screen.findByTestId('copy-confirmation')).toHaveTextContent("Couldn't copy")
   })
 
   it('copies the command and confirms politely with "Copied", in a live region that exists beforehand', async () => {

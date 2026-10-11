@@ -1991,10 +1991,13 @@ describe('WizardsStudy — sandbox sessions (6.1)', () => {
       exists: false,
       container: 'absent',
       worktree: 'absent',
-      session: { state: 'idle', permissionMode: null, networkMode: null, lastExit: null },
+      session: { state: 'idle', agentId: null, permissionMode: null, networkMode: null, lastExit: null },
       git: null,
       recreatePending: false,
       recreatePlan: null,
+      containers: {},
+      agentReadiness: {},
+      recreatePlans: [],
       channel: 'none',
       ...overrides,
     }
@@ -2103,7 +2106,7 @@ describe('WizardsStudy — sandbox sessions (6.1)', () => {
 
   it('Start Session is aria-disabled with a reason while the sandbox is ending, and opens nothing', async () => {
     const user = userEvent.setup()
-    setStatus(sandboxStatus({ exists: true, session: { state: 'ending', permissionMode: null, networkMode: null, lastExit: null } }))
+    setStatus(sandboxStatus({ exists: true, session: { state: 'ending', agentId: null, permissionMode: null, networkMode: null, lastExit: null } }))
     render(<WizardsStudy workspaceSlug="my-project" />)
 
     const start = screen.getByRole('button', { name: 'Start Session' })
@@ -2122,7 +2125,7 @@ describe('WizardsStudy — sandbox sessions (6.1)', () => {
         exists: true,
         container: 'running',
         worktree: 'ready',
-        session: { state: 'running', permissionMode: 'skip', networkMode: 'open', lastExit: null },
+        session: { state: 'running', agentId: 'claude', permissionMode: 'skip', networkMode: 'open', lastExit: null },
         git: { branch: 'feat/x', headShort: 'abc1234', ahead: 2, dirtyCount: 0, base: 'main' },
       }),
     )

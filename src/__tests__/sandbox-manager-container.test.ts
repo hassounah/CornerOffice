@@ -729,7 +729,7 @@ describe('previewDelete / delete', () => {
 
     const preview = await manager.previewDelete('myslug')
 
-    expect(preview).toEqual({ sessionRunning: false, dirtyCount: 3, unmergedBranches: ['feat/x'] })
+    expect(preview).toEqual({ sessionRunning: false, dirtyCount: 3, unmergedBranches: ['feat/x'], quarantineFolders: [] })
     expect(docker.calls).toHaveLength(0)
     expect(h.worktreeFakes.remove).not.toHaveBeenCalled()
   })
@@ -841,7 +841,7 @@ describe('defensive fail-closed paths', () => {
 
     expect(await manager.ensureContainer('ghost')).toEqual({ ok: false, code: 'CONTAINER_FAILED' })
     expect(await manager.recreate('ghost', false, 'x'.repeat(64))).toEqual({ ok: false, code: 'FAILED' })
-    expect(await manager.previewDelete('ghost')).toEqual({ sessionRunning: false, dirtyCount: 0, unmergedBranches: [] })
+    expect(await manager.previewDelete('ghost')).toEqual({ sessionRunning: false, dirtyCount: 0, unmergedBranches: [], quarantineFolders: [] })
     expect(await manager.delete('ghost', false)).toEqual({ ok: false, code: 'FAILED' })
   })
 
@@ -1255,7 +1255,7 @@ describe('0030 claude config preparation', () => {
     const spy = vi.spyOn(sandbox, 'cleanup')
     try {
       expect(await createSandboxManager(h.makeDeps({ docker })).delete('myslug', false)).toEqual({ ok: true })
-      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ slug: 'myslug' }))
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ slug: 'myslug' }), { containerAbsent: true })
     } finally {
       spy.mockRestore()
     }

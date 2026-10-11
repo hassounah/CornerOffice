@@ -74,7 +74,6 @@ export function makeAppState(workspaces: Workspace[] = []): AppState {
     homunculusState: null,
     discoveryService: {} as AppState['discoveryService'],
     channelDiscovery: null,
-    pluginDetector: null,
     channelConnection: null,
     terminalManager: null,
     sandboxManager: null,

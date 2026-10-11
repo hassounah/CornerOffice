@@ -63,4 +63,6 @@ export interface NotificationItem {
   source?: 'host' | 'sandbox';
   /** Where a click should land (e.g. 'sandbox-network', 'sandbox-chooser'); handled by the renderer. */
   target?: string;
+  /** A command the user may copy and run themselves; decided in main from checked names. Never run by the app. */
+  command?: string;
 }

@@ -484,10 +484,10 @@ describe('spawn option forwarding', () => {
 })
 
 describe('agents preload API', () => {
-  it('agents.getHostAvailability invokes agents:getHostAvailability with the refresh flag', async () => {
+  it('agents.getHostAvailability invokes agents:getHostAvailability with no input', async () => {
     mockInvoke.mockResolvedValueOnce({ data: null, error: null })
-    await api.agents.getHostAvailability(true)
-    expect(mockInvoke).toHaveBeenCalledWith('agents:getHostAvailability', { refresh: true })
+    await api.agents.getHostAvailability()
+    expect(mockInvoke).toHaveBeenCalledWith('agents:getHostAvailability', {})
   })
 })
 

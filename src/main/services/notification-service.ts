@@ -6,6 +6,8 @@ import { getDescriptor } from '../agents/descriptors'
 
 /** The only file names a quarantine notice repeats back. */
 const QUARANTINE_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/
+/** A path as the guard reports it: starts at `~/` and holds only plain path characters. */
+const QUARANTINE_PATH_RE = /^~\/(?!.*\.\.)[A-Za-z0-9._/-]{1,400}$/
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,6 +27,8 @@ export interface AppNotification {
   source?: 'host' | 'sandbox'
   /** Where a click on the OS notification should land (renderer-handled). */
   target?: string
+  /** A command the user may copy and run themselves (the renderer shows a copy button; nothing runs it). Built from checked names only. */
+  command?: string
 }
 
 export interface NotificationCallbacks {
@@ -272,15 +276,37 @@ export class NotificationService {
         const home = `~/${agent.homeEntries[0] ?? ''}`
         // A name is shown only when it is plain text; anything else reads as "a new file" (the file name is agent-chosen).
         const file = notice.file !== null && QUARANTINE_NAME_RE.test(notice.file) ? notice.file : 'a new file'
-        const single = notice.count === 1 && notice.destination !== null
+        const destination = notice.destination !== null && QUARANTINE_PATH_RE.test(notice.destination) ? notice.destination : null
+        const single = notice.count === 1 && destination !== null
+        const where = destination ?? 'a quarantine folder'
+        // Shown only for a plain name, so nothing agent-chosen reaches a shell command. Copying it is the user's decision; nothing runs it.
+        const command = single && file !== 'a new file' ? `mv ${destination} ${home}/${file}` : undefined
         this.dispatch({
           ...base,
           workspace: notice.slug,
-          tier: 'progress',
+          // Moving files out of the host agent home is a security event: it can't be disabled or silenced.
+          tier: 'requiresAction',
           summary: `Files moved out of ${home}`,
           detail: single
-            ? `${agent.displayName} in the sandbox created ${file} in ${home}. It could be loaded by ${agent.displayName} on your computer, so Corner Office moved it to ${notice.destination}. Nothing was deleted. To keep it, move it back with mv.`
-            : `${agent.displayName} in the sandbox created ${notice.count} new files in ${home}. They could be loaded by ${agent.displayName} on your computer, so Corner Office moved them to ~/.corner-office/sandbox/${notice.slug}/${agent.id}-quarantine/. Nothing was deleted. To keep one, move it back with mv.`,
+            ? `${agent.displayName} in the sandbox added ${file} to ${home}. ${agent.displayName} on your computer could load it, so Corner Office moved it to ${destination}. Nothing was deleted.${command ? ' If you trust it, review it and then move it back.' : ''}`
+            : notice.count === 1
+              ? `${agent.displayName} in the sandbox added ${file} to ${home}. ${agent.displayName} on your computer could load it, so Corner Office moved it aside. Nothing was deleted.`
+              : `${agent.displayName} in the sandbox added ${notice.count} files to ${home}. ${agent.displayName} on your computer could load them, so Corner Office moved them to ${where}. Nothing was deleted.`,
+          ...(command ? { command } : {}),
+        })
+        return
+      }
+      case 'agent-guard-incomplete': {
+        const agent = getDescriptor(notice.agentId)
+        const home = `~/${agent.homeEntries[0] ?? ''}`
+        this.dispatch({
+          ...base,
+          workspace: notice.slug,
+          tier: 'requiresAction',
+          summary: `Couldn't finish checking ${home}`,
+          detail: notice.lostBaseline
+            ? `Corner Office lost track of which files in ${home} are yours, so ${agent.displayName} in the sandbox won't start. Files ${agent.displayName} could load were moved aside and nothing was deleted. Review ${home}, then delete this workspace's sandbox to reset.`
+            : `${agent.displayName} in the sandbox left more in ${home} than Corner Office can check at once. New files that ${agent.displayName} could load were moved aside, nothing was deleted. ${agent.displayName} won't start in the sandbox again until the check can finish.`,
         })
         return
       }

@@ -41,10 +41,13 @@ function status(slug: string, recreatePending: boolean): SandboxStatus {
     exists: true,
     container: 'stopped',
     worktree: 'ready',
-    session: { state: 'idle', permissionMode: null, networkMode: null, lastExit: null },
+    session: { state: 'idle', agentId: null, permissionMode: null, networkMode: null, lastExit: null },
     git: null,
     recreatePending,
     recreatePlan: null,
+    containers: {},
+    agentReadiness: {},
+    recreatePlans: [],
     channel: 'none',
   }
 }
@@ -300,7 +303,7 @@ describe('Image section', () => {
     })
 
     it('without a handler, each pending sandbox gets its own Recreate through the confirm-first dialog', async () => {
-      const plan = { reason: 'image' as const, specHash: 'a'.repeat(64), newHostMounts: [], removedHostMounts: [] }
+      const plan = { reason: 'image' as const, specHash: 'a'.repeat(64), newHostMounts: [], removedHostMounts: [], agentId: 'claude' as const }
       const pending = { ...status('a', true), recreatePlan: plan }
       api.getStatus.mockImplementation(async () => ok(pending))
       api.getSummaries.mockResolvedValue(ok({ a: { exists: true, running: false, unmergedBranches: [] } }))
@@ -315,7 +318,7 @@ describe('Image section', () => {
       expect(api.recreate).not.toHaveBeenCalled()
 
       await userEvent.click(within(dialog).getByRole('button', { name: 'Recreate' }))
-      await vi.waitFor(() => expect(api.recreate).toHaveBeenCalledWith('a', false, 'a'.repeat(64)))
+      await vi.waitFor(() => expect(api.recreate).toHaveBeenCalledWith('a', false, 'a'.repeat(64), 'claude'))
     })
 
     it('shows no prompt when nothing is pending', () => {
@@ -749,8 +752,8 @@ describe('Sandboxes section', () => {
 
   it('shows Running and Ending… and offers no Delete while a session is active', () => {
     useWorkspaceStore.setState({ workspaces: [ws('alpha', 'Alpha'), ws('beta', 'Beta')] })
-    const running = { ...status('alpha', false), session: { state: 'running' as const, permissionMode: 'skip' as const, networkMode: 'allowlist' as const, lastExit: null } }
-    const ending = { ...status('beta', false), session: { state: 'ending' as const, permissionMode: null, networkMode: null, lastExit: null } }
+    const running = { ...status('alpha', false), session: { state: 'running' as const, agentId: 'claude' as const, permissionMode: 'skip' as const, networkMode: 'allowlist' as const, lastExit: null } }
+    const ending = { ...status('beta', false), session: { state: 'ending' as const, agentId: null, permissionMode: null, networkMode: null, lastExit: null } }
     const both = { alpha: summary({ running: true }), beta: summary() }
     api.getSummaries.mockResolvedValue(ok(both))
     api.getStatus.mockImplementation(async (slug: string) => ok(slug === 'alpha' ? running : ending))
@@ -771,7 +774,7 @@ describe('Sandboxes section', () => {
 
   it('Delete goes through the confirm and then deletes', async () => {
     useWorkspaceStore.setState({ workspaces: [ws('alpha', 'Alpha')] })
-    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 0, unmergedBranches: [] }))
+    api.previewDelete.mockResolvedValue(ok({ sessionRunning: false, dirtyCount: 0, unmergedBranches: [], quarantineFolders: [] }))
     api.delete.mockResolvedValue(ok({ ok: true }))
     api.getStatus.mockImplementation(async (slug: string) => ok(status(slug, false)))
     api.getSummaries.mockResolvedValue(ok({ alpha: summary() }))

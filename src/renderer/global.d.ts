@@ -114,7 +114,7 @@ interface CornerOfficeAPI {
     unwatch: (workspaceSlug: string, gen: number, root?: 'workspace' | 'sandbox') => Promise<IpcResponse<{ ok: true }>>
   }
   agents: {
-    getHostAvailability: (refresh: boolean) => Promise<IpcResponse<Record<string, 'found' | 'not-found'>>>
+    getHostAvailability: () => Promise<IpcResponse<Record<string, string>>>
   }
   session: {
     getDefaults: (workspaceSlug: string) => Promise<IpcResponse<SessionDefaultsView>>
