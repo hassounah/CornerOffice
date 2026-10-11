@@ -12,7 +12,7 @@ import { containerName } from '../main/services/sandbox-spec'
 import type { DockerRunner, DockerResult, DockerRunOpts } from '../main/services/docker-runner'
 import { AGENT_IDS } from '../main/agents/descriptors'
 import { HANDLERS } from '../main/agents/registry'
-import type { AgentHandler } from '../main/agents/handler'
+import type { AgentHandler, QuarantineOutcome } from '../main/agents/handler'
 import { cleanupHarness, setup, prepareRepo, NOT_FOUND_ERROR } from './helpers/sandbox-session-harness'
 import type { Harness } from './helpers/sandbox-session-harness'
 
@@ -28,8 +28,8 @@ const CODEX = containerName('myslug', 'codex')
 
 const originalClaude = HANDLERS.claude
 const originalCodex = HANDLERS.codex
-const codexAfterStop = vi.fn(() => ({ quarantined: 0, shown: null }))
-const claudeAfterStop = vi.fn(() => ({ quarantined: 0, shown: null }))
+const codexAfterStop = vi.fn((): QuarantineOutcome => ({ quarantined: 0, shown: null, destination: null }))
+const claudeAfterStop = vi.fn((): QuarantineOutcome => ({ quarantined: 0, shown: null, destination: null }))
 
 function inspectJson(running: boolean, image = 'sha256:image1'): string {
   return JSON.stringify({
@@ -196,6 +196,51 @@ describe('ending a session', () => {
     expect(mockLog.warn).toHaveBeenCalledWith(expect.stringContaining('codex afterStop failed for myslug'))
   })
 
+  it('raises one agent-files-quarantined notice when afterStop moved files, and none when it moved nothing', async () => {
+    const h = prepared()
+    const notices: unknown[] = []
+    const manager = createSandboxManager(h.makeDeps({ notify: (notice) => notices.push(notice) }))
+    await manager.startSession(h.opts({ agentId: 'codex' }))
+    h.docker.script(['inspect'], { result: { stdout: inspectJson(false), stderr: '', exitCode: 0 } })
+    codexAfterStop.mockReturnValueOnce({ quarantined: 1, shown: 'AGENTS.override.md', destination: '~/.corner-office/sandbox/myslug/codex-quarantine/AGENTS.override.md-1' })
+
+    await manager.endSession('myslug')
+
+    expect(notices.filter((n) => (n as { kind: string }).kind === 'agent-files-quarantined')).toEqual([
+      {
+        kind: 'agent-files-quarantined',
+        slug: 'myslug',
+        agentId: 'codex',
+        count: 1,
+        file: 'AGENTS.override.md',
+        destination: '~/.corner-office/sandbox/myslug/codex-quarantine/AGENTS.override.md-1',
+      },
+    ])
+
+    notices.length = 0
+    await manager.startSession(h.opts({ agentId: 'codex' }))
+    await manager.endSession('myslug')
+    expect(notices.some((n) => (n as { kind: string }).kind === 'agent-files-quarantined')).toBe(false)
+  })
+
+  it('raises the notice for files a prepare sweep moved (a crashed session), and still starts', async () => {
+    const h = prepared()
+    const notices: unknown[] = []
+    HANDLERS.codex = {
+      ...HANDLERS.codex,
+      sandbox: {
+        ...HANDLERS.codex.sandbox!,
+        prepare: () => ({ ok: true, quarantine: { quarantined: 3, shown: null, destination: null } }),
+      },
+    }
+    const manager = createSandboxManager(h.makeDeps({ notify: (notice) => notices.push(notice) }))
+
+    const result = await manager.startSession(h.opts({ agentId: 'codex' }))
+
+    expect(result.ok).toBe(true)
+    expect(notices).toContainEqual({ kind: 'agent-files-quarantined', slug: 'myslug', agentId: 'codex', count: 3, file: null, destination: null })
+  })
+
   it('quit stops the session agent\'s container and then runs its afterStop', async () => {
     const h = prepared()
     const manager = createSandboxManager(h.makeDeps())
@@ -266,7 +311,8 @@ describe('recreate-pending and plans by agent', () => {
     const codexPlan = status.recreatePlans?.find((p) => p.agentId === 'codex')
     expect(codexPlan).toBeDefined()
     expect(status.recreatePlan?.specHash).toBe(codexPlan?.specHash)
-    expect(status.recreatePlan).not.toHaveProperty('agentId') // the compatibility field is the plain plan
+    expect(status.recreatePlan).toEqual(codexPlan) // the compatibility field carries its agent, so a dialog targets the right container
+    expect(status.recreatePlan?.agentId).toBe('codex')
   })
 })
 

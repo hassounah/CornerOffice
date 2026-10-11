@@ -2,8 +2,8 @@ import type { AgentDescriptor } from '../types'
 
 // ---------------------------------------------------------------------------
 // codex/descriptor.ts — Codex CLI's pure data (TRD §4.6, §4.7, §4.9.5). The
-// sandbox mode list is still empty, so the handler has no `sandbox` half until
-// D10 wires codex/sandbox-config.ts in. Descriptor files may import only zod,
+// sandbox mode list is non-empty, which is what makes the handler's `sandbox`
+// half required (contract test). Descriptor files may import only zod,
 // ../types, sibling descriptors and src/main/types/*.
 // ---------------------------------------------------------------------------
 
@@ -17,7 +17,8 @@ export const CODEX_DESCRIPTOR = {
       { mode: 'default', label: 'Default', note: 'Uses your Codex config (normally: ask before risky actions).' },
       { mode: 'auto', label: 'Auto mode', note: 'Codex reviews approvals automatically.' },
     ],
-    sandbox: [],
+    // Auto only if the live check (TRD §11.2 #8) passes; until then the sandbox is the boundary.
+    sandbox: [{ mode: 'skip', label: 'Skip permissions', note: 'Never asks. The sandbox is the boundary.' }],
   },
   homeEntries: ['.codex'],
   copy: {

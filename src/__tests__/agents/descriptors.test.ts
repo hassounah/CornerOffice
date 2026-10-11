@@ -35,7 +35,7 @@ describe('agent descriptors', () => {
   it('pins the Codex descriptor data', () => {
     expect(CODEX_DESCRIPTOR.capabilities).toEqual({ channels: false, plugin: true })
     expect(CODEX_DESCRIPTOR.permissionModes.host.map((m) => m.mode)).toEqual(['default', 'auto'])
-    expect(CODEX_DESCRIPTOR.permissionModes.sandbox).toEqual([])
+    expect(CODEX_DESCRIPTOR.permissionModes.sandbox.map((m) => m.mode)).toEqual(['skip'])
     expect(CODEX_DESCRIPTOR.homeEntries).toEqual(['.codex'])
     expect(Object.keys(CODEX_DESCRIPTOR.copy.readiness)).toEqual(['never-run', 'keyring', 'not-signed-in', 'config-invalid'])
     expect(CODEX_DESCRIPTOR.copy.readiness['never-run']).toEqual({ message: 'Run Codex on this computer once first.', command: 'codex' })

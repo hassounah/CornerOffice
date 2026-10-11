@@ -25,7 +25,18 @@ export interface AgentMountSpec {
   readonly: boolean
 }
 /** `detail` is fixed copy, never file contents. */
-export type AgentConfigResult = { ok: true } | { ok: false; detail: string }
+export type AgentConfigResult = { ok: true; quarantine?: QuarantineOutcome } | { ok: false; detail: string }
+
+/**
+ * What an agent's guard moved out of the host's agent home (D9). `shown` is the original name when exactly one file
+ * moved and its name is plain; `destination` is where a single file went, in the form the user sees. Both are null
+ * for several files. Data only: the notice copy is fixed in the notification service.
+ */
+export interface QuarantineOutcome {
+  quarantined: number
+  shown: string | null
+  destination: string | null
+}
 /** `code` ∈ descriptor.copy.readiness. */
 export type AgentReadiness = { ok: true } | { ok: false; code: string }
 
@@ -50,7 +61,7 @@ export interface AgentHandler {
     /** Delete: remove this agent's files in S. */
     cleanup(ctx: SandboxCtx): void
     /** Called by the manager only after a confirmed stop, and in reconcile. */
-    afterStop?(ctx: SandboxCtx): { quarantined: number; shown: string | null }
+    afterStop?(ctx: SandboxCtx): QuarantineOutcome
   }
   /** Must never throw (D21). */
   plugin?: { detect(): Promise<PluginStatus> }

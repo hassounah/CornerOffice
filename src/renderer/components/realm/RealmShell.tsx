@@ -59,7 +59,7 @@ function FirstRunWelcome({ onDismiss, onConfigure }: {
           </li>
           <li className="flex items-start gap-3">
             <span style={{ color: '#c9a84c' }} aria-hidden="true">🧙</span>
-            <span><strong>Agent activity → Characters</strong> — watch them appear as Claude works</span>
+            <span><strong>Agent activity → Characters</strong> — watch them appear as your agents work</span>
           </li>
           <li className="flex items-start gap-3">
             <span style={{ color: '#c9a84c' }} aria-hidden="true">🏰</span>

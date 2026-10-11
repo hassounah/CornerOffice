@@ -48,7 +48,7 @@ import { assertNoSymlinkOnPath } from './safe-fs'
 import type { PlanMountsFacts, DocsRootFacts, OldMount, ParsedInspect } from './sandbox-spec'
 import { AGENT_IDS, LEGACY_AGENT_ID, getDescriptor } from '../agents/descriptors'
 import type { AgentId } from '../agents/descriptors'
-import type { AgentConfigResult, AgentHandler, AgentMountSpec } from '../agents/handler'
+import type { AgentConfigResult, AgentHandler, AgentMountSpec, QuarantineOutcome } from '../agents/handler'
 import { getHandler } from '../agents/registry'
 import type { PermMode } from '../agents/claude/handler'
 import { effectiveAllowlist } from './sandbox-allowlist'
@@ -601,6 +601,16 @@ function fixedMountSourcesSafe(facts: { home: string; repo: string; indexExists:
   return checkPaths.every((p) => assertMountSafe(p, { home }))
 }
 
+/** `p` when it is a real directory (not a symlink), else `null`: the shape a mount source must have. */
+function realDirectoryOrNull(p: string): string | null {
+  try {
+    const stat = fs.lstatSync(p)
+    return stat.isDirectory() && !stat.isSymbolicLink() ? p : null
+  } catch {
+    return null
+  }
+}
+
 interface MountPlanContext {
   facts: PlanMountsFacts
   configFacts: GitConfigFacts
@@ -653,6 +663,7 @@ async function buildMountPlanContext(
     eventsEnabled,
     docsRoot: docsRootFacts,
     worktreesOverlay: true, // §12 G1, adopted in Phase 0.7
+    homunculusDir: realDirectoryOrNull(path.join(paths.claudeDir, 'homunculus')),
   }
   return { facts, configFacts, gitDirPath }
 }
@@ -675,10 +686,25 @@ function precreateMountTargets(paths: SandboxPaths, repo: string, wt: string, sl
   fs.mkdirSync(path.join(repo, '.git', 'hooks'), { recursive: true })
   fs.mkdirSync(path.join(repo, '.git', 'modules'), { recursive: true }) // M2: always
   fs.mkdirSync(path.join(paths.eventsRoot, slug), { recursive: true })
-  fs.mkdirSync(sandboxEventsDir(paths, slug), { recursive: true, mode: 0o700 }) // D23: the container's events mount source
+  const events = ensurePrivateDir(sandboxEventsDir(paths, slug), `~/.corner-office/sandbox/${slug}/events`) // D23: the container's events mount source
+  if (!events.ok) return events
   // The agent's own sources and nested mount targets (for Claude: `~/.claude/channels`, the read-only config
   // sources, the settings copy and the first `claude.json` seed).
   return sandboxHandler(agentId).prepare({ paths, slug, workTree: wt }, 'plan')
+}
+
+/**
+ * A directory only the app user can use, for a path the container can write into (its `S/events` mount source).
+ * Created 0700 when absent; an existing one is tightened to 0700. A symlink or a non-directory in its place is
+ * refused, never followed or chmod-ed (the agent can write under `S`).
+ */
+function ensurePrivateDir(dir: string, where: string): AgentConfigResult {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const stat = fs.lstatSync(dir)
+  if (stat.isSymbolicLink()) return { ok: false, detail: `${where} is a symbolic link. Replace it with a real file or folder, then Start again.` }
+  if (!stat.isDirectory()) return { ok: false, detail: `${where} isn't a folder. Fix or remove it, then Start again.` }
+  fs.chmodSync(dir, 0o700)
+  return { ok: true }
 }
 
 /** The sandbox half of `agentId`'s handler; an agent without one is never offered in the sandbox (fail closed). */
@@ -824,11 +850,13 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
       const plan = recreatePlanFor(slug, id)
       return plan ? [{ ...plan, agentId: id }] : []
     })
-  /** `getStatus.recreatePlan` (kept for compatibility) is the last-started agent's plan, else the first in registry order. */
+  /**
+   * `getStatus.recreatePlan` (kept for compatibility) is the last-started agent's plan, else the first in registry
+   * order. It carries its `agentId`, so a dialog opened from it recreates that agent's container, not the legacy one.
+   */
   const anyRecreatePlan = (slug: string): RecreatePlan | null => {
     const plans = allRecreatePlans(slug)
-    const preferred = plans.find((p) => p.agentId === lastStartedAgent.get(slug)) ?? plans[0]
-    return preferred ? (recreatePlanFor(slug, preferred.agentId) ?? null) : null
+    return plans.find((p) => p.agentId === lastStartedAgent.get(slug)) ?? plans[0] ?? null
   }
   /** Only agents with channels use the workspace's channel port; the others publish nothing. */
   const usesChannelPort = (agentId: AgentId): boolean => getDescriptor(agentId).capabilities.channels
@@ -1159,6 +1187,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
     const prepared = precreateMountTargets(paths, repo, wt, slug, agentId)
     if (!prepared.ok) return configInvalid(agentId, prepared)
+    raiseQuarantine(slug, agentId, prepared.quarantine)
 
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
     const baseResult = await worktree.resolveBase(git, repoCtx)
@@ -1276,6 +1305,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
     const prepared = precreateMountTargets(paths, repo, wt, slug, agentId)
     if (!prepared.ok) return configInvalid(agentId, prepared)
+    raiseQuarantine(slug, agentId, prepared.quarantine)
 
     const repoCtx: RepoCtx = { root: repo, workspaceRoots: appState.getWorkspaceRoots() }
     const baseResult = await worktree.resolveBase(git, repoCtx)
@@ -1568,6 +1598,10 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     if (imageState.state !== 'ready' && imageState.state !== 'stale') {
       return failPreparing(slug, 'IMAGE_MISSING', false)
     }
+    // An image built before this agent was added doesn't hold it: the same build prompt, for this agent's starts only.
+    if (!imageState.agents.includes(agentId)) {
+      return failPreparing(slug, 'IMAGE_MISSING', false)
+    }
 
     // 4. Worktree ensure (§3.9.3).
     const ensureResult = await worktree.ensure(git, repoCtx, paths, slug, eligibility.baseBranch)
@@ -1744,13 +1778,20 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
    * session left behind. Best effort — a throwing hook is logged by agent and never fails the stop. The hook is a no-op
    * until an agent defines `afterStop`.
    */
+  /** One notice per sweep that moved at least one file (so about one per session): it stays in the notification history. */
+  function raiseQuarantine(slug: string, agentId: AgentId, outcome: QuarantineOutcome | undefined): void {
+    if (!outcome || outcome.quarantined === 0) return
+    log.info(`[sandbox-manager] ${agentId} guard for ${slug} quarantined ${outcome.quarantined} item(s)`)
+    notify({ kind: 'agent-files-quarantined', slug, agentId, count: outcome.quarantined, file: outcome.shown, destination: outcome.destination })
+  }
+
   function runAfterStop(slug: string, agentId: AgentId): void {
     const afterStop = getHandler(agentId).sandbox?.afterStop
     if (!afterStop) return
     try {
       const paths = sandboxPaths(realHome)
       const outcome = afterStop({ paths, slug, workTree: worktreePath(paths, slug) })
-      if (outcome.quarantined > 0) log.info(`[sandbox-manager] ${agentId} afterStop for ${slug} quarantined ${outcome.quarantined} item(s)`)
+      raiseQuarantine(slug, agentId, outcome)
     } catch (err) {
       log.warn(`[sandbox-manager] ${agentId} afterStop failed for ${slug}: ${String(err)}`)
     }

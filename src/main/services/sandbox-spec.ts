@@ -276,6 +276,12 @@ export interface PlanMountsFacts {
   docsRoot: DocsRootFacts
   /** §12 G1 / Phase 0.7: `.git/worktrees` read-only with `${gwt}` read-write on top. Provisional default `false` until 0.9. */
   worktreesOverlay: boolean
+  /**
+   * `~/.claude/homunculus` when it exists as a real directory (the Corner Office plugin's learning data), else
+   * `null`/absent. Mounted read-write at the same path in every container whose agent mounts don't already cover it
+   * (#0037 D10, Q-A): a Claude container does through `~/.claude`; a Codex container gets just this subtree.
+   */
+  homunculusDir?: string | null
 }
 
 /**
@@ -474,6 +480,11 @@ export function planMounts(facts: PlanMountsFacts, agentMounts: readonly AgentMo
 
   add(sandboxEventsDir(paths, slug), path.join(paths.eventsRoot, slug), false) // D23: S/events, not the host directory
   if (eventsEnabled) add(path.join(paths.eventsRoot, 'enabled'), path.join(paths.eventsRoot, 'enabled'), true)
+
+  // The plugin's learning data. A writable mount of an ancestor (Claude's `~/.claude`) already covers it.
+  const { homunculusDir } = facts
+  const covered = (dir: string): boolean => agentMounts.some((m) => !m.readonly && (dir === m.target || dir.startsWith(m.target + path.sep)))
+  if (homunculusDir && !covered(homunculusDir)) add(homunculusDir, homunculusDir, false)
 
   if (unsafe) return { ok: false, reason: 'unsafe-path' }
 

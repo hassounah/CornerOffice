@@ -196,6 +196,11 @@ export type SandboxNotice =
   | { kind: 'container-recreated'; slug: string }
   /** `slug` is the workspace whose Start asked for the build, or null when none is known. */
   | { kind: 'image-ready'; slug: string | null }
+  /**
+   * The agent's guard moved `count` new files out of its home (D9). `file` is the original name when exactly one moved
+   * and the name is plain; `destination` is where that one went. Both are null for several.
+   */
+  | { kind: 'agent-files-quarantined'; slug: string; agentId: AgentId; count: number; file: string | null; destination: string | null }
 
 // ── Push payloads ───────────────────────────────────────────────────────────
 

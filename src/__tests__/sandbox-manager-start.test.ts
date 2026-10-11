@@ -8,6 +8,7 @@ import type { EnsureResult } from '../main/services/sandbox-worktree'
 import { containerName, LABEL, FIREWALL_INIT_TIMEOUT_MS } from '../main/services/sandbox-spec'
 import type { SandboxImageService } from '../main/services/sandbox-image'
 import { claudeConfigDetail } from '../main/types/claude-config'
+import { HANDLERS } from '../main/agents/registry'
 import { cleanupHarness, setup, prepareRepo, IMAGE_ID, PORT_CONFLICT_ERROR, fakeImage } from './helpers/sandbox-session-harness'
 
 afterEach(cleanupHarness)
@@ -49,17 +50,40 @@ describe('startSession', () => {
     expect(result).toEqual({ ok: false, code: 'NOT_ELIGIBLE', detail: null })
   })
 
-  it('NOT_ELIGIBLE for an agent whose handler has no sandbox half (Codex), before any Docker call', async () => {
+  it('NOT_ELIGIBLE for an agent whose handler has no sandbox half, before any Docker call', async () => {
     sandboxSettings.disabled = false
     const h = setup()
     prepareRepo(h)
-    const manager = createSandboxManager(h.makeDeps())
+    const original = HANDLERS.codex
+    HANDLERS.codex = { host: original.host, plugin: original.plugin }
+    try {
+      const result = await createSandboxManager(h.makeDeps()).startSession(h.opts({ agentId: 'codex' }))
 
-    const result = await manager.startSession(h.opts({ agentId: 'codex' }))
+      expect(result).toEqual({ ok: false, code: 'NOT_ELIGIBLE', detail: null })
+      expect(h.terminal.spawnCalls).toHaveLength(0)
+      expect(h.docker.calls.some((c) => c.args[0] === 'create')).toBe(false)
+    } finally {
+      HANDLERS.codex = original
+    }
+  })
 
-    expect(result).toEqual({ ok: false, code: 'NOT_ELIGIBLE', detail: null })
-    expect(h.terminal.spawnCalls).toHaveLength(0)
+  it('IMAGE_MISSING for Codex only when the image was built before Codex was added (no codex in its label)', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    prepareRepo(h)
+    const codexHome = path.join(h.realHome, '.codex')
+    fs.mkdirSync(codexHome)
+    fs.writeFileSync(path.join(codexHome, 'auth.json'), '{}')
+    const claudeOnly = fakeImage('ready')
+    const oldImage = { ...claudeOnly.service, getImageState: async () => ({ ...(await claudeOnly.service.getImageState()), agents: ['claude'] }) }
+    const manager = createSandboxManager(h.makeDeps({ image: oldImage }))
+
+    expect(await manager.startSession(h.opts({ agentId: 'codex' }))).toEqual({ ok: false, code: 'IMAGE_MISSING', detail: null })
     expect(h.docker.calls.some((c) => c.args[0] === 'create')).toBe(false)
+    expect((await manager.getStatus('myslug')).session.state).toBe('idle')
+
+    // Claude still starts on the same image.
+    expect((await manager.startSession(h.opts())).ok).toBe(true)
   })
 
   it('AGENT_NOT_READY (with the agent and the readiness code) when ~/.claude is missing, before the image step and any session state', async () => {
@@ -85,6 +109,30 @@ describe('startSession', () => {
     const manager = createSandboxManager(h.makeDeps())
 
     expect(await manager.startSession(h.opts())).toEqual({ ok: false, code: 'AGENT_NOT_READY', detail: null, agentId: 'claude', readiness: 'config-invalid' })
+  })
+
+  it('a Codex start with the real handler: its mounts reach docker create, its env and argv the exec, and the guard opens', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    prepareRepo(h)
+    const codexHome = path.join(h.realHome, '.codex')
+    fs.mkdirSync(codexHome)
+    fs.writeFileSync(path.join(codexHome, 'auth.json'), '{}')
+    const manager = createSandboxManager(h.makeDeps())
+
+    const result = await manager.startSession(h.opts({ agentId: 'codex' }))
+
+    expect(result.ok).toBe(true)
+    const create = h.docker.calls.find((c) => c.args[0] === 'create')
+    const mountArgs = (create?.args ?? []).filter((a) => a.startsWith('type=bind'))
+    expect(mountArgs).toContain(`type=bind,source=${codexHome},target=${codexHome}`)
+    expect(mountArgs.some((a) => a.includes(`target=${codexHome}/config.toml`) && a.endsWith(',readonly'))).toBe(true)
+    expect(mountArgs.some((a) => a.includes('target=' + path.join(h.realHome, '.claude')))).toBe(false)
+    expect(create?.args.some((a) => a.startsWith('CORNER_OFFICE_CHANNEL_PORT'))).toBe(false)
+    const spawn = h.terminal.spawnCalls[0]
+    expect(spawn.argv.some((a) => a.startsWith('CODEX_SQLITE_HOME='))).toBe(true)
+    expect(spawn.argv).toContain('--dangerously-bypass-approvals-and-sandbox')
+    expect(fs.existsSync(path.join(h.realHome, '.corner-office', 'sandbox', 'myslug', 'codex-guard-baseline.json'))).toBe(true)
   })
 
   it('SESSION_EXISTS when the SandboxTerminalPort reports a session', async () => {
@@ -280,7 +328,7 @@ describe('startSession', () => {
 
     const status = await manager.getStatus('myslug')
 
-    expect(status.recreatePlan).toEqual({ reason: 'port', specHash: expect.stringMatching(/^[a-f0-9]{64}$/), newHostMounts: [], removedHostMounts: [] })
+    expect(status.recreatePlan).toEqual({ reason: 'port', specHash: expect.stringMatching(/^[a-f0-9]{64}$/), newHostMounts: [], removedHostMounts: [], agentId: 'claude' })
     h.docker.script(['start'], { result: { stdout: '', stderr: '', exitCode: 0 } })
     expect(await manager.recreate('myslug', true, status.recreatePlan!.specHash)).toEqual({ ok: true })
   })

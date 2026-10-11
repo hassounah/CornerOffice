@@ -7,6 +7,7 @@ import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
 import { useTerminalStore } from '../../../renderer/stores/terminal-store'
 import { CLAUDE_DESCRIPTOR } from '@main/agents/claude/descriptor'
 import { AGENT_DESCRIPTORS } from '@main/agents/descriptors'
+import { CODEX_DESCRIPTOR } from '@main/agents/codex/descriptor'
 import { builtinChoice } from '../../../renderer/utils/session-options'
 import { expectNoAxeViolations } from '../../helpers/a11y'
 import type { AgentDescriptor } from '@main/agents/types'
@@ -204,6 +205,13 @@ describe('StartSessionChooser — choices', () => {
   })
 })
 
+// Codex has a sandbox half now (D10); these tests are about an agent that does not, so they use a host-only stand-in.
+const HOST_ONLY_CODEX: AgentDescriptor = {
+  ...CODEX_DESCRIPTOR,
+  permissionModes: { host: CODEX_DESCRIPTOR.permissionModes.host, sandbox: [] },
+}
+const WITH_HOST_ONLY_CODEX: readonly AgentDescriptor[] = [CLAUDE_DESCRIPTOR, HOST_ONLY_CODEX]
+
 describe('StartSessionChooser — agent, permissions, "Will start" and Reset (B6)', () => {
   const REMEMBERED: { choice: SessionChoice; source: 'workspace' | 'last' } = {
     choice: { agentId: 'claude', location: 'sandbox', hostPermissionMode: 'auto', sandboxPermissionMode: 'auto', networkMode: 'open' },
@@ -223,7 +231,7 @@ describe('StartSessionChooser — agent, permissions, "Will start" and Reset (B6
 
   it('selecting an agent without a sandbox half leaves the sandbox, and explains why Sandbox is unavailable', async () => {
     setup(status())
-    renderChooser({ agents: AGENT_DESCRIPTORS, initial: { choice: { ...REMEMBERED.choice }, source: 'last' } })
+    renderChooser({ agents: WITH_HOST_ONLY_CODEX, initial: { choice: { ...REMEMBERED.choice }, source: 'last' } })
     expect(radio('Sandbox')).toHaveAttribute('aria-checked', 'true')
 
     await userEvent.click(radio('Codex'))
@@ -237,7 +245,7 @@ describe('StartSessionChooser — agent, permissions, "Will start" and Reset (B6
 
   it('changing the agent never silently leaves the sandbox: it is announced, reported as a fallback, and Start is not focused', async () => {
     setup(status())
-    renderChooser({ agents: AGENT_DESCRIPTORS, initial: { choice: { ...REMEMBERED.choice }, source: 'last' } })
+    renderChooser({ agents: WITH_HOST_ONLY_CODEX, initial: { choice: { ...REMEMBERED.choice }, source: 'last' } })
 
     await userEvent.click(radio('Codex'))
 
@@ -1076,13 +1084,30 @@ describe('RecreateDialog', () => {
   const ro = (path: string, source: 'settings' | 'memory.md' | 'app' = 'app') => ({ path, readonly: true, source })
 
   it.each([
-    ['image', 'The sandbox image changed.'],
+    ['image', 'The sandbox image was updated.'],
     ['mount-plan', 'The folders shared with the sandbox changed.'],
     ['port', "The sandbox's channel port changed."],
     ['new-container', "This sandbox doesn't exist yet. Nothing will be removed."],
   ] as const)('shows one reason line for %s', (reason, line) => {
     renderDialog(plan({ reason }))
     expect(screen.getByRole('alertdialog')).toHaveTextContent(line)
+  })
+
+  it('names the agent whose container it changes, and recreates that agent\'s container', async () => {
+    renderDialog(plan({ reason: 'image', agentId: 'codex' }))
+    const dialog = screen.getByRole('alertdialog')
+    expect(dialog).toHaveTextContent('Recreate the Codex sandbox?')
+    expect(dialog).toHaveTextContent('The sandbox image was updated.')
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Recreate' }))
+    expect(api.recreate).toHaveBeenCalledWith('ws', false, expect.any(String), 'codex')
+  })
+
+  it('a plan without an agent is the legacy agent\'s', async () => {
+    renderDialog(plan({ reason: 'mount-plan' }))
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Recreate the Claude Code sandbox?')
+    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Recreate' }))
+    expect(api.recreate).toHaveBeenCalledWith('ws', false, expect.any(String))
   })
 
   it('a plan with only an added read-only overlay says "Only read-only protections were added" and lists no path', () => {
@@ -1136,14 +1161,14 @@ describe('RecreateDialog', () => {
     expect(dialog).toHaveTextContent('No longer shared with the sandbox:')
     expect(dialog).toHaveTextContent('/old/docs')
     expect(dialog).toHaveTextContent('Container caches will be reset.')
-    expect(screen.getByRole('heading')).toHaveTextContent('Recreate the sandbox?')
+    expect(screen.getByRole('heading')).toHaveTextContent('Recreate the Claude Code sandbox?')
   })
 
   it('a new-container plan reads "Create", shows its copy, no removed section and no cache-reset line', () => {
     renderDialog(plan({ reason: 'new-container', newHostMounts: [rw('/home/u/docs', 'memory.md')], removedHostMounts: ['/should/not/show'] }))
 
     const dialog = screen.getByRole('alertdialog')
-    expect(screen.getByRole('heading')).toHaveTextContent('Create the sandbox?')
+    expect(screen.getByRole('heading')).toHaveTextContent('Create the Claude Code sandbox?')
     expect(within(dialog).getByRole('button', { name: 'Create' })).toBeInTheDocument()
     expect(dialog).not.toHaveTextContent('No longer shared')
     expect(dialog).not.toHaveTextContent('/should/not/show')
@@ -1266,7 +1291,7 @@ describe('RecreateDialog', () => {
   it('renders in the realm skin with the same copy', () => {
     renderDialog(plan({ reason: 'new-container', newHostMounts: [rw('/home/u/docs', 'memory.md')] }), { skin: 'realm' })
     const dialog = screen.getByRole('alertdialog')
-    expect(dialog).toHaveTextContent('Create the sandbox?')
+    expect(dialog).toHaveTextContent('Create the Claude Code sandbox?')
     expect(dialog).toHaveTextContent(".rix/memory.md, which the sandbox agent can edit")
   })
 })
@@ -1886,5 +1911,95 @@ describe.each(['office', 'realm'] as const)('StartSessionChooser — open-time r
       const { container } = open(null)
       await expectNoAxeViolations(container)
     })
+  })
+})
+
+// ── D11: the readiness command, with a copy button ──────────────────────────
+
+describe.each(['office', 'realm'] as const)('StartSessionChooser — readiness command and Codex sandbox note (D11, skin=%s)', (skin) => {
+  const CODEX_HOST = { choice: { ...builtinChoice(), agentId: 'codex' }, source: 'last' as const }
+
+  function open(readinessCode: string | null, extra: Parameters<typeof status>[0] = {}) {
+    setup(status({ ...extra, readiness: { codex: readinessCode ? { code: readinessCode } : null } }))
+    return renderChooser({ skin, agents: AGENT_DESCRIPTORS, initial: CODEX_HOST })
+  }
+
+  it('shows the fix as a command with a named copy button when Codex is not signed in', () => {
+    open('not-signed-in')
+    const row = screen.getByTestId('readiness-command')
+    expect(row).toHaveTextContent('codex login')
+    expect(within(row).getByRole('button', { name: 'Copy command codex login' })).toBeInTheDocument()
+  })
+
+  it('copies the command and confirms politely with "Copied", in a live region that exists beforehand', async () => {
+    const user = userEvent.setup()
+    open('not-signed-in')
+    const confirmation = screen.getByTestId('copy-confirmation')
+    expect(confirmation).toHaveAttribute('aria-live', 'polite')
+    expect(confirmation).toHaveTextContent('')
+
+    await user.click(screen.getByRole('button', { name: 'Copy command codex login' }))
+
+    expect(await navigator.clipboard.readText()).toBe('codex login')
+    expect(screen.getByTestId('copy-confirmation')).toHaveTextContent('Copied')
+  })
+
+  it('offers the plain `codex` command for a first run', () => {
+    open('never-run')
+    expect(screen.getByRole('button', { name: 'Copy command codex' })).toBeInTheDocument()
+  })
+
+  it('shows no command for a problem that has none (a bad ~/.codex entry), and none when Codex is ready', () => {
+    open('config-invalid')
+    expect(screen.queryByTestId('readiness-command')).toBeNull()
+    cleanup()
+    open(null)
+    expect(screen.queryByTestId('readiness-command')).toBeNull()
+  })
+
+  it('shows no command when Docker or the workspace is what blocks the sandbox', () => {
+    open('not-signed-in', { reason: 'docker-daemon-down' })
+    expect(screen.queryByTestId('readiness-command')).toBeNull()
+  })
+
+  it('still gives the Sandbox option the readiness message as its reason', () => {
+    open('keyring')
+    fireEvent.focus(radio('Sandbox'))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(agentReadinessMessage('codex', 'keyring') as string)
+  })
+
+  it('shows the Codex sandbox first-run note when Codex and Sandbox are chosen', async () => {
+    open(null)
+    expect(screen.queryByText(/can use and replace your Codex sign-in/)).toBeNull()
+    await userEvent.click(radio('Sandbox'))
+    expect(screen.getByText(/The sandbox agent can use and replace your Codex sign-in/)).toBeInTheDocument()
+  })
+
+  it('has no axe violations with the command showing', async () => {
+    const { container } = open('not-signed-in')
+    await expectNoAxeViolations(container)
+  })
+})
+
+describe('StartSessionChooser — build prompt for an agent the image predates (D11)', () => {
+  it('adds the one-time-rebuild line for Codex when an image already exists, and not for Claude or a missing image', async () => {
+    const prompt = (agentId: 'claude' | 'codex') => ({
+      ws: { kind: 'sandbox' as const, agentId, permissionMode: 'skip' as const, networkMode: 'allowlist' as const },
+    })
+    useSandboxStore.setState({ environment: { docker: 'ok', dockerVersion: '28.0.1', image: { state: 'stale', builtAt: null, sizeBytes: null } } as never })
+    useTerminalStore.setState({ buildPrompt: prompt('codex') })
+    const { unmount } = renderChooser({ agents: AGENT_DESCRIPTORS })
+    expect(screen.getByText('The sandbox image was updated to include Codex. This is a one-time rebuild of a few minutes.')).toBeInTheDocument()
+    unmount()
+
+    useTerminalStore.setState({ buildPrompt: prompt('claude') })
+    const second = renderChooser({ agents: AGENT_DESCRIPTORS })
+    expect(screen.queryByText(/was updated to include/)).toBeNull()
+    second.unmount()
+
+    useSandboxStore.setState({ environment: { docker: 'ok', dockerVersion: '28.0.1', image: { state: 'absent', builtAt: null, sizeBytes: null } } as never })
+    useTerminalStore.setState({ buildPrompt: prompt('codex') })
+    renderChooser({ agents: AGENT_DESCRIPTORS })
+    expect(screen.queryByText(/was updated to include/)).toBeNull()
   })
 })

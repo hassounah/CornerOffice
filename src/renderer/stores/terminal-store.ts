@@ -170,7 +170,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => {
 
     const reason = status && !status.eligibility.ok ? status.eligibility.reason : null
     failSandboxStart(workspaceSlug, {
-      spawnError: { ...get().spawnError, [workspaceSlug]: startFailureMessage(result.code, reason, result.detail, 'agentId' in result ? { agentId: result.agentId, readiness: 'readiness' in result ? result.readiness : undefined } : undefined) },
+      spawnError: { ...get().spawnError, [workspaceSlug]: startFailureMessage(result.code, reason, result.detail, { agentId: 'agentId' in result ? result.agentId : opts.agentId, readiness: 'readiness' in result ? result.readiness : undefined }) },
       spawnFailure: { ...get().spawnFailure, [workspaceSlug]: result.code },
     })
   }

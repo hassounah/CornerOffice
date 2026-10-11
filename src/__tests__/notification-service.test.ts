@@ -858,6 +858,49 @@ describe('NotificationService.notifySandbox', () => {
     expect(callbacks.showOsNotification).toHaveBeenCalledWith('Sandbox · ws-a -- Sandbox image is ready', '', 'ws-a', n.timestamp, 'sandbox-chooser')
   })
 
+  describe('agent-files-quarantined', () => {
+    const DEST = '~/.corner-office/sandbox/ws-a/codex-quarantine/AGENTS.override.md-1700000000000'
+
+    function raise(extra: Partial<Extract<Parameters<NotificationService['notifySandbox']>[0], { kind: 'agent-files-quarantined' }>>): AppNotification {
+      const callbacks = makeCallbacks()
+      new NotificationService(callbacks).notifySandbox({
+        kind: 'agent-files-quarantined',
+        slug: 'ws-a',
+        agentId: 'codex',
+        count: 1,
+        file: 'AGENTS.override.md',
+        destination: DEST,
+        ...extra,
+      })
+      return dispatched(callbacks)[0]
+    }
+
+    it('one file: the agreed single copy, kept in history (no auto-dismiss)', () => {
+      const n = raise({})
+      expect(n).toMatchObject({ workspace: 'ws-a', tier: 'progress', source: 'sandbox', autoDismissMs: null, summary: 'Files moved out of ~/.codex' })
+      expect(n.detail).toBe(
+        `Codex in the sandbox created AGENTS.override.md in ~/.codex. It could be loaded by Codex on your computer, so Corner Office moved it to ${DEST}. Nothing was deleted. To keep it, move it back with mv.`,
+      )
+    })
+
+    it('a name that is not plain, or unknown, reads as "a new file"', () => {
+      expect(raise({ file: null }).detail).toContain('created a new file in ~/.codex')
+      expect(raise({ file: 'x\ny `rm -rf`' }).detail).toContain('created a new file in ~/.codex')
+      expect(raise({ file: 'x\ny `rm -rf`' }).detail).not.toContain('rm -rf')
+    })
+
+    it('several files: the coalesced copy pointing at the quarantine folder', () => {
+      const n = raise({ count: 3, file: null, destination: null })
+      expect(n.detail).toBe(
+        'Codex in the sandbox created 3 new files in ~/.codex. They could be loaded by Codex on your computer, so Corner Office moved them to ~/.corner-office/sandbox/ws-a/codex-quarantine/. Nothing was deleted. To keep one, move it back with mv.',
+      )
+    })
+
+    it('a single file with no known destination falls back to the coalesced copy', () => {
+      expect(raise({ count: 1, destination: null }).detail).toContain('created 1 new files')
+    })
+  })
+
   it('image-ready: fixed title, no workspace, target sandbox-image, and a bare OS title', () => {
     const callbacks = makeCallbacks({ tiers: { requiresAction: { enabled: true, sound: false }, idle: { enabled: true, osNotification: true }, progress: { enabled: true, osNotification: true }, activity: { enabled: true } } })
     new NotificationService(callbacks).notifySandbox({ kind: 'image-ready', slug: null })

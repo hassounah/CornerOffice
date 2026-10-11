@@ -227,6 +227,9 @@ describe('Delete', () => {
 
     const dialog = await screen.findByRole('alertdialog')
     expect(dialog).toHaveTextContent('Delete the sandbox?')
+    expect(dialog).toHaveTextContent(
+      'Deletes the sandbox worktree and its Claude Code and Codex containers. Your Codex sign-in stays on this computer.',
+    )
     expect(screen.queryByRole('checkbox')).toBeNull()
     expect(dialog).not.toHaveTextContent('will be lost')
     expect(dialog).not.toHaveTextContent('These branches stay')
@@ -340,7 +343,7 @@ describe('Recreate', () => {
     await userEvent.click(button('Recreate sandbox'))
     expect(api.recreate).not.toHaveBeenCalled()
     const dialog = screen.getByRole('alertdialog')
-    expect(dialog).toHaveTextContent('Recreate the sandbox?')
+    expect(dialog).toHaveTextContent('Recreate the Claude Code sandbox?')
 
     await userEvent.click(within(dialog).getByRole('button', { name: 'Recreate' }))
     expect(api.recreate).toHaveBeenCalledExactlyOnceWith('ws', false, HASH)

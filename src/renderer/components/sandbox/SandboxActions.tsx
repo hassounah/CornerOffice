@@ -6,7 +6,7 @@ import { DisabledReason } from '../shared/DisabledReason'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { RefName } from '../code/RefName'
 import { RecreateDialog } from './RecreateDialog'
-import { DELETE_FAILURE_COPY, HAND_OFF_FAILURE_COPY, RECREATE_FAILURE_COPY, RECREATED_COPY, SANDBOX_UNAVAILABLE_COPY, STILL_STOPPING, isSessionStopping } from '../../utils/sandbox-copy'
+import { DELETE_FAILURE_COPY, deleteConfirmCopy, HAND_OFF_FAILURE_COPY, RECREATE_FAILURE_COPY, RECREATED_COPY, SANDBOX_UNAVAILABLE_COPY, STILL_STOPPING, isSessionStopping } from '../../utils/sandbox-copy'
 
 // ---------------------------------------------------------------------------
 // SandboxActions — Hand off branch, Delete sandbox and Recreate (TRD §3.15.2,
@@ -288,7 +288,7 @@ function DeleteDialog({
             Delete the sandbox?
           </h2>
           <div id={bodyId} className="space-y-2">
-            <p>This removes the sandbox container and its worktree.</p>
+            <p>{deleteConfirmCopy()}</p>
 
             {preview.unmergedBranches.length > 0 && (
               <div>

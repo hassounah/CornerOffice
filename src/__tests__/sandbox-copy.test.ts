@@ -18,6 +18,11 @@ import {
   isSessionStopping,
   startFailureMessage,
   recreateFailureMessage,
+  agentDisplayName,
+  agentReadinessCommand,
+  recreateTitle,
+  deleteConfirmCopy,
+  imageUpdatedForAgentCopy,
   describeRecreatePlan,
   READ_ONLY_PROTECTIONS_COPY,
   unmergedLine,
@@ -221,6 +226,62 @@ describe('one constant per message (UX-M3)', () => {
     for (const file of sources(renderer)) {
       expect(stripComments(fs.readFileSync(file, 'utf8')), file).not.toMatch(/Detach (anyway|")|confirmLabel="Detach/)
     }
+  })
+})
+
+describe('agent-named dialogs and prompts (#0037 D11, UX-M5)', () => {
+  it('recreateTitle names the agent and the verb', () => {
+    expect(recreateTitle(false)).toBe('Recreate the Claude Code sandbox?')
+    expect(recreateTitle(false, 'codex')).toBe('Recreate the Codex sandbox?')
+    expect(recreateTitle(true, 'codex')).toBe('Create the Codex sandbox?')
+  })
+
+  it('the image reason reads "The sandbox image was updated."', () => {
+    expect(RECREATE_REASON_COPY.image).toBe('The sandbox image was updated.')
+  })
+
+  it('deleteConfirmCopy names every agent\'s containers and says the other sign-ins stay', () => {
+    expect(deleteConfirmCopy()).toBe(
+      'Deletes the sandbox worktree and its Claude Code and Codex containers. Your Codex sign-in stays on this computer.',
+    )
+  })
+
+  it('imageUpdatedForAgentCopy is a one-time rebuild line', () => {
+    expect(imageUpdatedForAgentCopy('codex')).toBe('The sandbox image was updated to include Codex. This is a one-time rebuild of a few minutes.')
+  })
+
+  it('agentReadinessCommand returns the fix for a code that has one, else null', () => {
+    expect(agentReadinessCommand('codex', 'not-signed-in')).toBe('codex login')
+    expect(agentReadinessCommand('codex', 'never-run')).toBe('codex')
+    expect(agentReadinessCommand('codex', 'config-invalid')).toBeNull()
+    expect(agentReadinessCommand('claude', 'home-missing')).toBeNull()
+    expect(agentReadinessCommand('nope', 'x')).toBeNull()
+    expect(agentReadinessCommand('codex', 'nope')).toBeNull()
+  })
+})
+
+describe('agent-named copy (#0037 C7)', () => {
+  it('SPAWN_FAILED and AGENT_CONFIG_INVALID name the session\'s own agent, defaulting to Claude Code', () => {
+    expect(startFailureMessage('SPAWN_FAILED')).toBe(START_FAILURE_COPY.SPAWN_FAILED)
+    expect(startFailureMessage('SPAWN_FAILED')).toContain("Claude Code couldn't be launched in it")
+    expect(startFailureMessage('SPAWN_FAILED', null, null, { agentId: 'codex' })).toContain("Codex couldn't be launched in it")
+    expect(startFailureMessage('SPAWN_FAILED', null, null, { agentId: 'codex' })).not.toContain('Claude')
+    expect(startFailureMessage('AGENT_CONFIG_INVALID', null, null, { agentId: 'codex' })).toBe(
+      "Your Codex configuration couldn't be prepared for the sandbox, so nothing was started.",
+    )
+    expect(startFailureMessage('AGENT_CONFIG_INVALID', null, 'x.', { agentId: 'codex' })).toMatch(/^x\. Your Codex configuration/)
+  })
+
+  it('recreate failures name the plan\'s agent too', () => {
+    expect(recreateFailureMessage('AGENT_CONFIG_INVALID')).toBe(RECREATE_FAILURE_COPY.AGENT_CONFIG_INVALID)
+    expect(recreateFailureMessage('AGENT_CONFIG_INVALID', null, 'codex')).toContain('Your Codex configuration')
+    expect(recreateFailureMessage('FAILED', null, 'codex')).toBe(RECREATE_FAILURE_COPY.FAILED)
+  })
+
+  it('agentDisplayName falls back to the legacy agent for an absent or unknown id', () => {
+    expect(agentDisplayName()).toBe('Claude Code')
+    expect(agentDisplayName('codex')).toBe('Codex')
+    expect(agentDisplayName('nope')).toBe('Claude Code')
   })
 })
 

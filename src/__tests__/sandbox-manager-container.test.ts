@@ -1147,6 +1147,45 @@ describe('0030 claude config preparation', () => {
     expect(fs.statSync(eventsDir).mode & 0o777).toBe(0o700)
   })
 
+  it('tightens an existing S/events to 0700 (D7 review)', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const eventsDir = path.join(fakeSandboxPaths(h.realHome).sandboxStateRoot, 'myslug', 'events')
+    fs.mkdirSync(eventsDir, { recursive: true, mode: 0o755 })
+    fs.chmodSync(eventsDir, 0o755)
+
+    await createSandboxManager(h.makeDeps({ docker: absentDocker() })).ensureContainer('myslug')
+
+    expect(fs.statSync(eventsDir).mode & 0o777).toBe(0o700)
+  })
+
+  it('refuses a symlinked S/events with the agent config failure, and neither follows nor chmods it', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    const stateDir = path.join(fakeSandboxPaths(h.realHome).sandboxStateRoot, 'myslug')
+    const target = path.join(h.realHome, 'elsewhere')
+    fs.mkdirSync(target, { mode: 0o755 })
+    fs.chmodSync(target, 0o755)
+    fs.mkdirSync(stateDir, { recursive: true })
+    fs.symlinkSync(target, path.join(stateDir, 'events'))
+    const docker = absentDocker()
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'AGENT_CONFIG_INVALID',
+      agentId: 'claude',
+      detail: '~/.corner-office/sandbox/myslug/events is a symbolic link. Replace it with a real file or folder, then Start again.',
+    })
+    expect(fs.statSync(target).mode & 0o777).toBe(0o755)
+    expect(mutating(docker)).toEqual([])
+  })
+
   it('recreate re-seeds claude.json before rm/create', async () => {
     sandboxSettings.disabled = false
     const h = setup()

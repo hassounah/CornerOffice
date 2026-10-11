@@ -311,7 +311,7 @@ describe('Image section', () => {
 
       await userEvent.click(within(image()).getByRole('button', { name: 'Recreate sandbox for Alpha' }))
       const dialog = await screen.findByRole('alertdialog')
-      expect(dialog).toHaveTextContent('Recreate the sandbox?')
+      expect(dialog).toHaveTextContent('Recreate the Claude Code sandbox?')
       expect(api.recreate).not.toHaveBeenCalled()
 
       await userEvent.click(within(dialog).getByRole('button', { name: 'Recreate' }))
@@ -381,6 +381,7 @@ describe('Toolchains section', () => {
     ['Core tools', 'Always included'],
     ['GitHub CLI (gh)', 'Always included'],
     ['Claude Code', 'Always included'],
+    ['Codex', 'Always included'],
     ['Python 3.12 + uv + bun', 'Required by the corner-office plugin'],
   ])('locked row "%s" is checked, aria-disabled (not disabled) and explains why', (name, reason) => {
     render(<SandboxSettingsPanel />)

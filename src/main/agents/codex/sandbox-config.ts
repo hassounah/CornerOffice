@@ -45,7 +45,7 @@ const SOCKET_WALK_MAX_ENTRIES = 5_000
 /** Top-level entries of `H` the socket walk does not look into: shadowed (`app-server-daemon`, `log`) or session data. */
 const SOCKET_WALK_SKIP = new Set(['app-server-daemon', 'sessions', 'archived_sessions', 'log'])
 
-const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants
+// `fs.constants` is read inside the functions, never at import: several suites mock `fs` and import the registry.
 
 type Kind = 'file' | 'dir'
 type EntryState = 'ok' | 'missing' | 'symlink' | 'wrong-type'
@@ -79,6 +79,7 @@ function couldNotCreate(where: string): Extract<AgentConfigResult, { ok: false }
 /** Creates an empty regular file (O_EXCL, never overwrites); an existing entry must already be a real file. */
 function ensureFile(p: string, mode: number, where: string): AgentConfigResult {
   try {
+    const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants
     fs.closeSync(fs.openSync(p, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode))
     return { ok: true }
   } catch (err) {
@@ -102,8 +103,9 @@ function ensureDir(p: string, mode: number, where: string): AgentConfigResult {
 }
 
 /** Rewrites an app-owned file in place: O_NOFOLLOW, truncate, fsync. A symlink planted at `p` fails the open. */
-function writeOwnedFile(p: string, content: string, mode: number, where: string): AgentConfigResult {
+export function writeOwnedFile(p: string, content: string, mode: number, where: string): AgentConfigResult {
   try {
+    const { O_WRONLY, O_CREAT, O_NOFOLLOW } = fs.constants
     const fd = fs.openSync(p, O_WRONLY | O_CREAT | O_NOFOLLOW, mode)
     try {
       fs.ftruncateSync(fd, 0)
@@ -277,6 +279,11 @@ export function prepareCodexConfig(paths: SandboxPaths, slug: string, workTree: 
   if (!homeIsRealDir(paths)) return invalid(CODEX_DESCRIPTOR.copy.readiness['never-run'].message)
   for (const step of [
     () => precreateCodexHome(paths),
+    () => verifyMountSources(paths.codexDir),
+    () =>
+      homeIsCaseInsensitive(paths.codexDir)
+        ? invalid('Codex in the sandbox needs ~/.codex on a case-sensitive filesystem.')
+        : ({ ok: true } as const),
     () => precreateCodexState(paths, slug),
     () => refuseHostSockets(paths),
     () => writeOverlay(paths, slug, workTree),
@@ -304,6 +311,117 @@ function authStore(paths: SandboxPaths): unknown {
     return parse(read.buf.toString('utf8')).cli_auth_credentials_store ?? null
   } catch {
     return null
+  }
+}
+
+export const GUARD_BASELINE_FILE = 'codex-guard-baseline.json'
+
+/**
+ * What the host's Codex would load, or run, if the sandbox created it. A `.config.toml` of any other prefix, but never
+ * `config.toml` itself. Matched on the NFC-normalized, lowercased name: a case-insensitive filesystem (macOS APFS) would
+ * load `agents.OVERRIDE.md` too. Shared by the guard (D9) and the mounts (pre-existing matches are mounted read-only).
+ */
+export function inGuardNameSet(name: string): boolean {
+  const n = name.normalize('NFC').toLowerCase()
+  return n === 'agents.override.md' || n === 'hooks.json' || n.startsWith('.env') || (n.endsWith('.config.toml') && n !== 'config.toml')
+}
+
+/** `H` entries that are mounted read-only over themselves from the host: the code, prompts and instructions Codex loads. */
+const HOST_READONLY_ENTRIES = ['plugins', 'skills', 'prompts', 'agents', 'AGENTS.md'] as const
+
+/**
+ * Codex's mounts (TRD §4.9.2): `H` read-write, then read-only overlays, shadows and the sqlite home on top.
+ *
+ *  - ro: the overlay over `config.toml`, the empty `S/codex-env` over `.env`, the code/prompt entries, and every
+ *    pre-existing name-set file (decision 15), which the container can then not modify;
+ *  - ro shadows: `rules` (push guard) and `app-server-daemon` (empty, D20);
+ *  - rw shadow: `log`; rw: `S/codex-sqlite`, at the same path as `CODEX_SQLITE_HOME` (D25).
+ *
+ * Only regular files are mounted over themselves: a symlink is the guard's business, never a mount source.
+ */
+export function codexMounts(paths: SandboxPaths, slug: string): { source: string; target: string; readonly: boolean }[] {
+  const s = codexStatePaths(paths, slug)
+  const h = (name: string): string => path.join(paths.codexDir, name)
+  const mounts = [
+    { source: paths.codexDir, target: paths.codexDir, readonly: false },
+    { source: s.configOverlay, target: h('config.toml'), readonly: true },
+    { source: s.env, target: h('.env'), readonly: true },
+    ...HOST_READONLY_ENTRIES.map((name) => ({ source: h(name), target: h(name), readonly: true })),
+    { source: s.rulesDir, target: h('rules'), readonly: true },
+    { source: s.daemon, target: h('app-server-daemon'), readonly: true },
+    { source: s.log, target: h('log'), readonly: false },
+    { source: s.sqlite, target: s.sqlite, readonly: false },
+  ]
+  // Defense in depth behind prepare: never hand a symlink or wrong-type entry to a mount (assertMountSafe also refuses it).
+  const verified = verifyMountSources(paths.codexDir)
+  if (!verified.ok) throw new Error(verified.detail)
+  const taken = new Set(mounts.map((m) => m.target))
+  for (const name of preexistingGuardedFiles(paths.codexDir)) {
+    if (!taken.has(h(name))) mounts.push({ source: h(name), target: h(name), readonly: true })
+  }
+  return mounts
+}
+
+/**
+ * Fail closed: every entry mounted read-only from the host, and every pre-existing guarded file, must be the right
+ * type and not a symlink (SM-1). A planted or user-made symlink would be followed by the host's Codex and could
+ * not be pinned read-only by a bind mount of the link itself.
+ */
+function verifyMountSources(home: string): AgentConfigResult {
+  const check = (name: string, kind: Kind): AgentConfigResult => {
+    const state = entryState(path.join(home, name), kind)
+    return state === 'symlink' || state === 'wrong-type' ? invalid(problemDetail(`~/.codex/${name}`, state, kind)) : { ok: true }
+  }
+  for (const name of HOST_READONLY_ENTRIES) {
+    const result = check(name, name === 'AGENTS.md' ? 'file' : 'dir')
+    if (!result.ok) return result
+  }
+  let names: string[]
+  try {
+    names = fs.readdirSync(home).filter(inGuardNameSet)
+  } catch {
+    return { ok: true }
+  }
+  for (const name of names) {
+    const result = check(name, 'file')
+    if (!result.ok) return result
+  }
+  return { ok: true }
+}
+
+/**
+ * On a case-insensitive filesystem (macOS APFS, an ext4 casefold dir) the container could write `CONFIG.TOML` or
+ * `.ENV` through the read-write home and alias the read-only overlays. Probes with the case-swapped name of an entry
+ * that was just created: the same inode means the home is case-insensitive.
+ */
+function homeIsCaseInsensitive(home: string): boolean {
+  try {
+    const real = fs.lstatSync(path.join(home, 'config.toml'))
+    const swapped = fs.lstatSync(path.join(home, 'CONFIG.TOML'))
+    return real.ino === swapped.ino && real.dev === swapped.dev
+  } catch {
+    return false
+  }
+}
+
+/** The top-level regular files of `H` the guard watches (`AGENTS.override.md`, `hooks.json`, `x.config.toml`, `.env.*`) that already exist. */
+function preexistingGuardedFiles(home: string): string[] {
+  let names: string[]
+  try {
+    names = fs.readdirSync(home)
+  } catch {
+    return []
+  }
+  return names.filter((name) => inGuardNameSet(name) && entryState(path.join(home, name), 'file') === 'ok').sort()
+}
+
+/** Removes the workspace's Codex state, without following a link. `codex-quarantine` is kept: "nothing was deleted" must stay true. */
+export function clearCodexState(paths: SandboxPaths, slug: string, keepBaseline = false): void {
+  const s = codexStatePaths(paths, slug)
+  const targets = [s.configOverlay, s.env, s.rulesDir, s.daemon, s.log, s.sqlite]
+  if (!keepBaseline) targets.push(path.join(s.state, GUARD_BASELINE_FILE))
+  for (const target of targets) {
+    fs.rmSync(target, { recursive: true, force: true }) // rmSync removes a symlink itself and never descends through it
   }
 }
 

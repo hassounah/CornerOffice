@@ -945,6 +945,60 @@ describe('WorkspaceDetail', () => {
     })
   })
 
+  describe('chat column by session agent (C6)', () => {
+    const CODEX_REASON = "Chat isn't available for Codex sessions yet."
+
+    function runSession(agent: 'claude' | 'codex' | null): void {
+      useTerminalStore.setState({
+        sessions: { 'test-ws': agent ? 'running' : 'none' },
+        sessionAgent: agent ? { 'test-ws': agent } : {},
+      })
+    }
+
+    beforeEach(() => {
+      ;(window.cornerOffice as unknown as { plugin: unknown }).plugin = {
+        getStatus: vi.fn().mockResolvedValue({ data: { claude: { installed: true }, codex: { installed: false } }, error: null }),
+      }
+    })
+
+    afterEach(() => {
+      useTerminalStore.setState({ sessions: {}, sessionAgent: {} })
+    })
+
+    it('swaps in the disabled chat entry with the reason for a Codex session, with an empty session list', async () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace()]
+      runSession('codex')
+      render(<WorkspaceDetail />)
+
+      const unavailable = await screen.findByTestId('chat-unavailable')
+      expect(within(unavailable).getByRole('button', { name: 'Chat' })).toHaveAttribute('aria-disabled', 'true')
+      // The reason is the session list's empty state and the disabled entry's explanation.
+      expect(within(unavailable).getByRole('option', { name: CODEX_REASON })).toBeDisabled()
+      expect(within(unavailable).getAllByText(CODEX_REASON).length).toBeGreaterThanOrEqual(2)
+      expect(await screen.findByText(/Codex running · activity tracking off/)).toBeInTheDocument()
+    })
+
+    it('leaves a Claude session exactly as before: no swapped entry, no activity-tracking note', async () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace()]
+      runSession('claude')
+      render(<WorkspaceDetail />)
+
+      await act(async () => {})
+      expect(screen.queryByTestId('chat-unavailable')).toBeNull()
+      expect(screen.queryByTestId('activity-tracking-off')).toBeNull()
+      expect(window.cornerOffice.plugin.getStatus).not.toHaveBeenCalled()
+    })
+
+    it('shows no chat column without a live session', async () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace()]
+      runSession(null)
+      render(<WorkspaceDetail />)
+
+      await act(async () => {})
+      expect(screen.queryByTestId('chat-unavailable')).toBeNull()
+    })
+  })
+
   it('renders Browse Docs button', () => {
     mockWorkspaceStore.workspaces = [makeWorkspace()]
     render(<WorkspaceDetail />)

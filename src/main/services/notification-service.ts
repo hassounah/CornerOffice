@@ -2,6 +2,10 @@ import crypto from 'crypto'
 import type { HookEvent } from '../types'
 import type { NotificationConfig } from '../types/config'
 import type { SandboxNotice } from '../types/sandbox'
+import { getDescriptor } from '../agents/descriptors'
+
+/** The only file names a quarantine notice repeats back. */
+const QUARANTINE_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/
 
 // ---------------------------------------------------------------------------
 // Types
@@ -263,6 +267,23 @@ export class NotificationService {
           detail: 'The container for this workspace was recreated.',
         })
         return
+      case 'agent-files-quarantined': {
+        const agent = getDescriptor(notice.agentId)
+        const home = `~/${agent.homeEntries[0] ?? ''}`
+        // A name is shown only when it is plain text; anything else reads as "a new file" (the file name is agent-chosen).
+        const file = notice.file !== null && QUARANTINE_NAME_RE.test(notice.file) ? notice.file : 'a new file'
+        const single = notice.count === 1 && notice.destination !== null
+        this.dispatch({
+          ...base,
+          workspace: notice.slug,
+          tier: 'progress',
+          summary: `Files moved out of ${home}`,
+          detail: single
+            ? `${agent.displayName} in the sandbox created ${file} in ${home}. It could be loaded by ${agent.displayName} on your computer, so Corner Office moved it to ${notice.destination}. Nothing was deleted. To keep it, move it back with mv.`
+            : `${agent.displayName} in the sandbox created ${notice.count} new files in ${home}. They could be loaded by ${agent.displayName} on your computer, so Corner Office moved them to ~/.corner-office/sandbox/${notice.slug}/${agent.id}-quarantine/. Nothing was deleted. To keep one, move it back with mv.`,
+        })
+        return
+      }
       case 'image-ready':
         this.dispatch({
           ...base,

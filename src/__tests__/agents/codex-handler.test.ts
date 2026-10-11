@@ -5,6 +5,7 @@ vi.mock('electron-log/main', () => ({
 }))
 
 import { CODEX_HANDLER } from '../../main/agents/codex/handler'
+import { CODEX_DESCRIPTOR } from '../../main/agents/codex/descriptor'
 import { getHandler } from '../../main/agents/registry'
 import { ENV_DENYLIST, sanitizedEnv } from '../../main/services/env-policy'
 import { SandboxStartSessionSchema } from '../../main/ipc/schemas'
@@ -45,8 +46,9 @@ describe('codex host handler', () => {
     expect(env).toEqual({ OPENAI_API_KEY: 'a', CODEX_API_KEY: 'b', CODEX_ACCESS_TOKEN: 'c', PATH: '/bin' })
   })
 
-  it('has no sandbox half, so Codex is never offered in the sandbox', () => {
-    expect(CODEX_HANDLER.sandbox).toBeUndefined()
+  it('has a sandbox half, as its descriptor lists a sandbox mode', () => {
+    expect(CODEX_HANDLER.sandbox).toBeDefined()
+    expect(CODEX_DESCRIPTOR.permissionModes.sandbox.map((m) => m.mode)).toEqual(['skip'])
   })
 
   it('reports the plugin as not installed until detection lands', async () => {
@@ -57,9 +59,9 @@ describe('codex host handler', () => {
     })
   })
 
-  it('the sandbox start schema rejects Codex', () => {
+  it('the sandbox start schema accepts Codex with skip only', () => {
     const base = { workspaceSlug: 'my-ws', cols: 80, rows: 24, networkMode: 'allowlist' } as const
-    expect(SandboxStartSessionSchema.safeParse({ ...base, agentId: 'codex', permissionMode: 'skip' }).success).toBe(false)
+    expect(SandboxStartSessionSchema.safeParse({ ...base, agentId: 'codex', permissionMode: 'skip' }).success).toBe(true)
     expect(SandboxStartSessionSchema.safeParse({ ...base, agentId: 'codex', permissionMode: 'auto' }).success).toBe(false)
     expect(SandboxStartSessionSchema.safeParse({ ...base, agentId: 'claude', permissionMode: 'skip' }).success).toBe(true)
   })

@@ -3,7 +3,8 @@ import { useSandboxStore } from '../../stores/sandbox-store'
 import { useTerminalStore } from '../../stores/terminal-store'
 import { DisabledReason } from '../shared/DisabledReason'
 import { RecreateDialog } from './RecreateDialog'
-import { AGENT_DESCRIPTORS, getDescriptor } from '@main/agents/descriptors'
+import { CopyCommand } from './CopyCommand'
+import { AGENT_DESCRIPTORS, LEGACY_AGENT_ID, getDescriptor } from '@main/agents/descriptors'
 import type { AgentId } from '@main/agents/descriptors'
 import type { AgentDescriptor, AppPermissionMode, PermissionChoice, SessionLocation } from '@main/agents/types'
 import type { SessionChoice } from '@main/types/config'
@@ -27,6 +28,8 @@ import {
   STATUS_CHECK_TIMEOUT_MS,
   SANDBOX_UNAVAILABLE_COPY,
   agentReadinessMessage,
+  agentReadinessCommand,
+  imageUpdatedForAgentCopy,
   isDockerReason,
   PORT_CONFLICT_NO_RECREATE_COPY,
 } from '../../utils/sandbox-copy'
@@ -271,6 +274,7 @@ function StartSessionChooserInner({
   const releaseBuildRequest = useSandboxStore((s) => s.releaseBuildRequest)
   const spawn = useTerminalStore((s) => s.spawn)
   const buildPrompt = useTerminalStore((s) => s.buildPrompt[slug] ?? null)
+  const imageExists = useSandboxStore((s) => s.environment?.image.state === 'ready' || s.environment?.image.state === 'stale')
   const recreatePrompt = useTerminalStore((s) => s.recreatePrompt[slug] ?? null)
   const spawnError = useTerminalStore((s) => s.spawnError[slug] ?? null)
   const spawnFailure = useTerminalStore((s) => s.spawnFailure[slug] ?? null)
@@ -421,6 +425,8 @@ function StartSessionChooserInner({
   const readinessCode = status?.agentReadiness?.[agentId]?.code
   const readinessReason = readinessCode ? (agentReadinessMessage(agentId, readinessCode) ?? SANDBOX_UNAVAILABLE_COPY) : null
   const sandboxReason = !agentHasSandbox ? `${descriptor.displayName} isn't available in the sandbox yet.` : (ineligibleReason ?? readinessReason)
+  // The fix, when this agent's own readiness is what blocks the sandbox (not Docker or the workspace).
+  const readinessCommand = agentHasSandbox && !ineligibleReason && readinessCode ? agentReadinessCommand(agentId, readinessCode) : null
   const warnStart = permissionMode === 'skip' || (sandbox && networkMode === 'open')
   const willStartId = `${titleId}-will-start`
   const networkWarningId = `${titleId}-network-warning`
@@ -566,6 +572,8 @@ function StartSessionChooserInner({
         <h2 id={titleId} tabIndex={-1} className="text-sm font-semibold">
           Build the sandbox image?
         </h2>
+        {/* An existing image that predates the chosen agent is rebuilt once to include it. */}
+        {imageExists && buildPrompt.agentId && buildPrompt.agentId !== LEGACY_AGENT_ID && <p>{imageUpdatedForAgentCopy(buildPrompt.agentId)}</p>}
         <p>{BUILD_CONFIRM_COPY}</p>
         <div className="flex justify-end gap-2">
           <button type="button" data-autofocus className={buttonClass} style={buttonStyle} onClick={() => clearBuildPrompt(slug)}>
@@ -696,6 +704,12 @@ function StartSessionChooserInner({
           )
         }
       />
+
+      {readinessCommand && (
+        <p data-testid="readiness-command" className="text-xs">
+          To use the sandbox with {descriptor.displayName}, run: <CopyCommand command={readinessCommand} buttonClass={buttonClass} buttonStyle={buttonStyle} />
+        </p>
+      )}
 
       {sandboxEligible && warnings.length > 0 && (
         <ul className="space-y-1 text-xs">

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { NotificationItem } from '@main/types/gamification'
+import { expectNoAxeViolations } from '../../helpers/a11y'
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -308,6 +309,18 @@ describe('NotificationItem — sandbox provenance', () => {
     expect(screen.getByText('(from the sandbox)')).toBeInTheDocument()
     expect(screen.queryByText(/for \)/)).toBeNull()
     expect(screen.getByText('Sandbox image is ready')).toBeInTheDocument()
+  })
+
+  it('a quarantine notice (D9) renders its long copy as plain text, with no axe violations', async () => {
+    const body =
+      'Codex in the sandbox created AGENTS.override.md in ~/.codex. It could be loaded by Codex on your computer, so Corner Office moved it to ~/.corner-office/sandbox/ws/codex-quarantine/AGENTS.override.md-1. Nothing was deleted. To keep it, move it back with mv.'
+    const { container } = render(
+      <ul>
+        <NotificationItemComponent item={makeNotification({ tier: 'progress', title: 'Files moved out of ~/.codex', body, source: 'sandbox' })} />
+      </ul>,
+    )
+    expect(screen.getByText(body)).toBeInTheDocument()
+    await expectNoAxeViolations(container)
   })
 
   it('renders an agent-influenced title as plain text next to the tag', () => {

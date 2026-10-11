@@ -92,9 +92,42 @@ make dist             # all formats
 make package-deb ARCH=x64
 ```
 
+## Agents
+
+Corner Office starts sessions with a coding agent. Two are supported:
+
+| Agent | Install | Where it runs |
+| --- | --- | --- |
+| **Claude Code** | `claude` on your PATH (see Claude Code's own install guide) | host and sandbox |
+| **Codex** | `pnpm add -g @openai/codex` (or any install that puts `codex` on your PATH) | host and sandbox |
+
+Start Session shows an **Agent** row whenever more than one agent is available. An agent whose command isn't found on your PATH is labelled "(may not be installed)" and stays selectable: the check is advisory, because your shell may find it where the app can't. If a session exits with code 127 within ten seconds, the terminal shows a banner with the install hint, **Retry** and **Change agent**.
+
+Your last choice is remembered per workspace (and as the default for new ones). If a remembered option isn't available any more, the chooser falls back and says what it changed. It never switches your agent silently.
+
+### Permission modes
+
+| Agent · where | Modes (first is the default) | What they do |
+| --- | --- | --- |
+| Claude · host | Default, Auto | Default uses your Claude Code settings. Auto adds `--permission-mode auto`. |
+| Claude · sandbox | Skip, Auto | Skip adds `--dangerously-skip-permissions`; the sandbox is the boundary. |
+| Codex · host | Default, Auto | Default uses your Codex config (normally: ask before risky actions). Auto adds `--approve-for-me`. |
+| Codex · sandbox | Skip | Skip adds `--dangerously-bypass-approvals-and-sandbox`; the container is the boundary. Codex's own sandbox can't run inside a container. |
+
+### Plugin status and chat
+
+Settings shows one plugin row per agent. The Claude row is always there. The Codex row appears only when Codex is found on your machine.
+
+- A Corner Office plugin for Codex isn't published yet. Without it Codex sessions work, but activity tracking and idle alerts are off for Codex: the session header and the workspace card say "Codex running · activity tracking off", and Corner Office doesn't report a session waiting on an approval prompt as idle.
+- **Chat is not available for Codex sessions yet.** Chat and permission relay need a session channel, which only Claude Code has. The chat entry is disabled with the reason, and the session list is empty.
+
+### Credentials in host sessions
+
+Host sessions get a sanitized environment: provider keys such as `OPENAI_API_KEY` and the `CODEX_*` tokens are removed from what the app passes down, and re-added only for the agent that needs them. Your shell starts the agent with `--login -i`, so your shell's rc files (`.bashrc`, `.zshrc` and so on) can export those keys again inside the session. The app cannot prevent that. If you don't want an agent to see a key, don't export it from your rc files.
+
 ## Sandbox Sessions
 
-A sandbox session runs Claude Code with `--dangerously-skip-permissions` inside a local Docker container, against a persistent git worktree of your workspace, behind a DNS-driven egress allowlist. Your main checkout is never mounted, so the agent works on its own branch and you review the result in the Code Explorer before merging.
+A sandbox session runs your coding agent (Claude Code with `--dangerously-skip-permissions`, or Codex with `--dangerously-bypass-approvals-and-sandbox`) inside a local Docker container, against a persistent git worktree of your workspace, behind a DNS-driven egress allowlist. Each workspace gets one container per agent (`co-sandbox-<workspace>` for Claude, `co-sandbox-<workspace>.codex` for Codex). Your main checkout is never mounted, so the agent works on its own branch and you review the result in the Code Explorer before merging.
 
 ### Requirements
 
@@ -102,6 +135,7 @@ A sandbox session runs Claude Code with `--dangerously-skip-permissions` inside 
 - Rootless Docker and Podman are not supported in v1. The app shows the reason in Settings.
 - The host `iptables` can use either backend. The image calls `iptables-nft` explicitly, and the container needs the `nf_tables`, `nft_compat` and `xt_set` kernel modules (present on current distro kernels).
 - Run Claude Code on the host at least once, so `~/.claude` and `~/.claude.json` exist. Corner Office never creates them, and a sandbox is not eligible until both are there.
+- For Codex in the sandbox: run Codex on the host at least once so `~/.codex` exists, set `cli_auth_credentials_store = "file"` in `~/.codex/config.toml`, and sign in (`codex login`). Corner Office never creates `~/.codex` or signs you in. The Start Session chooser says which of these is missing. `~/.codex` must be on a case-sensitive filesystem, and no program may have a socket open inside it (stop it, then Start again).
 - The workspace must be a git repository with a base branch (for example `main`).
 - A recent [Corner Office plugin](https://github.com/amerh/corner-office-plugin) for Claude Code, one that listens on `CORNER_OFFICE_CHANNEL_PORT` and honours `CORNER_OFFICE_SANDBOX=1`. Without it the terminal still works, but the badge shows "Channel: plugin update needed", and chat and permission relay are off for that session. Rix also runs in host mode instead of sandbox mode.
 
@@ -137,6 +171,29 @@ A sandbox limits the damage an unattended agent can do. It is not a guarantee. T
   - A sandbox container that kept running across the upgrade (only possible after a crash) still writes to the old host folder until it is recreated, so its events are labelled Host in the meantime.
 
 Everything a sandbox sends to the app (chat, permission prompts, notifications, activity) is untrusted text and carries a persistent Sandbox tag.
+
+#### Accepted risks: Codex in the sandbox
+
+The Codex sandbox shares your real `~/.codex` (so you sign in once). That is convenient and it has these costs:
+
+- **Your sign-in.** The agent in the sandbox can read, use and **replace** your Codex sign-in (`auth.json`).
+- **Your history.** It shares your Codex history, sessions and rollouts, and can read and change them.
+- **Files that reach your computer.** The Codex queue, memories and thread index in `~/.codex` can be written by the sandbox agent and reach Codex sessions you run on your computer. This is the same class of risk as `~/.claude/projects` for Claude.
+- **Network.** The OpenAI hosts are on the allowlist for every sandbox session, Claude's included.
+- **What the guard can and can't do.** A small guard moves files that Codex would load on your computer (`AGENTS.override.md`, `hooks.json`, `.env*`, `*.config.toml`, and symlinks at the top of `~/.codex`) out of the way. It is limited:
+  - It checks only when a Codex sandbox session starts and stops, and only top-level names in `~/.codex`.
+  - While a Codex sandbox is running, a file it plants can affect Codex sessions you start on your computer.
+  - Symlinks inside `sessions/` aren't checked.
+  - Files you create in `~/.codex` during a sandbox session may be moved to quarantine. Move them back with `mv`.
+- **The socket check is bounded.** Before a Codex sandbox starts, Corner Office looks for a socket in `~/.codex` that the container could use to reach a program on your computer. It looks only a couple of levels deep and examines a limited number of entries, so a socket hidden deeper, or in a very large folder, can be missed.
+- **Future Codex versions.** A newer Codex may load files the guard doesn't know about. The image pins Codex 0.162.1 and checks its hash when building, but the guard's list of names is fixed in the app.
+
+What stays protected: `config.toml` (the container gets a sanitized copy), `.env` (it reads as empty), plugins, skills, prompts, agents, `AGENTS.md`, `rules` and the daemon directory are read-only or hidden from the container, and the container has no `~/.claude` and no GitHub credentials.
+
+#### Quarantine, Delete and rollback
+
+- A file the guard moved is kept in `~/.corner-office/sandbox/<workspace>/codex-quarantine/`. The notice names the file and the folder. **That folder is kept when you Delete the sandbox** (nothing is deleted without you). To remove it, run `rm -rf ~/.corner-office/sandbox/<workspace>/codex-quarantine` once you have looked at the contents.
+- To go back to Claude only, remove the Codex container: `docker rm co-sandbox-<workspace>.codex`. Older versions of Corner Office ignore it. The files Corner Office precreated in `~/.codex` are empty and harmless.
 
 ### Crash consistency
 

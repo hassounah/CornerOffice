@@ -68,8 +68,9 @@ describe.each(AGENT_IDS)('agent contract: %s', (id: AgentId) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'co-contract-'))
     try {
       const result = handler.sandbox.readiness(sandboxPaths(home))
+      // An empty home is never ready, and the refusal is worded by this agent's own descriptor copy.
+      expect(result.ok).toBe(false)
       if (!result.ok) expect(copyKeys).toContain(result.code)
-      expect(result).toEqual({ ok: false, code: 'home-missing' })
     } finally {
       fs.rmSync(home, { recursive: true, force: true })
     }
@@ -102,6 +103,24 @@ describe.each(AGENT_IDS)('agent contract: %s', (id: AgentId) => {
         const launch = handler.sandbox.launch(ctx, { permissionMode: mode.mode })
         for (const entry of launch.env) expect(() => assertAgentEnvName(entry.split('=')[0])).not.toThrow()
         expect(launch.argv.length).toBeGreaterThan(0)
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("a sandbox never mounts another agent's home (SM-4), except the shared homunculus subtree", () => {
+    if (!handler.sandbox) return
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'co-contract-')))
+    try {
+      const ctx = { paths: sandboxPaths(home), slug: 'x', workTree: path.join(home, 'wt') }
+      const others = AGENT_IDS.filter((other) => other !== id).flatMap((other) => getDescriptor(other).homeEntries.map((e) => path.join(home, e)))
+      const shared = path.join(home, '.claude', 'homunculus')
+      const inside = (p: string, root: string): boolean => p === root || p.startsWith(root + path.sep)
+      for (const m of handler.sandbox.mounts(ctx)) {
+        for (const p of [m.source, m.target]) {
+          for (const root of others) expect(inside(p, root) && !inside(p, shared), `${id} mounts ${p}`).toBe(false)
+        }
       }
     } finally {
       fs.rmSync(home, { recursive: true, force: true })

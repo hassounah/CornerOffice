@@ -30,12 +30,21 @@ runtime plugin loading.
 when the descriptor and handler disagree (for example sandbox modes without a
 `sandbox` handler, or a host argv token containing shell metacharacters).
 
-## Worked example: Codex (host only)
+## Worked example: Codex
 
-Codex is the smallest real agent, and the one to copy first:
+Codex is the smallest real agent, and the one to copy first. An agent starts host-only; the sandbox half is a second step.
 
-- `codex/descriptor.ts`: host modes `[default, auto]`, an empty sandbox mode list, no `homeEntries`, no channels, and copy for "not found", the first-run note and "activity tracking off".
-- `codex/handler.ts`: argv `codex --no-alt-screen --no-daemon [--approve-for-me]`, `envAllow` of `OPENAI_API_KEY`, `CODEX_API_KEY` and `CODEX_ACCESS_TOKEN`, and no `sandbox` half. An agent without one is never offered in the sandbox: the start schema and the manager both refuse it.
+**Host half**
+
+- `codex/descriptor.ts`: host modes `[default, auto]`, no channels, and copy for "not found", the first-run notes, "activity tracking off" and the four readiness codes.
+- `codex/handler.ts`: argv `codex --no-alt-screen --no-daemon [--approve-for-me]`, `envAllow` of `OPENAI_API_KEY`, `CODEX_API_KEY` and `CODEX_ACCESS_TOKEN`.
 - Registered with one line in `descriptors.ts` and one in `registry.ts`.
 
-A sandbox half arrives later and must bring its own pinned install, mounts and tests (steps 5 to 7 above).
+**Sandbox half** (what a sandbox agent that shares a host home must bring)
+
+- The descriptor lists a sandbox mode (`skip`) and `homeEntries: ['.codex']`; the contract test then requires `handler.sandbox`, and the derived hidden-segment allowlist (a security-review diff) gains `.codex`.
+- `codex/sandbox-config.ts`: precreate (`O_EXCL`, no symlinks, `~/.codex` itself never created), a sanitized `config.toml` overlay, shadows for `rules`, `app-server-daemon` and `log`, a per-sandbox sqlite home, socket refusal and the readiness codes.
+- `codex/guard.ts`: the host's Codex loads some files the sandbox could plant, so a sweep moves new ones into `codex-quarantine` after every confirmed stop (`prepare` opens a persisted baseline, `afterStop` closes it).
+- `codex/handler.ts`: `mounts` (read-write home, read-only overlays and every pre-existing guarded file), `launch` (the sqlite home env, no daemon, no approvals: the container is the boundary), `cleanup` (never follows a link, keeps the quarantine) and `afterStop`.
+- Isolation: a Codex container gets nothing of `~/.claude` except the shared `homunculus` subtree (a neutral mount, only when it is a real directory), and a Claude container gets nothing of `~/.codex`. The contract test checks this for every agent.
+- Also: the pinned install in the Dockerfile and `sandbox-image.ts`, and the agent's hosts in `DEFAULT_ALLOWLIST` (`api.openai.com`, `chatgpt.com`, `auth.openai.com`).
