@@ -218,7 +218,6 @@ function sweep(paths: SandboxPaths, slug: string, baseline: Baseline, now: numbe
     if (overflowed) log.warn(`[codex-guard] link walk for ${slug} went over its bounds`)
   }
   // A lost baseline (`untrusted`) is checked as far as it can be, with an empty one, and is just as incomplete.
-  const incomplete = overflowed || untrusted
   if (untrusted) log.warn(`[codex-guard] the guard baseline for ${slug} is missing or damaged; checking without it`)
 
   const moved: { shown: string | null; destination: string }[] = []
@@ -247,16 +246,17 @@ function sweep(paths: SandboxPaths, slug: string, baseline: Baseline, now: numbe
     moved.push({ shown: safe && top ? name : null, destination })
   }
 
-  for (const name of topLevelNames(home)) {
-    let isLink: boolean
-    let isDir: boolean
-    try {
-      const entry = fs.lstatSync(path.join(home, name))
-      isLink = entry.isSymbolicLink()
-      isDir = entry.isDirectory()
-    } catch {
-      continue // gone since the listing
-    }
+  // The whole top level, uncapped: `Dirent` types need no extra syscall, and a cap here would let a container hide a
+  // planted file behind thousands of junk entries. Going over the snapshot cap only makes the outcome incomplete.
+  const topEntries = fs.readdirSync(home, { withFileTypes: true })
+  if (topEntries.length > MAX_TOP_LEVEL_NAMES) {
+    overflowed = true
+    log.warn(`[codex-guard] the Codex home for ${slug} has more top-level entries than the guard records`)
+  }
+  for (const entry of topEntries) {
+    const name = entry.name
+    const isLink = entry.isSymbolicLink()
+    const isDir = entry.isDirectory()
     // Only against a trusted baseline: with none, every directory looks new, and moving them would strip the user's host Codex.
     if (overflowed && !untrusted && isDir && !baselineNames.has(name)) {
       quarantine(name)
@@ -278,6 +278,7 @@ function sweep(paths: SandboxPaths, slug: string, baseline: Baseline, now: numbe
     if (movedTop.has(rel.split('/')[0])) continue // it went with its directory
     if (!baseline.links || !(rel in baseline.links) || baseline.links[rel] !== target) quarantine(rel)
   }
+  const incomplete = overflowed || untrusted
   const flag = incomplete ? { incomplete: true, ...(untrusted ? { lostBaseline: true } : {}), ...(overflowed ? { overflowed: true } : {}) } : {}
   if (moved.length === 0) return { ...NO_QUARANTINE, ...flag }
   if (moved.length === 1) return { quarantined: 1, shown: moved[0].shown, destination: moved[0].destination, ...flag }

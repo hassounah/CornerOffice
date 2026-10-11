@@ -672,6 +672,19 @@ describe('nested symlinks and retargeted links', () => {
       expect(fs.existsSync(inHome('hooks.json'))).toBe(false)
     })
 
+    it('a planted hooks.json hidden behind more top-level entries than the snapshot cap is still quarantined', () => {
+      startSession()
+      for (let i = 0; i < 10_001; i++) fs.writeFileSync(inHome(`junk${i}`), '')
+      fs.writeFileSync(inHome('hooks.json'), 'planted')
+
+      const outcome = closeCodexGuard(paths, SLUG, NOW)
+
+      expect(outcome).toMatchObject({ incomplete: true })
+      expect(fs.existsSync(inHome('hooks.json'))).toBe(false)
+      expect(quarantined()).toContain(`hooks.json-${NOW}`)
+      expect(readBaseline().state).toBe('open')
+    })
+
     it('links found before the bound are still quarantined from a baselined directory', () => {
       fs.mkdirSync(inHome('memories'))
       startSession()
