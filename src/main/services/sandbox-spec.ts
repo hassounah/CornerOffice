@@ -218,16 +218,17 @@ export interface PickChannelPortDeps {
   isFree: (port: number) => boolean | Promise<boolean>
   /** Ports already stored for other workspaces — never reused even if free. */
   taken: ReadonlySet<number> | readonly number[]
-  /** Injectable source of randomness for deterministic tests; defaults to `Math.random`. */
+  /** Injectable source of randomness for deterministic tests; defaults to a cryptographically secure RNG. */
   random?: () => number
 }
 
 /** Picks a random free port in `CHANNEL_PORT_RANGE`, retrying up to 20 times; `null` if none was found. */
 export async function pickChannelPort(deps: PickChannelPortDeps): Promise<number | null> {
-  const { isFree, taken, random = Math.random } = deps
+  const { isFree, taken } = deps
   const takenSet = taken instanceof Set ? taken : new Set(taken)
   const [min, max] = CHANNEL_PORT_RANGE
   const span = max - min + 1
+  const random = deps.random ?? (() => crypto.randomInt(0, span) / span)
 
   for (let attempt = 0; attempt < 20; attempt++) {
     const port = min + Math.floor(random() * span)
