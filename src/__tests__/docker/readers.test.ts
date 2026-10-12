@@ -45,7 +45,7 @@ describe.skipIf(!process.env.CO_DOCKER_TESTS || !dockerOk())('readers through th
 
   it('control: a regular events file in the mounted directory is parsed', async () => {
     const regular = path.join(rig.eventsDir, 'regular.jsonl')
-    const result = await agentSh(d, rig, identity, `printf '%s\\n' '${EVENT_LINE}' > "${regular}"`)
+    const result = await agentSh(d, rig, identity, `printf '%s\\n' '${EVENT_LINE}' > "${path.join(rig.containerEventsDir, 'regular.jsonl')}"`)
     expect(result.exitCode).toBe(0)
 
     expect(parser.parseFromOffset(regular, 0).events).toHaveLength(1)
@@ -53,7 +53,7 @@ describe.skipIf(!process.env.CO_DOCKER_TESTS || !dockerOk())('readers through th
 
   it('a symlink the agent plants is not followed: nothing is parsed and the target is untouched', async () => {
     const link = path.join(rig.eventsDir, 'link.jsonl')
-    const result = await agentSh(d, rig, identity, `ln -s "${hostFile}" "${link}"`)
+    const result = await agentSh(d, rig, identity, `ln -s "${hostFile}" "${path.join(rig.containerEventsDir, 'link.jsonl')}"`)
     expect(result.exitCode).toBe(0)
     expect(fs.lstatSync(link).isSymbolicLink()).toBe(true)
     const before = fs.readFileSync(hostFile)
@@ -64,7 +64,7 @@ describe.skipIf(!process.env.CO_DOCKER_TESTS || !dockerOk())('readers through th
 
   it('a FIFO the agent plants does not block the parser', async () => {
     const fifo = path.join(rig.eventsDir, 'fifo.jsonl')
-    const result = await agentSh(d, rig, identity, `mkfifo "${fifo}"`)
+    const result = await agentSh(d, rig, identity, `mkfifo "${path.join(rig.containerEventsDir, 'fifo.jsonl')}"`)
     expect(result.exitCode).toBe(0)
     expect(fs.lstatSync(fifo).isFIFO()).toBe(true)
 
@@ -75,15 +75,15 @@ describe.skipIf(!process.env.CO_DOCKER_TESTS || !dockerOk())('readers through th
   it('the rotator pointed at the mounted directory skips the symlink and the FIFO, and never touches the target', async () => {
     // Control: a regular over-threshold file in the same directory IS rotated, so the pass really ran.
     const big = path.join(rig.eventsDir, 'big.jsonl')
-    const made = await agentSh(d, rig, identity, `head -c ${OVER_ROTATION_THRESHOLD} /dev/zero > "${big}"`)
+    const made = await agentSh(d, rig, identity, `head -c ${OVER_ROTATION_THRESHOLD} /dev/zero > "${path.join(rig.containerEventsDir, 'big.jsonl')}"`)
     expect(made.exitCode).toBe(0)
     const targetBefore = fs.readFileSync(hostFile)
     const onRotated = vi.fn()
     const realHome = process.env.HOME
-    // The rotator reads <homedir>/.corner-office/events/<workspace>/*.jsonl.
+    // The rotator reads <homedir>/.corner-office/events/<workspace>/*.jsonl and, D23, <sandboxStateRoot>/<slug>/events/*.jsonl.
     process.env.HOME = rig.home
     try {
-      new EventRotatorService({ onRotated }, () => {}).runNow()
+      new EventRotatorService({ onRotated }, () => {}, { sandboxStateRoot: rig.paths.sandboxStateRoot }).runNow()
     } finally {
       if (realHome === undefined) delete process.env.HOME
       else process.env.HOME = realHome

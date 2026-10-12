@@ -110,9 +110,14 @@ describe.skipIf(!process.env.CO_DOCKER_TESTS || !dockerOk())('Codex sandbox — 
     expect(result.stdout.trim()).toBe('')
   })
 
-  it('the Codex container has no ~/.claude', async () => {
-    const result = await agentSh(`test -e "${identity.home}/.claude"`)
-    expect(result.exitCode).not.toBe(0)
+  // The image's Claude install leaves an empty ~/.claude and ~/.claude.json behind, so this checks the
+  // mounts: no host Claude config reaches a Codex container except the homunculus subtree (TRD §11.2 #10).
+  it('the Codex container mounts no host ~/.claude config except homunculus', async () => {
+    const result = await d.run(['inspect', '--format', '{{range .Mounts}}{{println .Destination}}{{end}}', rig.container.name])
+    const claudeMounts = result.stdout
+      .split('\n')
+      .filter((dest) => dest === `${identity.home}/.claude.json` || dest === `${identity.home}/.claude` || dest.startsWith(`${identity.home}/.claude/`))
+    expect(claudeMounts.filter((dest) => dest !== `${identity.home}/.claude/homunculus`)).toEqual([])
   })
 
   it('a sha512 mismatch fails the image build', async () => {

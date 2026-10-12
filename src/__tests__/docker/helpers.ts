@@ -235,8 +235,10 @@ export interface SandboxRig {
   gitService: GitService
   /** Pinned context for host-side git calls in `$WT`. */
   wtCtx: WorktreeRepoCtx
-  /** Host directory mounted at `$HOME/.corner-office/events/<slug>`. */
+  /** Host directory mounted at `containerEventsDir` (D23: `S/<slug>/events`, not the host events directory). */
   eventsDir: string
+  /** `$HOME/.corner-office/events/<slug>` inside the container: the path the agent writes to. */
+  containerEventsDir: string
   /** Host directory mounted at `$HOME/.claude/channels`. */
   cardsDir: string
   /** True when `$REPO/.git/modules` did not exist before the rig pre-created it (M2). */
@@ -290,7 +292,8 @@ export async function createSandboxRig(d: DockerRunner, identity: TestIdentity, 
   }
 
   // Mount targets nested inside other mounts are created as the user, as the manager does (§3.5).
-  const eventsDir = path.join(paths.eventsRoot, slug)
+  const containerEventsDir = path.join(paths.eventsRoot, slug)
+  const eventsDir = sandboxEventsDir(paths, slug)
   const cardsDir = cardDir(paths, slug)
   fs.mkdirSync(path.join(wt, '.rix'), { recursive: true })
   if (opts.docsRel) {
@@ -300,8 +303,8 @@ export async function createSandboxRig(d: DockerRunner, identity: TestIdentity, 
   fs.mkdirSync(cardsDir, { recursive: true, mode: 0o700 })
   fs.mkdirSync(path.join(repo, '.git', 'hooks'), { recursive: true })
   fs.mkdirSync(path.join(repo, '.git', 'modules'), { recursive: true })
-  fs.mkdirSync(eventsDir, { recursive: true })
-  fs.mkdirSync(sandboxEventsDir(paths, slug), { recursive: true }) // D23: the container's events mount source
+  fs.mkdirSync(containerEventsDir, { recursive: true })
+  fs.mkdirSync(eventsDir, { recursive: true }) // D23: the container's events mount source
   fs.mkdirSync(path.join(paths.claudeDir, 'channels'), { recursive: true, mode: 0o700 })
   // #0030: the read-only Claude config sources, the settings copy and the first `claude.json` seed, as the manager does.
   const claudeConfig = prepareClaudeConfig(paths, slug)
@@ -336,6 +339,7 @@ export async function createSandboxRig(d: DockerRunner, identity: TestIdentity, 
     gitService,
     wtCtx: { root: wt, workspaceRoots: [repo, wt], pin: worktreePin(repo, slug, paths) },
     eventsDir,
+    containerEventsDir,
     cardsDir,
     modulesWasAbsent,
     cleanup: async () => {
