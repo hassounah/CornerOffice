@@ -40,6 +40,7 @@ RUN set -eu \
  && rm -f /tmp/codex.tgz \
  && chown -R root:root /opt/codex && chmod -R go-w /opt/codex \
  && test -x "/opt/codex/vendor/${triple}/bin/codex" \
+ && mkdir -p /usr/local/bin \
  && ln -s "/opt/codex/vendor/${triple}/bin/codex" /usr/local/bin/codex
 USER agent
 ENV HOME=${AGENT_HOME} PATH=${AGENT_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin \
