@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import log from 'electron-log/main'
 import type { GitService, RepoCtx, WorktreeRepoCtx } from './git-runner'
+import { readRegularFileCapped } from './safe-fs'
 import type { SandboxPaths } from './sandbox-paths'
 import { worktreePath, validateEnvValue } from './sandbox-spec'
 
@@ -247,13 +248,17 @@ export type EnsureResult =
   | { ok: true; recreated: true; movedAsidePath: string }
   | { ok: false; code: 'WORKTREE_FAILED' }
 
+/** A worktree `.git` file is one `gitdir: <path>` line; anything bigger is not one. */
+const GIT_FILE_READ_CAP = 64 * 1024
+
 async function readGitFileGitDir(wt: string): Promise<string | null> {
   const gitFile = path.join(wt, '.git')
   try {
-    const st = await fs.promises.lstat(gitFile)
-    if (!st.isFile()) return null
-    const content = await fs.promises.readFile(gitFile, 'utf-8')
-    const trimmed = content.trim()
+    // safe-fs: lstat type check before open (never opens a device), no-follow
+    // open, then a type re-check on the handle so the check can't race the read.
+    const capped = await readRegularFileCapped(gitFile, GIT_FILE_READ_CAP)
+    if (capped === null || capped.size > GIT_FILE_READ_CAP) return null
+    const trimmed = capped.buf.toString('utf-8').trim()
     const prefix = 'gitdir: '
     if (!trimmed.startsWith(prefix)) return null
     return trimmed.slice(prefix.length).trim()

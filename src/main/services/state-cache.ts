@@ -86,17 +86,16 @@ export class StateCacheService {
 
   load(): StateCache {
     const sPath = statePath()
-    if (!fs.existsSync(sPath)) {
-      this._cache = defaultState()
-      return this._cache
-    }
 
+    // Read first and treat ENOENT as "no cache yet", rather than an
+    // existsSync pre-check that races the read.
     let raw: unknown
     try {
       raw = JSON.parse(fs.readFileSync(sPath, 'utf-8'))
-    } catch {
-      log.warn('[StateCacheService] Failed to parse state.json, using defaults')
+    } catch (err) {
       this._cache = defaultState()
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return this._cache
+      log.warn('[StateCacheService] Failed to parse state.json, using defaults')
       return this._cache
     }
 

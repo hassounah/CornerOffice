@@ -54,8 +54,8 @@ export class WindowStateService {
 
   load(): WindowStateData {
     const sPath = statePath()
-    if (!fs.existsSync(sPath)) return { ...DEFAULT_STATE }
 
+    // No existsSync pre-check: a missing file throws here and falls back to defaults.
     let raw: unknown
     try {
       raw = JSON.parse(fs.readFileSync(sPath, 'utf-8'))
