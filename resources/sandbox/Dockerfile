@@ -21,29 +21,10 @@ RUN chmod 0755 /opt/co-sandbox/co-entrypoint.sh /opt/co-sandbox/init-firewall.sh
  && mkdir -p "$AGENT_HOME/.corner-office/sandboxes" "$AGENT_HOME/.corner-office/events" \
  && chown -R "$AGENT_UID:$AGENT_GID" "$AGENT_HOME/.corner-office" && chmod -R 0755 "$AGENT_HOME/.corner-office" \
  && { find / -xdev -perm /6000 -type f -exec chmod a-s {} + || true; }
-# Codex: pinned and hash-verified (SL-1). The pins are build args with no defaults, so an empty pin fails the build.
-# The checksum is verified before the archive is unpacked; the install is root-owned and not writable by the agent user.
-ARG CODEX_VERSION
-ARG CODEX_SHA512_X64
-ARG CODEX_SHA512_ARM64
-RUN set -eu \
- && [ -n "$CODEX_VERSION" ] && [ -n "$CODEX_SHA512_X64" ] && [ -n "$CODEX_SHA512_ARM64" ] \
- && case "$(uname -m)" in \
-      x86_64)  arch=x64;   triple=x86_64-unknown-linux-musl;  sum="$CODEX_SHA512_X64" ;; \
-      aarch64) arch=arm64; triple=aarch64-unknown-linux-musl; sum="$CODEX_SHA512_ARM64" ;; \
-      *) echo "unsupported architecture for Codex: $(uname -m)" >&2; exit 1 ;; \
-    esac \
- && curl -fsSL -o /tmp/codex.tgz "https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_VERSION}-linux-${arch}.tgz" \
- && echo "${sum}  /tmp/codex.tgz" | sha512sum -c - \
- && mkdir -p /opt/codex \
- && tar --no-same-owner --strip-components=1 -xzf /tmp/codex.tgz -C /opt/codex \
- && rm -f /tmp/codex.tgz \
- && chown -R root:root /opt/codex && chmod -R go-w /opt/codex \
- && test -x "/opt/codex/vendor/${triple}/bin/codex" \
- && mkdir -p /usr/local/bin \
- && ln -s "/opt/codex/vendor/${triple}/bin/codex" /usr/local/bin/codex
 USER agent
 ENV HOME=${AGENT_HOME} PATH=${AGENT_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin \
     DISABLE_AUTOUPDATER=1 COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN curl -fsSL https://claude.ai/install.sh | bash
+# Codex packages go under ~/.local/share/codex, not ~/.codex: a Codex container mounts the host ~/.codex over that path.
+RUN curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_HOME="$HOME/.local/share/codex" CODEX_NON_INTERACTIVE=1 sh
 ENTRYPOINT ["/opt/co-sandbox/co-entrypoint.sh"]
