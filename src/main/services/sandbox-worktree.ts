@@ -250,9 +250,17 @@ export type EnsureResult =
 async function readGitFileGitDir(wt: string): Promise<string | null> {
   const gitFile = path.join(wt, '.git')
   try {
-    const st = await fs.promises.lstat(gitFile)
-    if (!st.isFile()) return null
-    const content = await fs.promises.readFile(gitFile, 'utf-8')
+    // Open once (no symlink follow, no FIFO block), then check and read
+    // through the same handle so the check can't race the read.
+    const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
+    const fh = await fs.promises.open(gitFile, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+    let content: string
+    try {
+      if (!(await fh.stat()).isFile()) return null
+      content = await fh.readFile('utf-8')
+    } finally {
+      await fh.close().catch(() => {})
+    }
     const trimmed = content.trim()
     const prefix = 'gitdir: '
     if (!trimmed.startsWith(prefix)) return null

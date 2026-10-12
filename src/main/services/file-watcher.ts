@@ -44,7 +44,6 @@ const INOTIFY_PATH = '/proc/sys/fs/inotify/max_user_watches'
 
 function readInotifyMax(): number | null {
   try {
-    if (!fs.existsSync(INOTIFY_PATH)) return null
     const val = parseInt(fs.readFileSync(INOTIFY_PATH, 'utf-8').trim(), 10)
     return isNaN(val) ? null : val
   } catch {

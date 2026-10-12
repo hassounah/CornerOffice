@@ -220,9 +220,17 @@ export class WorkspaceParserService {
       const match = entries.find((e) => e.toLowerCase() === 'readme.md')
       if (!match) return null
       const fullPath = path.join(workspacePath, match)
-      const stat = fs.statSync(fullPath)
-      if (!stat.isFile() || stat.size > README_MAX_SIZE) return null
-      return fs.readFileSync(fullPath, 'utf-8')
+      // Open once, then check and read through the same fd so the file can't
+      // be swapped between the check and the read. O_NONBLOCK keeps a FIFO
+      // named README.md from blocking the open.
+      const fd = fs.openSync(fullPath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK)
+      try {
+        const stat = fs.fstatSync(fd)
+        if (!stat.isFile() || stat.size > README_MAX_SIZE) return null
+        return fs.readFileSync(fd, 'utf-8')
+      } finally {
+        fs.closeSync(fd)
+      }
     } catch {
       return null
     }
