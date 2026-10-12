@@ -28,10 +28,13 @@ export class EventRotatorService {
   private _callbacks: EventRotatorCallbacks
   private _onFlush: () => void
   private _timer: ReturnType<typeof setInterval> | null = null
+  /** D23: the second events root; containers write to `<sandboxStateRoot>/<slug>/events/*.jsonl`. */
+  private _sandboxStateRoot: string | null
 
-  constructor(callbacks: EventRotatorCallbacks, onFlush: () => void) {
+  constructor(callbacks: EventRotatorCallbacks, onFlush: () => void, opts: { sandboxStateRoot?: string } = {}) {
     this._callbacks = callbacks
     this._onFlush = onFlush
+    this._sandboxStateRoot = opts.sandboxStateRoot ?? null
   }
 
   // ---------------------------------------------------------------------------
@@ -60,6 +63,11 @@ export class EventRotatorService {
   // ---------------------------------------------------------------------------
 
   private _rotate(): void {
+    this._rotateHostRoot()
+    this._rotateSandboxRoot()
+  }
+
+  private _rotateHostRoot(): void {
     const eventsDir = path.join(os.homedir(), '.corner-office', 'events')
     if (!fs.existsSync(eventsDir)) return
 
@@ -72,36 +80,63 @@ export class EventRotatorService {
     }
 
     // Rotate flat .jsonl files (backward compat)
-    const jsonlFiles = entries.filter(f => f.endsWith('.jsonl') && !f.includes('.jsonl.'))
-    for (const file of jsonlFiles) {
-      this._maybeRotate(path.join(eventsDir, file))
-    }
+    this._rotateJsonlIn(eventsDir, entries)
 
     // Rotate one level of subdirectories (per-workspace/per-session files).
-    // lstat (not stat, H2): a symlinked entry is never followed here, so a
-    // symlink planted where a workspace directory should be is just skipped.
     for (const entry of entries) {
       const entryPath = path.join(eventsDir, entry)
-      let stat: fs.Stats
-      try {
-        stat = fs.lstatSync(entryPath)
-      } catch {
-        continue
-      }
-      if (typeof stat.isDirectory !== 'function' || !stat.isDirectory()) continue
+      if (this._isRealDir(entryPath)) this._rotateDir(entryPath)
+    }
+  }
 
-      let subFiles: string[]
-      try {
-        subFiles = fs.readdirSync(entryPath)
-      } catch (err) {
-        log.warn(`[EventRotator] Failed to read subdir ${entryPath}:`, err)
-        continue
-      }
+  /** D23: `<sandboxStateRoot>/<slug>/events/*.jsonl`, the directories containers write to. */
+  private _rotateSandboxRoot(): void {
+    const root = this._sandboxStateRoot
+    if (!root || !fs.existsSync(root)) return
 
-      const subJsonlFiles = subFiles.filter(f => f.endsWith('.jsonl') && !f.includes('.jsonl.'))
-      for (const file of subJsonlFiles) {
-        this._maybeRotate(path.join(entryPath, file))
-      }
+    let slugs: string[]
+    try {
+      slugs = fs.readdirSync(root)
+    } catch (err) {
+      log.warn('[EventRotator] Failed to read sandbox state root:', err)
+      return
+    }
+
+    for (const slug of slugs) {
+      const slugDir = path.join(root, slug)
+      if (!this._isRealDir(slugDir)) continue
+      const eventsDir = path.join(slugDir, 'events')
+      if (this._isRealDir(eventsDir)) this._rotateDir(eventsDir)
+    }
+  }
+
+  /**
+   * lstat (not stat, H2): a symlinked entry is never followed, so a symlink
+   * planted where a directory should be is just skipped.
+   */
+  private _isRealDir(dirPath: string): boolean {
+    try {
+      const stat = fs.lstatSync(dirPath)
+      return typeof stat.isDirectory === 'function' && stat.isDirectory()
+    } catch {
+      return false
+    }
+  }
+
+  private _rotateDir(dir: string): void {
+    let files: string[]
+    try {
+      files = fs.readdirSync(dir)
+    } catch (err) {
+      log.warn(`[EventRotator] Failed to read subdir ${dir}:`, err)
+      return
+    }
+    this._rotateJsonlIn(dir, files)
+  }
+
+  private _rotateJsonlIn(dir: string, names: string[]): void {
+    for (const file of names.filter(f => f.endsWith('.jsonl') && !f.includes('.jsonl.'))) {
+      this._maybeRotate(path.join(dir, file))
     }
   }
 
