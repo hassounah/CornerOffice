@@ -12,8 +12,6 @@ const mockLog = vi.hoisted(() => ({
 vi.mock('electron-log/main', () => ({ default: mockLog }))
 
 import {
-  CODEX_SHA512,
-  CODEX_VERSION,
   IMAGE_AGENTS,
   resolveBuildContext,
   computeBuildHash,
@@ -370,34 +368,17 @@ describe('getImageState', () => {
   })
 })
 
-describe('build(): Codex pins and agents label (D11, SL-1)', () => {
-  it('pins a version and hex sha512 values for both architectures', () => {
-    expect(CODEX_VERSION).toMatch(/^\d+\.\d+\.\d+$/)
-    expect(CODEX_SHA512.x64).toMatch(/^[0-9a-f]{128}$/)
-    expect(CODEX_SHA512.arm64).toMatch(/^[0-9a-f]{128}$/)
-    expect(CODEX_SHA512.x64).not.toBe(CODEX_SHA512.arm64)
-  })
-
-  it('passes the pins as build args and labels the image with the installed agents', async () => {
+describe('build(): agents label', () => {
+  it('labels the image with the installed agents and passes no agent version pins', async () => {
     const { service, docker } = await makeService()
     docker.script(['image', 'inspect'], { result: { stdout: imageInspectJson(), stderr: '', exitCode: 0 } })
 
     await service.build({ rebuild: false })
 
     const args = docker.calls.find((c) => c.args[0] === 'build')?.args ?? []
-    expect(args).toContain(`CODEX_VERSION=${CODEX_VERSION}`)
-    expect(args).toContain(`CODEX_SHA512_X64=${CODEX_SHA512.x64}`)
-    expect(args).toContain(`CODEX_SHA512_ARM64=${CODEX_SHA512.arm64}`)
     expect(args).toContain(`${LABEL.agents}=${IMAGE_AGENTS.join(',')}`)
+    expect(args.some((a) => a.startsWith('CODEX_'))).toBe(false)
     expect(IMAGE_AGENTS).toEqual(['claude', 'codex'])
-  })
-
-  it('the pins feed the cache signature, so a pin bump invalidates a cached build hash', async () => {
-    const ctx = makeCtx()
-    const signature = await buildHashSignature(ctx, IDENTITY, TOOLCHAINS)
-    expect(signature).toContain(CODEX_VERSION)
-    expect(signature).toContain(CODEX_SHA512.x64)
-    expect(signature).toContain(CODEX_SHA512.arm64)
   })
 })
 

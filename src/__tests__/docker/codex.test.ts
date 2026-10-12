@@ -8,20 +8,17 @@ import {
   makeIdentity,
   removeIdentity,
   buildTestImage,
-  buildContext,
   removeTestImage,
   createCodexRig,
   execAsArgv,
-  execAsRootArgv,
 } from './helpers'
 import type { TestIdentity, CodexRig } from './helpers'
 import type { DockerRunner } from '../../main/services/docker-runner'
-import { CODEX_VERSION } from '../../main/services/sandbox-image'
 
 // ---------------------------------------------------------------------------
 // codex.test.ts (#0037, TRD §10.4, §4.13) — the Codex sandbox, against a real
-// container created through the real mount plan: the pinned install, the
-// read-only overlays and shadows, and the hash check at build time.
+// container created through the real mount plan: the image's Codex
+// install, and the read-only overlays and shadows.
 // ---------------------------------------------------------------------------
 
 const HOST_ENV = 'OPENAI_API_KEY=sk-not-a-real-key\n'
@@ -61,16 +58,11 @@ describe.skipIf(!process.env.CO_DOCKER_TESTS || !dockerOk())('Codex sandbox — 
     if (identity) removeIdentity(identity)
   }, 60_000)
 
-  it('codex --version prints the pinned release', async () => {
-    const result = await d.run(execAsArgv(rig.container.name, identity, ['codex', '--version']))
-    expect(result.stdout).toContain(CODEX_VERSION)
-  })
-
-  it('/opt/codex is root-owned and the agent cannot write to it', async () => {
-    const owner = await d.run(execAsRootArgv(rig.container.name, ['stat', '-c', '%u', '/opt/codex']))
-    expect(owner.stdout.trim()).toBe('0')
-    const write = await agentSh('touch /opt/codex/x')
-    expect(write.exitCode).not.toBe(0)
+  it('codex runs from ~/.local/bin, installed outside the host-mounted ~/.codex', async () => {
+    const version = await d.run(execAsArgv(rig.container.name, identity, ['codex', '--version']))
+    expect(version.stdout).toMatch(/codex-cli \d+\.\d+\.\d+/)
+    const target = await agentSh('readlink -f "$(command -v codex)"')
+    expect(target.stdout.trim().startsWith(`${identity.home}/.local/share/codex/`)).toBe(true)
   })
 
   it.each(['config.toml', '.env', 'AGENTS.md', 'rules/x', 'plugins/x', 'skills/x'])(
@@ -110,34 +102,13 @@ describe.skipIf(!process.env.CO_DOCKER_TESTS || !dockerOk())('Codex sandbox — 
     expect(result.stdout.trim()).toBe('')
   })
 
-  it('the Codex container has no ~/.claude', async () => {
-    const result = await agentSh(`test -e "${identity.home}/.claude"`)
-    expect(result.exitCode).not.toBe(0)
+  // The image's Claude install leaves an empty ~/.claude and ~/.claude.json behind, so this checks the
+  // mounts: no host Claude config reaches a Codex container except the homunculus subtree (TRD §11.2 #10).
+  it('the Codex container mounts no host ~/.claude config except homunculus', async () => {
+    const result = await d.run(['inspect', '--format', '{{range .Mounts}}{{println .Destination}}{{end}}', rig.container.name])
+    const claudeMounts = result.stdout
+      .split('\n')
+      .filter((dest) => dest === `${identity.home}/.claude.json` || dest === `${identity.home}/.claude` || dest.startsWith(`${identity.home}/.claude/`))
+    expect(claudeMounts.filter((dest) => dest !== `${identity.home}/.claude/homunculus`)).toEqual([])
   })
-
-  it('a sha512 mismatch fails the image build', async () => {
-    const tag = `claude-sandbox:test-badsha-${process.pid}`
-    const wrong = '0'.repeat(128)
-    const build = d.run(
-      [
-        'build',
-        '--tag', tag,
-        '--build-arg', `AGENT_UID=${identity.uid}`,
-        '--build-arg', `AGENT_GID=${identity.gid}`,
-        '--build-arg', `AGENT_HOME=${identity.home}`,
-        '--build-arg', 'WITH_NODE=0',
-        '--build-arg', 'WITH_GO=0',
-        '--build-arg', 'WITH_BUILD=0',
-        '--build-arg', `CODEX_VERSION=${CODEX_VERSION}`,
-        '--build-arg', `CODEX_SHA512_X64=${wrong}`,
-        '--build-arg', `CODEX_SHA512_ARM64=${wrong}`,
-        buildContext(),
-      ],
-      { timeoutMs: 4 * 60_000 },
-    )
-    await expect(build).rejects.toThrow()
-    // Nothing was tagged by the failed build.
-    const images = await d.run(['images', '-q', tag])
-    expect(images.stdout.trim()).toBe('')
-  }, 5 * 60_000)
 })

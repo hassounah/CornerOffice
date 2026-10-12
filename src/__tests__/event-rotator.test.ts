@@ -316,4 +316,76 @@ describe('EventRotatorService', () => {
       expect(callbacks.onRotated).not.toHaveBeenCalled()
     })
   })
+
+  describe('sandbox events root (D23)', () => {
+    const SANDBOX_ROOT = '/home/test/.corner-office/sandbox'
+    const dir = { size: 0, isDirectory: () => true }
+    const notDir = { size: 0, isDirectory: () => false }
+
+    /** A fake tree: `dirs` maps a directory to its entries; `stats` overrides lstat per path. */
+    function tree(dirs: Record<string, string[]>, stats: Record<string, object> = {}) {
+      mockFs.readdirSync = vi.fn().mockImplementation((p: string) => {
+        if (p in dirs) return dirs[p]
+        throw new Error('ENOENT')
+      })
+      mockFs.lstatSync = vi.fn().mockImplementation((p: string) => stats[p] ?? (p in dirs ? dir : { size: 0 }))
+    }
+
+    it('rotates an over-threshold events file under <root>/<slug>/events', () => {
+      const file = `${SANDBOX_ROOT}/ws-a/events/ws-a.jsonl`
+      tree(
+        { [EVENTS_DIR]: [], [SANDBOX_ROOT]: ['ws-a'], [`${SANDBOX_ROOT}/ws-a`]: ['events', 'worktree'], [`${SANDBOX_ROOT}/ws-a/events`]: ['ws-a.jsonl'] },
+        { [file]: { size: TEN_MB + 1 } },
+      )
+      const callbacks = makeCallbacks()
+      new EventRotatorService(callbacks, flushFn, { sandboxStateRoot: SANDBOX_ROOT }).runNow()
+      expect(callbacks.onRotated).toHaveBeenCalledWith(file)
+      expect(mockFs.renameSync).toHaveBeenCalledWith(file, `${file}.1`)
+    })
+
+    it('does not scan the sandbox root when none is configured', () => {
+      tree({ [EVENTS_DIR]: [], [SANDBOX_ROOT]: ['ws-a'], [`${SANDBOX_ROOT}/ws-a/events`]: ['ws-a.jsonl'] })
+      new EventRotatorService(makeCallbacks(), flushFn).runNow()
+      expect(mockFs.readdirSync).not.toHaveBeenCalledWith(SANDBOX_ROOT)
+    })
+
+    it('never descends into a symlinked events directory (lstat, not stat)', () => {
+      tree(
+        { [EVENTS_DIR]: [], [SANDBOX_ROOT]: ['ws-a'], [`${SANDBOX_ROOT}/ws-a`]: ['events'], [`${SANDBOX_ROOT}/ws-a/events`]: ['ws-a.jsonl'] },
+        { [`${SANDBOX_ROOT}/ws-a/events`]: notDir, [`${SANDBOX_ROOT}/ws-a/events/ws-a.jsonl`]: { size: TEN_MB + 1 } },
+      )
+      const callbacks = makeCallbacks()
+      new EventRotatorService(callbacks, flushFn, { sandboxStateRoot: SANDBOX_ROOT }).runNow()
+      expect(mockFs.readdirSync).not.toHaveBeenCalledWith(`${SANDBOX_ROOT}/ws-a/events`)
+      expect(callbacks.onRotated).not.toHaveBeenCalled()
+    })
+
+    it('skips a slug entry that is not a real directory', () => {
+      tree({ [EVENTS_DIR]: [], [SANDBOX_ROOT]: ['stray'] }, { [`${SANDBOX_ROOT}/stray`]: notDir })
+      const callbacks = makeCallbacks()
+      new EventRotatorService(callbacks, flushFn, { sandboxStateRoot: SANDBOX_ROOT }).runNow()
+      expect(mockFs.lstatSync).not.toHaveBeenCalledWith(`${SANDBOX_ROOT}/stray/events`)
+      expect(callbacks.onRotated).not.toHaveBeenCalled()
+    })
+
+    it('still rotates the sandbox root when the host events dir is missing', () => {
+      const file = `${SANDBOX_ROOT}/ws-a/events/ws-a.jsonl`
+      tree(
+        { [SANDBOX_ROOT]: ['ws-a'], [`${SANDBOX_ROOT}/ws-a`]: ['events'], [`${SANDBOX_ROOT}/ws-a/events`]: ['ws-a.jsonl'] },
+        { [file]: { size: TEN_MB + 1 } },
+      )
+      mockFs.existsSync = vi.fn().mockImplementation((p: string) => p !== EVENTS_DIR)
+      const callbacks = makeCallbacks()
+      new EventRotatorService(callbacks, flushFn, { sandboxStateRoot: SANDBOX_ROOT }).runNow()
+      expect(callbacks.onRotated).toHaveBeenCalledWith(file)
+    })
+
+    it('logs and returns when the sandbox root cannot be read', () => {
+      tree({ [EVENTS_DIR]: [] })
+      const callbacks = makeCallbacks()
+      const svc = new EventRotatorService(callbacks, flushFn, { sandboxStateRoot: SANDBOX_ROOT })
+      expect(() => svc.runNow()).not.toThrow()
+      expect(callbacks.onRotated).not.toHaveBeenCalled()
+    })
+  })
 })

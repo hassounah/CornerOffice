@@ -176,41 +176,16 @@ describe('Dockerfile', () => {
     expect(dockerfile).toContain('ARG AGENT_HOME')
   })
 
-  describe('Codex install (D11, SL-1)', () => {
-    const installIdx = dockerfile.indexOf('ARG CODEX_VERSION')
-    const block = dockerfile.slice(installIdx, dockerfile.indexOf('USER agent'))
-
-    it('declares the three pins as build args with no defaults, so an empty pin fails the build', () => {
-      for (const arg of ['CODEX_VERSION', 'CODEX_SHA512_X64', 'CODEX_SHA512_ARM64']) {
-        expect(block).toMatch(new RegExp(`^ARG ${arg}$`, 'm'))
-        expect(block).toContain(`[ -n "$${arg}" ]`)
-      }
+  describe('Codex install', () => {
+    it('installs Codex as the agent, after Claude, with its packages outside the mounted ~/.codex', () => {
+      const codexIdx = dockerfile.indexOf('chatgpt.com/codex/install.sh')
+      expect(codexIdx).toBeGreaterThan(dockerfile.indexOf('USER agent'))
+      expect(codexIdx).toBeGreaterThan(dockerfile.indexOf('claude.ai/install.sh'))
+      expect(dockerfile).toContain('CODEX_HOME="$HOME/.local/share/codex" CODEX_NON_INTERACTIVE=1 sh')
     })
 
-    it('fails the build on an unknown architecture', () => {
-      expect(block).toMatch(/\*\) echo "unsupported architecture for Codex[^;]*; exit 1 ;;/)
-    })
-
-    it('verifies the checksum before unpacking, and never swallows a failure', () => {
-      const sumIdx = block.indexOf('sha512sum -c')
-      const tarIdx = block.indexOf('tar ')
-      expect(sumIdx).toBeGreaterThan(-1)
-      expect(tarIdx).toBeGreaterThan(sumIdx)
-      expect(block).not.toContain('|| true')
-    })
-
-    it('installs root-owned, not writable by the agent, ahead of USER agent', () => {
-      expect(block).toContain('tar --no-same-owner')
-      expect(block).toContain('chown -R root:root /opt/codex && chmod -R go-w /opt/codex')
-      expect(installIdx).toBeLessThan(dockerfile.indexOf('USER agent'))
-    })
-
-    it('links codex into /usr/local/bin, but only after checking the binary exists and is executable', () => {
-      const testIdx = block.indexOf('test -x "/opt/codex/vendor/${triple}/bin/codex"')
-      const linkIdx = block.indexOf('ln -s')
-      expect(testIdx).toBeGreaterThan(-1)
-      expect(linkIdx).toBeGreaterThan(testIdx)
-      expect(block).toContain('/usr/local/bin/codex')
+    it('pins no Codex version, so a rebuild gets the latest release', () => {
+      expect(dockerfile).not.toMatch(/ARG CODEX_/)
     })
   })
 

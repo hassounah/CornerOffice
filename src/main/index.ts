@@ -859,6 +859,7 @@ async function initialize(): Promise<void> {
       },
     },
     () => stateCacheService.flush(),
+    { sandboxStateRoot },
   )
   eventRotator.start()
 

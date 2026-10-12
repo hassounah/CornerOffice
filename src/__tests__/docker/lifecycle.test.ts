@@ -37,7 +37,9 @@ describe.skipIf(!process.env.CO_DOCKER_TESTS || !dockerOk())('lifecycle — TRD 
     const marker = path.join(rig.eventsDir, 'got-term')
     const ready = path.join(rig.eventsDir, 'ready')
     // `wait` returns as soon as a trapped signal arrives, so the trap runs promptly.
-    const script = `trap 'touch "${marker}"; exit 0' TERM; touch "${ready}"; sleep 300 & wait`
+    const inMarker = path.join(rig.containerEventsDir, 'got-term')
+    const inReady = path.join(rig.containerEventsDir, 'ready')
+    const script = `trap 'touch "${inMarker}"; exit 0' TERM; touch "${inReady}"; sleep 300 & wait`
     await d.run(['exec', '--detach', '--user', `${identity.uid}:${identity.gid}`, rig.container.name, '/bin/sh', '-c', script])
 
     // Control: the process is up and the marker doesn't exist yet.
