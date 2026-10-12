@@ -278,6 +278,17 @@ describe('WorkspaceParserService', () => {
       expect(svc.findReadme(tmpDir)).toBeNull()
     })
 
+    it('returns null when README.md is a symlink (never followed)', () => {
+      writeFile(path.join(tmpDir, 'real.md'), '# Real')
+      fs.symlinkSync(path.join(tmpDir, 'real.md'), path.join(tmpDir, 'README.md'))
+      expect(svc.findReadme(tmpDir)).toBeNull()
+    })
+
+    it.skipIf(process.platform === 'win32')('returns null without blocking when README.md is a FIFO', () => {
+      execFileSync('mkfifo', [path.join(tmpDir, 'README.md')])
+      expect(svc.findReadme(tmpDir)).toBeNull()
+    })
+
     it('returns content up to exactly 2 MB (boundary)', () => {
       const content = 'x'.repeat(2 * 1024 * 1024)
       writeFile(path.join(tmpDir, 'README.md'), content)

@@ -210,8 +210,9 @@ export class WorkspaceParserService {
 
   /**
    * Detect and read README.md at the workspace root (case-insensitive).
-   * Returns null if no README found, file is not a regular file, size > 2 MB,
-   * or any filesystem error occurs.
+   * Returns null if no README found, file is not a regular file (a symlink
+   * included), size > 2 MB, or any filesystem error occurs. The safe-fs read
+   * never opens a device or FIFO and re-checks the type on the open handle.
    */
   findReadme(workspacePath: string): string | null {
     const README_MAX_SIZE = 2 * 1024 * 1024 // 2 MB
@@ -220,17 +221,9 @@ export class WorkspaceParserService {
       const match = entries.find((e) => e.toLowerCase() === 'readme.md')
       if (!match) return null
       const fullPath = path.join(workspacePath, match)
-      // Open once, then check and read through the same fd so the file can't
-      // be swapped between the check and the read. O_NONBLOCK keeps a FIFO
-      // named README.md from blocking the open.
-      const fd = fs.openSync(fullPath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK)
-      try {
-        const stat = fs.fstatSync(fd)
-        if (!stat.isFile() || stat.size > README_MAX_SIZE) return null
-        return fs.readFileSync(fd, 'utf-8')
-      } finally {
-        fs.closeSync(fd)
-      }
+      const capped = readRegularFileCappedSync(fullPath, README_MAX_SIZE, { root: workspacePath })
+      if (capped === null || capped.size > README_MAX_SIZE) return null
+      return capped.buf.toString('utf-8')
     } catch {
       return null
     }
