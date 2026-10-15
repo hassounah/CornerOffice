@@ -723,7 +723,7 @@ describe('Settings page', () => {
 // ---------------------------------------------------------------------------
 
 describe('Settings page — settingsRequest', () => {
-  const SETTINGS_VIEW = { toolchains: { node: true, go: true, buildBase: true }, defaultAllowlist: [], globalAllowlist: [], workspaceAllowlists: {} }
+  const SETTINGS_VIEW = { toolchains: { node: true, go: true, buildBase: true }, defaultAllowlist: [], globalAllowlist: [], workspaceAllowlists: {}, workspaceDevAccess: {} }
 
   function workspace(slug: string, displayName: string): import('@main/types/workspace').Workspace {
     return { slug, displayName, path: `/home/u/${slug}` } as import('@main/types/workspace').Workspace

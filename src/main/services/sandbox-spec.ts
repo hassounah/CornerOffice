@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import log from 'electron-log/main'
 import { z } from 'zod'
-import { hiddenHomeSegments, sandboxPaths } from './sandbox-paths'
+import { hiddenHomeSegments, profilesRoot, sandboxPaths } from './sandbox-paths'
 import type { SandboxPaths } from './sandbox-paths'
 import { LEGACY_AGENT_ID, getDescriptor } from '../agents/descriptors'
 import { AgentIdSchema } from '../agents/agent-id-schema'
@@ -141,6 +141,10 @@ export function assertMountSafe(p: string, opts: { home: string }): boolean {
   if (p === path.parse(p).root) return false
   if (p === home) return false
   if (home.startsWith(p + path.sep)) return false
+
+  // Rule 3a (#0038 D3a): a dev profile's home is never a mount source or target.
+  const profiles = profilesRoot(home)
+  if (p === profiles || p.startsWith(profiles + path.sep)) return false
 
   // Rule 4 (v2, H1): a hidden path under $HOME is refused unless its first
   // path component below $HOME is one of the allowed hidden locations —
@@ -504,6 +508,8 @@ export interface SpecHashInput {
   home: string
   base: string
   imageId: string
+  /** The published dev-app CDP port (Claude container only). Part of the hash only when set, so every existing hash is unchanged. */
+  cdpPort?: number | null
 }
 
 /** sha256 of the canonical JSON of the mount plan (sorted by target, so reordering `plan` doesn't change the hash) plus port/uid/gid/home/base/imageId. */
@@ -520,6 +526,7 @@ export function specHash(input: SpecHashInput): string {
     home: input.home,
     base: input.base,
     imageId: input.imageId,
+    ...(input.cdpPort != null ? { cdpPort: input.cdpPort } : {}),
   })
 
   return crypto.createHash('sha256').update(canonical).digest('hex')
@@ -639,7 +646,7 @@ export function imageInspectArgv(image: string = SANDBOX_IMAGE): string[] {
 
 export interface BuildArgvOptions {
   rebuild: boolean
-  toolchains: { node: boolean; go: boolean; buildBase: boolean }
+  toolchains: { node: boolean; go: boolean; buildBase: boolean; electron?: boolean }
   uid: number
   gid: number
   /** AGENT_HOME — the one realHome. */
@@ -668,6 +675,7 @@ export function buildArgv(opts: BuildArgvOptions): string[] {
     toolchains.node ? 'node' : null,
     toolchains.go ? 'go' : null,
     toolchains.buildBase ? 'build-base' : null,
+    toolchains.electron ? 'electron' : null,
   ].filter((name): name is string => name !== null)
 
   return [
@@ -678,6 +686,7 @@ export function buildArgv(opts: BuildArgvOptions): string[] {
     '--build-arg', `WITH_NODE=${toolchains.node ? 1 : 0}`,
     '--build-arg', `WITH_GO=${toolchains.go ? 1 : 0}`,
     '--build-arg', `WITH_BUILD=${toolchains.buildBase ? 1 : 0}`,
+    ...(toolchains.electron ? ['--build-arg', 'WITH_ELECTRON=1'] : []),
     '--build-arg', `AGENT_UID=${uid}`,
     '--build-arg', `AGENT_GID=${gid}`,
     '--build-arg', `AGENT_HOME=${home}`,
@@ -699,6 +708,8 @@ export interface CreateArgvOptions {
   gid: number
   /** Published, with `CORNER_OFFICE_CHANNEL_PORT`, only for agents with channels; `null` or absent publishes nothing. */
   port?: number | null
+  /** #0038 3a: the dev app's CDP port, published on 127.0.0.1 only and only for the Claude container; `null` or absent publishes nothing. */
+  cdpPort?: number | null
   /** The agent the container is for; defaults to the legacy agent. */
   agentId?: AgentId
   /** The one realHome. */
@@ -712,12 +723,18 @@ export interface CreateArgvOptions {
 
 /** Exactly as TRD §3.5's create argv. Every data value and mount is re-validated before the array is built (defense in depth — planMounts and the caller should already have validated them). */
 export function createArgv(opts: CreateArgvOptions): string[] {
-  const { c, slug, uid, gid, port = null, agentId = LEGACY_AGENT_ID, home, base, specHash: spec, mounts, workTree, image = SANDBOX_IMAGE } = opts
+  const { c, slug, uid, gid, port = null, cdpPort = null, agentId = LEGACY_AGENT_ID, home, base, specHash: spec, mounts, workTree, image = SANDBOX_IMAGE } = opts
 
   if (!SANDBOX_SLUG_RE.test(slug)) throw new Error('sandbox-spec: invalid slug for createArgv')
   // Fail closed: an agent with channels must always get its port, or its channel would silently be dropped.
   if (port === null && getDescriptor(agentId).capabilities.channels) {
     throw new Error(`sandbox-spec: ${agentId} uses channels but createArgv got no port`)
+  }
+  if (cdpPort !== null) {
+    if (agentId !== LEGACY_AGENT_ID) throw new Error('sandbox-spec: cdpPort is only for the claude container')
+    if (!Number.isInteger(cdpPort) || cdpPort < CHANNEL_PORT_RANGE[0] || cdpPort > CHANNEL_PORT_RANGE[1] || cdpPort === port) {
+      throw new Error('sandbox-spec: invalid cdpPort for createArgv')
+    }
   }
   if (!validateBuildIds({ uid, gid })) throw new Error('sandbox-spec: invalid uid/gid for createArgv')
   if (!validateEnvValue(base)) throw new Error('sandbox-spec: invalid base branch value for createArgv')
@@ -743,9 +760,11 @@ export function createArgv(opts: CreateArgvOptions): string[] {
     '--sysctl', 'net.ipv4.ip_unprivileged_port_start=1024',
     '--tmpfs', '/run:rw,nosuid,nodev,noexec,mode=0755,size=4m', // L1
     ...(port === null ? [] : ['--publish', `127.0.0.1:${port}:${port}`]),
+    ...(cdpPort === null ? [] : ['--publish', `127.0.0.1:${cdpPort}:${cdpPort}`]),
     '--env', `HOME=${home}`,
     '--env', 'CORNER_OFFICE_SANDBOX=1',
     ...(port === null ? [] : ['--env', `CORNER_OFFICE_CHANNEL_PORT=${port}`]),
+    ...(cdpPort === null ? [] : ['--env', `CORNER_OFFICE_CDP_PUBLISH_PORT=${cdpPort}`]),
     '--env', `CORNER_OFFICE_BASE_BRANCH=${base}`,
     ...mounts.flatMap(mountFlag),
     '--workdir', workTree,

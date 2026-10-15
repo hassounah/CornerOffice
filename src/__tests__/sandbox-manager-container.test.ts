@@ -12,7 +12,7 @@ import type {
   SandboxManagerWorktreeDeps,
 } from '../main/services/sandbox-manager'
 import { ensure, resolveBase, type WorktreeStatus } from '../main/services/sandbox-worktree'
-import { cardDir, worktreePath, containerName, LABEL, CREATE_TIMEOUT_MS, settingsOverlayPath, sandboxClaudeJsonPath, claudeShadowSource } from '../main/services/sandbox-spec'
+import { cardDir, worktreePath, containerName, LABEL, CREATE_TIMEOUT_MS, settingsOverlayPath, sandboxClaudeJsonPath, claudeShadowSource, pickChannelPort } from '../main/services/sandbox-spec'
 import { sandboxPaths } from '../main/services/sandbox-paths'
 import type { SandboxPaths } from '../main/services/sandbox-paths'
 import type { SandboxImageService, ImageState } from '../main/services/sandbox-image'
@@ -25,6 +25,12 @@ import { HANDLERS, getHandler } from '../main/agents/registry'
 import { FakeDockerRunner } from './helpers/fake-docker-runner'
 import { makeTmpDir, makeSimpleRepo, serviceEnvOverrides, initRepo, writeFile, commitAll } from './helpers/git-fixtures'
 import dockerVersionFixture from './fixtures/docker-version.json'
+
+// Passes through, but lets the #0038 port tests see which ports each pick was told to avoid.
+vi.mock('../main/services/sandbox-spec', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../main/services/sandbox-spec')>()
+  return { ...actual, pickChannelPort: vi.fn(actual.pickChannelPort) }
+})
 
 // ---------------------------------------------------------------------------
 // sandbox-manager-container.test.ts — step 3.5 (TRD 3.3 part, §3.5, §3.9.4,
@@ -65,14 +71,18 @@ function fakeImage(imageId: string = IMAGE_ID, state: ImageState['state'] = 'rea
 }
 
 /** Builds `docker inspect --format '{{json .}}'` output matching `DockerInspectSchema`. */
-function inspectJson(opts: { image?: string; specLabel?: string; mounts?: { source: string; target: string; readonly: boolean }[]; port?: number | null }): string {
-  const { image = IMAGE_ID, specLabel = 'x'.repeat(64), mounts = [], port = null } = opts
+function inspectJson(opts: { image?: string; specLabel?: string; mounts?: { source: string; target: string; readonly: boolean }[]; port?: number | null; ports?: number[] }): string {
+  const { image = IMAGE_ID, specLabel = 'x'.repeat(64), mounts = [], port = null, ports } = opts
   return JSON.stringify({
     State: { Status: 'exited', Running: false },
     Image: image,
     Config: { Labels: { [LABEL.spec]: specLabel } },
     Mounts: mounts.map((m) => ({ Source: m.source, Destination: m.target, RW: !m.readonly })),
-    HostConfig: { PortBindings: port === null ? null : { [`${port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(port) }] } },
+    HostConfig: {
+      PortBindings: ports
+        ? Object.fromEntries(ports.map((p) => [`${p}/tcp`, [{ HostIp: '127.0.0.1', HostPort: String(p) }]]))
+        : port === null ? null : { [`${port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(port) }] },
+    },
   })
 }
 
@@ -144,6 +154,7 @@ function setup(): Harness {
     const config: SandboxManagerConfigDeps = {
       getSandboxConfig: () => sandboxConfig,
       getWorkspaceDocsRootOverride: () => null,
+      setWorkspaceDevCdpPort: async () => {},
       setWorkspaceChannelPort: async (slug, port) => {
         sandboxConfig.workspaces[slug] = { channelPort: port, allowlist: sandboxConfig.workspaces[slug]?.allowlist ?? [] }
       },
@@ -878,6 +889,7 @@ describe('defensive fail-closed paths', () => {
     const config: SandboxManagerConfigDeps = {
       getSandboxConfig: () => h.sandboxConfig,
       getWorkspaceDocsRootOverride: () => h.repo, // docs_root === REPO -> structural hard failure
+      setWorkspaceDevCdpPort: async () => {},
       setWorkspaceChannelPort: async (slug, port) => {
         h.sandboxConfig.workspaces[slug] = { channelPort: port, allowlist: [] }
       },
@@ -1523,5 +1535,186 @@ describe('per-agent containers (D4)', () => {
 
     const removed = docker.calls.filter((c) => c.args[0] === 'rm').map((c) => c.args[c.args.length - 1])
     expect(removed).toEqual([CLAUDE_NAME, CODEX_NAME])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #0038 3a: devCdpPort (dev app access)
+// ---------------------------------------------------------------------------
+
+describe('devCdpPort', () => {
+  const absentDocker = (): FakeDockerRunner => {
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], { error: NOT_FOUND_ERROR })
+    return docker
+  }
+
+  async function ready(channelPort: number, devCdpPort: number | null): Promise<Harness> {
+    sandboxSettings.disabled = false
+    const h = setup()
+    h.sandboxConfig.workspaces.myslug = { channelPort, devCdpPort, allowlist: [] }
+    makeSimpleRepo(h.repo, 'main')
+    await prepareWorktree(h)
+    return h
+  }
+
+  it('create publishes the CDP port on 127.0.0.1 next to the channel port, and the spec hash differs from the no-CDP one', async () => {
+    const h = await ready(27500, 29000)
+    const docker = absentDocker()
+    const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+    expect(result.ok).toBe(true)
+    const create = docker.calls.find((c) => c.args[0] === 'create')!
+    expect(create.args).toContain('127.0.0.1:27500:27500')
+    expect(create.args).toContain('127.0.0.1:29000:29000')
+    expect(create.args).toContain('CORNER_OFFICE_CDP_PUBLISH_PORT=29000')
+    expect(create.args.filter((a) => /^127\.0\.0\.1:/.test(a))).toHaveLength(2)
+
+    const withCdp = await createAndCaptureSpecHash(h)
+    h.sandboxConfig.workspaces.myslug = { channelPort: 27500, devCdpPort: null, allowlist: [] }
+    expect(await createAndCaptureSpecHash(h)).not.toBe(withCdp)
+  })
+
+  it('a Codex container never publishes the CDP port, and its spec hash ignores it', async () => {
+    const original = HANDLERS.codex
+    HANDLERS.codex = {
+      ...original,
+      sandbox: { readiness: () => ({ ok: true }), prepare: () => ({ ok: true }), mounts: () => [], launch: () => ({ env: [], argv: ['codex'] }), cleanup: vi.fn() },
+    }
+    try {
+      await codexIgnoresCdp()
+    } finally {
+      HANDLERS.codex = original
+    }
+  })
+
+  async function codexIgnoresCdp(): Promise<void> {
+    const h = await ready(27500, 29000)
+    const docker = absentDocker()
+    await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug', 'codex')
+    const create = docker.calls.find((c) => c.args[0] === 'create')!
+    expect(create.args.join(' ')).not.toContain('29000')
+    const hashWith = create.args.find((a) => a.startsWith(`${LABEL.spec}=`))
+
+    h.sandboxConfig.workspaces.myslug = { channelPort: 27500, devCdpPort: null, allowlist: [] }
+    const docker2 = absentDocker()
+    await createSandboxManager(h.makeDeps({ docker: docker2 })).ensureContainer('myslug', 'codex')
+    expect(docker2.calls.find((c) => c.args[0] === 'create')!.args.find((a) => a.startsWith(`${LABEL.spec}=`))).toBe(hashWith)
+  }
+
+  it.each([
+    ['below the channel port', 21000, 27500],
+    ['above the channel port', 29000, 27500],
+  ])('turning dev access on (CDP %s) asks to recreate with reason port and devCdpChange enabled', async (_label, cdp, chan) => {
+    const h = await ready(chan, cdp)
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], { result: { stdout: inspectJson({ specLabel: 'stale', ports: [chan] }), stderr: '', exitCode: 0 } })
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.code === 'RECREATE_REQUIRED' && result.plan).toMatchObject({ reason: 'port', devCdpChange: 'enabled' })
+  })
+
+  it.each([21000, 29000])('turning dev access off (CDP %i bound) asks to recreate with reason port and devCdpChange disabled', async (cdp) => {
+    const h = await ready(27500, null)
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], { result: { stdout: inspectJson({ specLabel: 'stale', ports: [27500, cdp] }), stderr: '', exitCode: 0 } })
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+
+    expect(result.ok === false && result.code === 'RECREATE_REQUIRED' && result.plan).toMatchObject({ reason: 'port', devCdpChange: 'disabled' })
+  })
+
+  it('a changed CDP port is a port recreate (enabled), and a matching one with the same spec needs nothing', async () => {
+    const h = await ready(27500, 29000)
+    const hash = await createAndCaptureSpecHash(h)
+    const run = async (ports: number[], specLabel: string) => {
+      const docker = new FakeDockerRunner()
+      docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+      docker.script(['inspect'], { result: { stdout: inspectJson({ specLabel, ports }), stderr: '', exitCode: 0 } })
+      return createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+    }
+
+    expect((await run([27500, 29000], hash)).ok).toBe(true)
+    const moved = await run([27500, 22000], 'stale')
+    expect(moved.ok === false && moved.code === 'RECREATE_REQUIRED' && moved.plan).toMatchObject({ reason: 'port', devCdpChange: 'enabled' })
+  })
+
+  it('a plan without a CDP difference carries no devCdpChange', async () => {
+    const h = await ready(27500, null)
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], { result: { stdout: inspectJson({ specLabel: 'stale', ports: [27500] }), stderr: '', exitCode: 0 } })
+
+    const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+
+    expect(result.ok === false && result.code === 'RECREATE_REQUIRED' && result.plan.reason).toBe('mount-plan')
+    expect(result.ok === false && result.code === 'RECREATE_REQUIRED' && 'devCdpChange' in result.plan).toBe(false)
+  })
+
+  describe('setDevAccess and the port pickers', () => {
+    it('allocates a CDP port avoiding every channel and CDP port, persists it, and keeps an existing one', async () => {
+      const h = await ready(27500, null)
+      h.sandboxConfig.workspaces.other = { channelPort: 27501, devCdpPort: 27502, allowlist: [] }
+      const persisted: Array<[string, number | null]> = []
+      const deps = h.makeDeps()
+      deps.config.setWorkspaceDevCdpPort = async (slug, port) => {
+        persisted.push([slug, port])
+        h.sandboxConfig.workspaces[slug] = { ...h.sandboxConfig.workspaces[slug], devCdpPort: port }
+      }
+      const manager = createSandboxManager(deps)
+      vi.mocked(pickChannelPort).mockClear()
+
+      expect(await manager.setDevAccess('myslug', true)).toBe(true)
+
+      const taken = vi.mocked(pickChannelPort).mock.calls[0][0].taken
+      expect([...taken].sort()).toEqual([27500, 27501, 27502])
+      expect(persisted).toHaveLength(1)
+      const port = persisted[0][1]!
+      expect(taken).not.toContain(port)
+
+      expect(await manager.setDevAccess('myslug', true)).toBe(true)
+      expect(persisted).toHaveLength(1)
+      expect(await manager.setDevAccess('myslug', false)).toBe(true)
+      expect(persisted[1]).toEqual(['myslug', null])
+    })
+
+    it('the channel picker avoids every workspace CDP port, and a new-port rotation avoids all of them too', async () => {
+      const h = await ready(27500, 27510)
+      h.sandboxConfig.workspaces.other = { channelPort: 27501, devCdpPort: 27502, allowlist: [] }
+      const docker = new FakeDockerRunner()
+      docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+      docker.script(['inspect'], { result: { stdout: inspectJson({ specLabel: 'stale', ports: [27500, 27510] }), stderr: '', exitCode: 0 } })
+      const manager = createSandboxManager(h.makeDeps({ docker }))
+      vi.mocked(pickChannelPort).mockClear()
+
+      // The confirm hash is wrong on purpose: PLAN_CHANGED exposes the plan, then the real one is confirmed with a new port.
+      const first = await manager.recreate('myslug', true, '0'.repeat(64))
+      expect(first).toEqual({ ok: false, code: 'PLAN_CHANGED' })
+      const plan = (await manager.getStatus('myslug')).recreatePlans[0]
+      const second = await manager.recreate('myslug', true, plan.specHash)
+
+      expect(second.ok).toBe(true)
+      const takenByRotation = vi.mocked(pickChannelPort).mock.calls.at(-1)![0].taken
+      expect([...takenByRotation].sort()).toEqual([27501, 27502, 27510])
+    })
+  })
+
+  it('getStatus reports the port the claude container really publishes, and null when only the channel is bound', async () => {
+    const h = await ready(27500, 29000)
+    const statusWith = async (ports: number[]) => {
+      const docker = new FakeDockerRunner()
+      docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+      docker.script(['inspect'], { result: { stdout: inspectJson({ ports }), stderr: '', exitCode: 0 } })
+      const manager = createSandboxManager(h.makeDeps({ docker }))
+      await manager.getEnvironment({ refresh: true })
+      return manager.getStatus('myslug')
+    }
+
+    expect((await statusWith([27500, 29000])).publishedCdpPort).toBe(29000)
+    expect((await statusWith([27500])).publishedCdpPort).toBeNull()
   })
 })

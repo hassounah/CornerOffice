@@ -206,6 +206,25 @@ describe('config-backed manager deps', () => {
   })
 })
 
+describe('devCdpPort writes (#0038 3a)', () => {
+  const base = { toolchains: { node: true, go: false, buildBase: true }, globalAllowlist: ['x.dev'] }
+  it('a channel port write keeps devCdpPort, and a CDP write keeps the channel port and allowlist', async () => {
+    mockConfig.getSandboxConfig.mockReset().mockReturnValue({ ...base, workspaces: { a: { channelPort: 20001, devCdpPort: 29000, allowlist: ['keep.me'] } } })
+    mockConfig.loadConfig.mockReset().mockReturnValue({ workspaces: [] })
+    mockConfig.updateConfig.mockReset().mockResolvedValue({})
+
+    await createSandboxConfigDeps().setWorkspaceChannelPort('a', 20002)
+    expect(mockConfig.updateConfig).toHaveBeenLastCalledWith({
+      sandbox: { ...base, workspaces: { a: { channelPort: 20002, devCdpPort: 29000, allowlist: ['keep.me'] } } },
+    })
+
+    await createSandboxConfigDeps().setWorkspaceDevCdpPort('a', null)
+    expect(mockConfig.updateConfig).toHaveBeenLastCalledWith({
+      sandbox: { ...base, workspaces: { a: { channelPort: 20001, devCdpPort: null, allowlist: ['keep.me'] } } },
+    })
+  })
+})
+
 describe('updateSandboxConfig (BE-M5)', () => {
   const empty: SandboxConfig = { toolchains: { node: true, go: false, buildBase: true }, globalAllowlist: [], workspaces: {} }
   let stored: SandboxConfig

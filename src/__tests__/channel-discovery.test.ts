@@ -10,19 +10,14 @@ import { execFileSync } from 'child_process'
 // read), which is hard to fake convincingly through a hand-rolled FileHandle
 // mock. Real files on disk exercise that path exactly as production does —
 // same technique as sandbox-spec-mounts.test.ts / docker-runner.test.ts.
-// `os.homedir()` is the only thing mocked, so CHANNELS_DIR (computed once at
-// import time) and `resolveRealHome()` (used by addSandboxSource) both land
+// `os.homedir()` is the only thing mocked, so the channels dir (read lazily through
+// `claudeHome()`) and `resolveRealHome()` (used by addSandboxSource) both land
 // inside the same real temp tree.
 // ---------------------------------------------------------------------------
 
-// channel-discovery.ts computes CHANNELS_DIR from os.homedir() once, at
-// module-import time — before any of this file's own top-level statements
-// can run (all `import`s, including the service's, are hoisted above plain
-// statements). So the path itself has to be known synchronously inside
-// vi.hoisted(), using nothing but Node globals (no fs/os/path import is
-// available yet at that point). The directory is created for real in
-// beforeEach, by which point `fs` (never mocked in this file — see the file
-// comment above) is a normal import.
+// The home path must be known synchronously inside vi.hoisted() (the `os` mock factory
+// below needs it), using nothing but Node globals. The directory is created for real in
+// beforeEach, by which point `fs` (never mocked in this file) is a normal import.
 const TEST_HOME = vi.hoisted(
   () => `${process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP ?? '/tmp'}/co-channel-discovery-${process.pid}-${Date.now()}`,
 )
@@ -87,6 +82,7 @@ import { ChannelDiscoveryService } from '../main/services/channel-discovery'
 import type { ChannelSandboxResolver, IsAlive } from '../main/types/channels'
 import { sandboxPaths, resolveRealHome } from '../main/services/sandbox-paths'
 import { cardDir } from '../main/services/sandbox-spec'
+import { resetActiveProfileForTests, resolveProfile, setActiveProfile } from '../main/services/app-home'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -150,6 +146,7 @@ describe('ChannelDiscoveryService', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    resetActiveProfileForTests()
   })
 
   // -------------------------------------------------------------------------
@@ -161,6 +158,16 @@ describe('ChannelDiscoveryService', () => {
       const svc = new ChannelDiscoveryService(vi.fn())
       await svc.start()
       expect(fs.existsSync(CHANNELS_DIR)).toBe(true)
+    })
+
+    it('watches the sandbox-mode Claude home when a sandbox profile is active', async () => {
+      setActiveProfile(
+        resolveProfile({ CORNER_OFFICE_PROFILE: 'dev', CORNER_OFFICE_SANDBOX: '1' }, { isPackaged: false, realHome: TEST_HOME, appPath: '/app' }),
+      )
+      const svc = new ChannelDiscoveryService(vi.fn())
+      await svc.start()
+      expect(fs.existsSync(path.join(TEST_HOME, '.corner-office', 'profiles', 'dev', 'claude', 'channels'))).toBe(true)
+      expect(fs.existsSync(CHANNELS_DIR)).toBe(false)
     })
 
     it('starts a chokidar watcher on the channels dir', async () => {

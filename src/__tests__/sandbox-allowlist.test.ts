@@ -194,6 +194,10 @@ describe('effectiveAllowlist', () => {
     }
   })
 
+  it('includes the GitHub release-assets host so Electron binary downloads work', () => {
+    expect(effectiveAllowlist({}, 'my-ws')).toContain('release-assets.githubusercontent.com')
+  })
+
   it('includes the OAuth token host so in-container login refresh works', () => {
     expect(effectiveAllowlist({}, 'my-ws')).toContain('platform.claude.com')
   })

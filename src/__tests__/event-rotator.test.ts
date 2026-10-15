@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useProfile } from './helpers/profile'
 import { EventRotatorService } from '../main/services/event-rotator'
 
 vi.mock('fs')
@@ -23,6 +24,7 @@ describe('EventRotatorService', () => {
   let flushFn: ReturnType<typeof vi.fn<() => void>>
 
   beforeEach(() => {
+    useProfile('/home/test')
     vi.clearAllMocks()
     flushFn = vi.fn<() => void>()
     mockFs.existsSync = vi.fn().mockReturnValue(true)
@@ -44,6 +46,13 @@ describe('EventRotatorService', () => {
       const svc = new EventRotatorService(callbacks, flushFn)
       svc.runNow()
       expect(mockFs.readdirSync).not.toHaveBeenCalled()
+    })
+
+    it('scans the active profile events directory (#0038)', () => {
+      useProfile('/home/test', 'dev')
+      mockFs.existsSync = vi.fn().mockReturnValue(false)
+      new EventRotatorService(makeCallbacks(), flushFn).runNow()
+      expect(mockFs.existsSync).toHaveBeenCalledWith('/home/test/.corner-office/profiles/dev/events')
     })
 
     it('does not rotate files under 10MB', () => {

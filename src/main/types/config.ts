@@ -42,11 +42,12 @@ export interface RealmConfig {
 
 export interface SandboxWorkspaceConfig {
   channelPort: number | null;
+  devCdpPort?: number | null;                                     // #0038 3a: dev app access (CDP on 127.0.0.1), claude container only; null/absent = off
   allowlist: string[];
 }
 
 export interface SandboxConfig {
-  toolchains: { node: boolean; go: boolean; buildBase: boolean }; // defaults: all true
+  toolchains: { node: boolean; go: boolean; buildBase: boolean; electron?: boolean }; // defaults: node, go, buildBase true; electron false (#0038 D9)
   globalAllowlist: string[];                                      // user additions only
   workspaces: Record<string, SandboxWorkspaceConfig>;              // key: sandbox slug
   eventsSplitAt?: string | null;                                  // ISO time containers started writing events to their own root (D23); null/absent = not recorded yet

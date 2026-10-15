@@ -176,6 +176,17 @@ describe('computeBuildHash', () => {
     expect(h1).not.toBe(h2)
   })
 
+  it('electron off (false or absent) leaves the hash and the signature identical to today; on changes both (#0038 D9)', async () => {
+    const ctx = makeCtx()
+    const base = await computeBuildHash(ctx, IDENTITY, TOOLCHAINS)
+    expect(await computeBuildHash(ctx, IDENTITY, { ...TOOLCHAINS, electron: false })).toBe(base)
+    expect(await computeBuildHash(ctx, IDENTITY, { ...TOOLCHAINS, electron: true })).not.toBe(base)
+
+    const sig = await buildHashSignature(ctx, IDENTITY, TOOLCHAINS)
+    expect(await buildHashSignature(ctx, IDENTITY, { ...TOOLCHAINS, electron: false })).toBe(sig)
+    expect(await buildHashSignature(ctx, IDENTITY, { ...TOOLCHAINS, electron: true })).not.toBe(sig)
+  })
+
   it('covers the WITH_NODE=0/WITH_GO=0/WITH_BUILD=0 branches (all toolchains off)', async () => {
     const ctx = makeCtx()
     const allOff = await computeBuildHash(ctx, IDENTITY, { node: false, go: false, buildBase: false })

@@ -31,6 +31,7 @@ import { readFile as codeReadFile, listDir, openRegularFileSafe, classifyBuffer 
 import type { RepoService } from '../services/git-service'
 import type { CodeWatcher } from '../services/code-watcher'
 import type { SandboxPaths } from '../services/sandbox-paths'
+import { isNonDefaultProfile } from '../services/app-home'
 import type { AppState } from './handlers'
 import type {
   CodeStatusResponse,
@@ -201,6 +202,8 @@ export function buildCodeHandlers(appState: AppState, deps: BuildCodeHandlersDep
 
     [CODE_CHANNELS.WRITE_FILE]: wrapCodeHandler(
       async (input: CodeWriteFileInput): Promise<CodeWriteResponse> => {
+        // #0038 D6: the real app's sandbox worktrees live under the real sandboxes root, whatever the profile.
+        if (input.root === 'sandbox' && isNonDefaultProfile()) throw denied()
         const { root } = await resolveCodeRoot(input.workspaceSlug, input.root, appState, sandboxPaths)
         // M1: a sandbox tree is only writable from the host while no session can be writing to it.
         // Reads, diffs and Review stay live during a session (reviewing unattended work is the point).

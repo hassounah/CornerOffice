@@ -54,6 +54,7 @@ import type { PermMode } from '../agents/claude/handler'
 import { effectiveAllowlist } from './sandbox-allowlist'
 import { createSandboxNetwork } from './sandbox-network'
 import type { LiveUpdateStatus } from './sandbox-network'
+import { coHomeDisplay } from './app-home'
 import { readMemoryDocsRoot, readPipelineBranches } from './workspace-parser'
 import type { SandboxConfig } from '../types/config'
 import type {
@@ -96,7 +97,9 @@ import type {
  * default to `false`; set it back to `true` to ship a build with Sandbox
  * Sessions off. Unit tests flip it directly.
  */
-export const sandboxSettings = { disabled: false }
+export const sandboxSettings = { disabled: false, offInProfile: false }
+// `offInProfile` (#0038 D6): set by `index.ts` for a dev profile. Eligibility reports `sandbox-off-in-profile`, `getEnvironment`
+// answers without probing, so no `docker.run` ever happens and nothing is reconciled.
 
 // ── Dependencies ─────────────────────────────────────────────────────────
 
@@ -133,6 +136,8 @@ export interface SandboxManagerConfigDeps {
    *  serialized `updateSandboxConfig` mutator, setting
    *  `workspaces[slug].channelPort` on the current `SandboxConfig`. */
   setWorkspaceChannelPort: (slug: string, port: number) => Promise<void>
+  /** #0038 3a: persists (or, with `null`, clears) `workspaces[slug].devCdpPort` through the same serialized mutator. */
+  setWorkspaceDevCdpPort: (slug: string, port: number | null) => Promise<void>
 }
 
 export interface SandboxManagerWorkspaceFacts {
@@ -252,6 +257,11 @@ export interface SandboxManagerService extends SandboxSessionDelegate {
   isSessionRunning(slug: string): boolean
   /** Settings changed the effective allowlist of these workspaces: running `allowlist` sessions get a live firewall update (per-workspace 500 ms debounce, §3.8.3). */
   onSettingsChanged(affectedSlugs: readonly string[]): void
+  /**
+   * #0038 3a: turns dev app access on or off for `slug`. Turning it on allocates and persists a CDP port (never one a channel or another workspace's CDP port uses);
+   * turning it off clears it. The claude container only picks it up through a recreate (the spec hash changes). `false` when no free port was found.
+   */
+  setDevAccess(slug: string, enabled: boolean): Promise<boolean>
   getBlocked(slug: string): BlockedEntry[]
   /** `failed` means the last live update didn't apply and the previous rules are still active. */
   getLiveUpdateStatus(slug: string): LiveUpdateStatus | null
@@ -349,6 +359,9 @@ function mapDockerErrorToState(err: unknown): DockerState {
         return 'daemon-down'
       case 'no-permission':
         return 'no-permission'
+      case 'off-in-profile':
+        // Unreachable: a profile short-circuits before any probe (`sandboxSettings.offInProfile`). Never "not installed".
+        break
       case 'timeout':
       case 'failed':
         // Not a distinct DockerState (§3.9.1 has no "unknown failure" bucket)
@@ -687,7 +700,7 @@ function precreateMountTargets(paths: SandboxPaths, repo: string, wt: string, sl
   fs.mkdirSync(path.join(repo, '.git', 'hooks'), { recursive: true })
   fs.mkdirSync(path.join(repo, '.git', 'modules'), { recursive: true }) // M2: always
   fs.mkdirSync(path.join(paths.eventsRoot, slug), { recursive: true })
-  const events = ensurePrivateDir(sandboxEventsDir(paths, slug), `~/.corner-office/sandbox/${slug}/events`) // D23: the container's events mount source
+  const events = ensurePrivateDir(sandboxEventsDir(paths, slug), `${coHomeDisplay()}/sandbox/${slug}/events`) // D23: the container's events mount source
   if (!events.ok) return events
   // The agent's own sources and nested mount targets (for Claude: `~/.claude/channels`, the read-only config
   // sources, the settings copy and the first `claude.json` seed).
@@ -755,13 +768,29 @@ function configInvalid(agentId: AgentId, result: Extract<AgentConfigResult, { ok
   return { ok: false, code: 'AGENT_CONFIG_INVALID', detail: result.detail, agentId }
 }
 
-/** `docker inspect`'s `.HostConfig.PortBindings` keys look like `"20123/tcp"`. `null` when absent or unparseable. */
-function extractBoundPort(portBindings: Record<string, unknown> | null): number | null {
-  if (!portBindings) return null
-  const key = Object.keys(portBindings)[0]
-  if (!key) return null
-  const match = /^(\d+)\/tcp$/.exec(key)
-  return match ? Number(match[1]) : null
+/** `docker inspect`'s `.HostConfig.PortBindings` keys look like `"20123/tcp"`. Every parseable bound port, ascending; empty when absent. The claude container binds its channel port and, with dev app access, a second (CDP) one. */
+function boundPorts(portBindings: Record<string, unknown> | null): number[] {
+  if (!portBindings) return []
+  const ports: number[] = []
+  for (const key of Object.keys(portBindings)) {
+    const match = /^(\d+)\/tcp$/.exec(key)
+    if (match) ports.push(Number(match[1]))
+  }
+  return ports.sort((a, b) => a - b)
+}
+
+/**
+ * Which way the dev-app (CDP) publish differs between a container's bindings and what the spec now wants:
+ * `enabled` (a CDP binding is wanted and not there, or it moved), `disabled` (one is there and no longer wanted), else `null`.
+ * Claude container only; the channel port is the one binding the CDP check must not mistake for it.
+ */
+function devCdpChangeOf(bound: readonly number[], channelPort: number | null, cdpPort: number | null): 'enabled' | 'disabled' | null {
+  // When the channel port itself moved it is not in `bound`: one binding is then the old channel port, and only the count of the rest can be compared.
+  const channelBound = channelPort !== null && bound.includes(channelPort)
+  const published = channelBound ? bound.filter((p) => p !== channelPort) : bound.slice(1)
+  if (cdpPort === null) return published.length > 0 ? 'disabled' : null
+  if (published.length !== 1) return 'enabled'
+  return !channelBound || published[0] === cdpPort ? null : 'enabled'
 }
 
 /** `delete`'s full teardown — the sandbox is gone, nothing will bind-mount
@@ -1010,6 +1039,9 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
   }
 
   async function getEnvironment(opts: { refresh: boolean }): Promise<SandboxEnvironment> {
+    if (sandboxSettings.offInProfile) {
+      return { docker: 'not-installed', dockerVersion: null, image: { state: 'absent', builtAt: null, sizeBytes: null }, offInProfile: true }
+    }
     if (opts.refresh || !cachedDockerState) {
       // An explicit refresh ("Check again") must also re-read the agents' readiness, not the answer cached for the last 2 s.
       if (opts.refresh) statusEligibility.clear()
@@ -1025,6 +1057,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
   async function getEligibility(slug: string): Promise<EligibilityResult> {
     // 1. Kill switch — ahead of everything else (SEC-M1).
+    if (sandboxSettings.offInProfile) return { ok: false, reason: 'sandbox-off-in-profile' }
     if (sandboxSettings.disabled) return { ok: false, reason: 'sandbox-disabled' }
 
     // 2. Docker availability.
@@ -1139,14 +1172,36 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const existing = cfg.workspaces[slug]?.channelPort ?? null
     if (existing !== null) return { port: existing, wasNew: false }
 
-    const taken = Object.values(cfg.workspaces)
-      .map((w) => w.channelPort)
-      .filter((p): p is number => p !== null)
-    const picked = await pickChannelPort({ isFree: isPortFree, taken })
+    const picked = await pickChannelPort({ isFree: isPortFree, taken: takenPorts(cfg) })
     if (picked === null) return null
 
     await config.setWorkspaceChannelPort(slug, picked)
     return { port: picked, wasNew: true }
+  }
+
+  /** Every port some workspace uses, channel or dev-app: the channel and CDP pickers exclude each other. `exceptChannelOf` leaves that workspace's own channel port out (a new-port rotation). */
+  function takenPorts(cfg: SandboxConfig, exceptChannelOf?: string): number[] {
+    return Object.entries(cfg.workspaces).flatMap(([s, w]) => [s === exceptChannelOf ? null : w.channelPort, w.devCdpPort ?? null]).filter((p): p is number => p !== null)
+  }
+
+  /** The dev-app (CDP) port to publish, for the claude container only. */
+  const cdpPortFor = (slug: string, agentId: AgentId): number | null =>
+    agentId === LEGACY_AGENT_ID ? (config.getSandboxConfig().workspaces[slug]?.devCdpPort ?? null) : null
+
+  async function setDevAccess(slug: string, enabled: boolean): Promise<boolean> {
+    return runSerialized(slug, async () => {
+      const cfg = config.getSandboxConfig()
+      const existing = cfg.workspaces[slug]?.devCdpPort ?? null
+      if (!enabled) {
+        if (existing !== null) await config.setWorkspaceDevCdpPort(slug, null)
+        return true
+      }
+      if (existing !== null) return true
+      const picked = await pickChannelPort({ isFree: isPortFree, taken: takenPorts(cfg) })
+      if (picked === null) return false
+      await config.setWorkspaceDevCdpPort(slug, picked)
+      return true
+    })
   }
 
   // ── Container ensure (§3.5, §3.9.4, §14.5 #2/#3, SEC-H1, SEC-L9) ────────
@@ -1234,7 +1289,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     const imageState = await image.getImageState()
     const imageId = imageState.imageId ?? ''
     const { uid, gid } = identity()
-    const hash = specHash({ plan: mountResult.mounts, port, uid, gid, home: realHome, base, imageId })
+    const cdpPort = cdpPortFor(slug, agentId)
+    const hash = specHash({ plan: mountResult.mounts, port, uid, gid, home: realHome, base, imageId, cdpPort })
 
     const c = containerName(slug, agentId)
     const inspected = await inspectContainerTri(c)
@@ -1262,7 +1318,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
       if (!seeded.ok) return configInvalid(agentId, seeded)
 
       try {
-        await docker.run(createArgv({ c, slug, uid, gid, port, agentId, home: realHome, base, specHash: hash, mounts: mountResult.mounts, workTree: wt }), { timeoutMs: CREATE_TIMEOUT_MS })
+        await docker.run(createArgv({ c, slug, uid, gid, port, cdpPort, agentId, home: realHome, base, specHash: hash, mounts: mountResult.mounts, workTree: wt }), { timeoutMs: CREATE_TIMEOUT_MS })
       } catch (err) {
         if (err instanceof DockerError) {
           log.warn(`[sandbox-manager] docker create failed for ${slug}: ${describeDockerError(err)}`)
@@ -1287,13 +1343,15 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     if (imageChanged || specMismatch || pending) {
       const oldMounts: OldMount[] = parsed.Mounts.map((m) => ({ source: m.Source, target: m.Destination, readonly: !m.RW }))
       const diff = diffMountPlans(oldMounts, mountResult.mounts)
-      const oldPort = extractBoundPort(parsed.HostConfig.PortBindings)
-      const portChanged = oldPort !== null && port !== null && oldPort !== port
+      const bound = boundPorts(parsed.HostConfig.PortBindings)
+      const channelPortChanged = port !== null && bound.length > 0 && !bound.includes(port)
+      const devCdpChange = agentId === LEGACY_AGENT_ID ? devCdpChangeOf(bound, port, cdpPort) : null
+      const portChanged = channelPortChanged || devCdpChange !== null
       const reason: RecreatePlan['reason'] = imageChanged ? 'image' : portChanged ? 'port' : 'mount-plan'
       return {
         ok: false,
         code: 'RECREATE_REQUIRED',
-        plan: { reason, specHash: hash, newHostMounts: diff.newHostMounts, removedHostMounts: diff.removedHostMounts },
+        plan: { reason, specHash: hash, newHostMounts: diff.newHostMounts, removedHostMounts: diff.removedHostMounts, ...(devCdpChange ? { devCdpChange } : {}) },
       }
     }
 
@@ -1357,7 +1415,8 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     // hash the confirm dialog actually showed the user (`confirmedSpecHash`
     // ties the recreate to that exact plan, §3.13.2). `newPort` is applied
     // only after this comparison succeeds, below.
-    const hash = specHash({ plan: mountResult.mounts, port, uid, gid, home: realHome, base, imageId })
+    const cdpPort = cdpPortFor(slug, agentId)
+    const hash = specHash({ plan: mountResult.mounts, port, uid, gid, home: realHome, base, imageId, cdpPort })
     // ORDER MATTERS: this compare must stay BEFORE any mutating docker call (rm/create). SandboxActions
     // probes for the current plan by sending an all-zero hash it knows can never match, and relies on
     // getting PLAN_CHANGED (and the exposed plan) back with nothing having been touched.
@@ -1370,19 +1429,15 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
       const diff = diffMountPlans(oldMounts, mountResult.mounts)
       // A container that doesn't exist yet is still a create; otherwise keep the reason the user was already shown.
       const reason = current ? (recreatePlanFor(slug, agentId)?.reason ?? 'mount-plan') : 'new-container'
-      setRecreatePlan(slug, agentId, { reason, specHash: hash, newHostMounts: diff.newHostMounts, removedHostMounts: diff.removedHostMounts })
+      const devCdpChange = current && agentId === LEGACY_AGENT_ID ? devCdpChangeOf(boundPorts(current.HostConfig.PortBindings), port, cdpPort) : null
+      setRecreatePlan(slug, agentId, { reason, specHash: hash, newHostMounts: diff.newHostMounts, removedHostMounts: diff.removedHostMounts, ...(devCdpChange ? { devCdpChange } : {}) })
       return { ok: false, code: 'PLAN_CHANGED' }
     }
 
     // `newPort` means nothing to an agent without channels: it has no port to change.
     let finalPort = port
     if (newPort && channels) {
-      const cfg = config.getSandboxConfig()
-      const taken = Object.entries(cfg.workspaces)
-        .filter(([s]) => s !== slug)
-        .map(([, w]) => w.channelPort)
-        .filter((p): p is number => p !== null)
-      const picked = await pickChannelPort({ isFree: isPortFree, taken })
+      const picked = await pickChannelPort({ isFree: isPortFree, taken: takenPorts(config.getSandboxConfig(), slug) })
       if (picked === null) return { ok: false, code: 'FAILED' }
       finalPort = picked
     }
@@ -1392,7 +1447,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     if (existence.state === 'unavailable') return { ok: false, code: 'DOCKER_UNAVAILABLE' }
     const containerExists = existence.state === 'present'
 
-    const finalHash = finalPort === port ? hash : specHash({ plan: mountResult.mounts, port: finalPort, uid, gid, home: realHome, base, imageId })
+    const finalHash = finalPort === port ? hash : specHash({ plan: mountResult.mounts, port: finalPort, uid, gid, home: realHome, base, imageId, cdpPort })
 
     // #0030 D6: after the hash check (it can't cause PLAN_CHANGED) and before any rm/create.
     const seeded = sandboxHandler(agentId).prepare({ paths, slug, workTree: wt }, 'create')
@@ -1400,7 +1455,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
     try {
       if (containerExists) await docker.run(rmArgv(c))
-      await docker.run(createArgv({ c, slug, uid, gid, port: finalPort, agentId, home: realHome, base, specHash: finalHash, mounts: mountResult.mounts, workTree: wt }), { timeoutMs: CREATE_TIMEOUT_MS })
+      await docker.run(createArgv({ c, slug, uid, gid, port: finalPort, cdpPort, agentId, home: realHome, base, specHash: finalHash, mounts: mountResult.mounts, workTree: wt }), { timeoutMs: CREATE_TIMEOUT_MS })
     } catch (err) {
       if (err instanceof DockerError) {
         log.warn(`[sandbox-manager] recreate (rm/create) failed for ${slug}: ${describeDockerError(err)}`)
@@ -2188,7 +2243,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
   /** Eligibility and per-agent readiness, cached together for the status TTL: one lstat pass per window, one answer for the chooser. */
   function getStatusEligibility(slug: string): Promise<StatusEligibility> {
-    if (sandboxSettings.disabled) return getEligibility(slug).then((eligibility) => ({ eligibility, agentReadiness: computeAgentReadiness() })) // the kill switch is never served from a cache
+    if (sandboxSettings.disabled || sandboxSettings.offInProfile) return getEligibility(slug).then((eligibility) => ({ eligibility, agentReadiness: computeAgentReadiness() })) // the kill switch is never served from a cache
     const cached = statusEligibility.get(slug)
     if (cached && cached.generation === summariesGeneration && deps.now() - cached.at < STATUS_ELIGIBILITY_TTL_MS) return cached.result
     const result = getEligibility(slug).then((eligibility) => ({ eligibility, agentReadiness: computeAgentReadiness() }))
@@ -2229,6 +2284,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
     const containers = await observeAgentContainers(slug)
     const container = aggregateContainer(containers)
+    const publishedCdpPort = containers[LEGACY_AGENT_ID] === 'absent' || containers[LEGACY_AGENT_ID] === 'unknown' ? null : await observePublishedCdpPort(slug)
 
     let worktreeState: SandboxStatus['worktree'] = 'absent'
     let gitState: SandboxStatus['git'] = null
@@ -2265,7 +2321,17 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
       recreatePlans: allRecreatePlans(slug),
       channel: channelStatus(slug),
       liveUpdate: network.getLiveUpdateStatus(slug),
+      publishedCdpPort,
     }
+  }
+
+  /** The dev-app port the claude container really publishes (its bindings other than the channel port), or null. */
+  async function observePublishedCdpPort(slug: string): Promise<number | null> {
+    const inspected = await inspectContainerTri(containerName(slug, LEGACY_AGENT_ID))
+    if (inspected.state !== 'present') return null
+    const channelPort = config.getSandboxConfig().workspaces[slug]?.channelPort ?? null
+    const published = boundPorts(inspected.parsed.HostConfig.PortBindings).filter((p) => p !== channelPort)
+    return published.length === 1 && channelPort !== null ? published[0] : null
   }
 
   async function summarize(slug: string, containers: Map<string, { running: boolean }>): Promise<SandboxSummary> {
@@ -2373,6 +2439,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     getSandboxSessionIds: () => sandboxSessionIds,
     isSessionRunning,
     onSettingsChanged: network.onSettingsChanged,
+    setDevAccess,
     getBlocked: network.getBlocked,
     getLiveUpdateStatus: network.getLiveUpdateStatus,
   }

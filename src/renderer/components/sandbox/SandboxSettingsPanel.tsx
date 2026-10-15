@@ -7,7 +7,25 @@ import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { AllowlistEditor } from './AllowlistEditor'
 import { SandboxActions } from './SandboxActions'
 import { isDomainAllowed } from '../../utils/allowlist-validate'
-import { LIVE_UPDATE_FAILURE_COPY, STOP_UNCONFIRMED_CHIP, dockerStateCopy, isSessionStopping } from '../../utils/sandbox-copy'
+import {
+  DEV_ACCESS_NEXT_START,
+  DEV_ACCESS_HELP,
+  DEV_ACCESS_ROUTINE_USE,
+  DEV_ACCESS_SAVE_FAILED,
+  DEV_ACCESS_STILL_PUBLISHED,
+  DEV_ACCESS_TITLE,
+  DEV_ACCESS_TOGGLE,
+  ELECTRON_TOOLCHAIN_COPY,
+  ELIGIBILITY_COPY,
+  LIVE_UPDATE_FAILURE_COPY,
+  STOP_UNCONFIRMED_CHIP,
+  devAccessInspectCopy,
+  devAccessRouteCopy,
+  devAccessStillOpenCopy,
+  dockerStateCopy,
+  isSessionStopping,
+} from '../../utils/sandbox-copy'
+import { CopyCommand } from './CopyCommand'
 import type { SandboxSettingsView } from '@main/types/sandbox'
 import { AGENT_DESCRIPTORS } from '@main/agents/descriptors'
 
@@ -129,6 +147,15 @@ function Button({ skin, onClick, children, ...rest }: SectionProps & React.Butto
 function DockerSection({ skin }: SectionProps): React.ReactElement {
   const environment = useSandboxStore((s) => s.environment)
   const fetchEnvironment = useSandboxStore((s) => s.fetchEnvironment)
+
+  // #0038 D6: Docker is never probed in a profile, so there is nothing to check again.
+  if (environment?.offInProfile) {
+    return (
+      <Section skin={skin} title="Docker">
+        <p>{ELIGIBILITY_COPY['sandbox-off-in-profile']}</p>
+      </Section>
+    )
+  }
 
   return (
     <Section skin={skin} title="Docker">
@@ -274,10 +301,11 @@ function ImageSection({ skin, onRecreateNow }: SectionProps & { onRecreateNow?: 
 
 // ── Toolchains ──────────────────────────────────────────────────────────────
 
-const TOGGLEABLE: readonly { key: 'node' | 'go' | 'buildBase'; label: string }[] = [
+const TOGGLEABLE: readonly { key: 'node' | 'go' | 'buildBase' | 'electron'; label: string }[] = [
   { key: 'node', label: 'Node 22 + pnpm' },
   { key: 'go', label: 'Go' },
   { key: 'buildBase', label: 'build-base (C toolchain)' },
+  { key: 'electron', label: ELECTRON_TOOLCHAIN_COPY },
 ]
 
 function ToolchainsSection({ skin }: SectionProps): React.ReactElement {
@@ -285,7 +313,7 @@ function ToolchainsSection({ skin }: SectionProps): React.ReactElement {
   const updateSettings = useSandboxStore((s) => s.updateSettings)
   const [error, setError] = useState(false)
 
-  function toggle(key: 'node' | 'go' | 'buildBase', checked: boolean): void {
+  function toggle(key: 'node' | 'go' | 'buildBase' | 'electron', checked: boolean): void {
     if (!settings) return
     setError(false)
     updateSettings({ toolchains: { ...settings.toolchains, [key]: checked } }).catch(() => setError(true))
@@ -298,7 +326,7 @@ function ToolchainsSection({ skin }: SectionProps): React.ReactElement {
           <li key={key}>
             {settings ? (
               <label className="inline-flex items-center gap-2">
-                <input type="checkbox" checked={settings.toolchains[key]} onChange={(e) => toggle(key, e.target.checked)} />
+                <input type="checkbox" checked={settings.toolchains[key] ?? false} onChange={(e) => toggle(key, e.target.checked)} />
                 {label}
               </label>
             ) : (
@@ -348,6 +376,7 @@ function ToolchainsSection({ skin }: SectionProps): React.ReactElement {
 // ── Network ─────────────────────────────────────────────────────────────────
 
 const L6_NOTE = 'Removing a site stops new connections to it right away. Connections that are already open stay open until the session ends.'
+const L5_NOTE = 'Never run make dev or pnpm on your computer inside a sandbox worktree (~/.corner-office/sandboxes/...). That runs code written by the agent outside the sandbox.'
 
 interface BlockedAllow {
   domain: string
@@ -523,6 +552,7 @@ function NetworkSection({ skin, initialWorkspace }: SectionProps & { initialWork
           )}
 
           <p className={MUTED}>{L6_NOTE}</p>
+          <p className={MUTED}>{L5_NOTE}</p>
         </>
       )}
 
@@ -550,12 +580,121 @@ function NetworkSection({ skin, initialWorkspace }: SectionProps & { initialWork
   )
 }
 
+// ── Dev app access (#0038 3a) ───────────────────────────────────────────────
+
+function DevAppAccessSection({ skin, initialWorkspace }: SectionProps & { initialWorkspace?: string }): React.ReactElement {
+  const settings = useSandboxStore((s) => s.settings)
+  const updateSettings = useSandboxStore((s) => s.updateSettings)
+  const fetchStatus = useSandboxStore((s) => s.fetchStatus)
+  const workspaces = useWorkspaceStore((s) => s.workspaces)
+  const [picked, setPicked] = useState<string | null>(initialWorkspace ?? null)
+  const [failed, setFailed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const pickerId = useId()
+  const helpId = useId()
+
+  const slug = picked !== null && workspaces.some((w) => w.slug === picked) ? picked : (workspaces[0]?.slug ?? null)
+  const workspaceName = workspaces.find((w) => w.slug === slug)?.displayName ?? slug ?? ''
+  const port = (slug ? settings?.workspaceDevAccess[slug] : null) ?? null
+  const status = useSandboxStore((s) => (slug ? s.status[slug] : undefined))
+  const published = status?.publishedCdpPort ?? null
+
+  useEffect(() => {
+    if (slug) void fetchStatus(slug)
+  }, [slug, fetchStatus])
+
+  async function toggle(enabled: boolean): Promise<void> {
+    if (!slug || busy) return
+    setFailed(false)
+    setBusy(true)
+    try {
+      await updateSettings({ workspaceDevAccess: { workspaceSlug: slug, enabled } })
+      await fetchStatus(slug)
+    } catch {
+      setFailed(true)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // What the container publishes today can lag behind the setting until the Claude session next starts.
+  const pending = port !== null ? published !== port : published !== null
+  const buttonClass = skin === 'realm' ? BUTTON_CLASS : OFFICE_BUTTON
+  const buttonStyle = skin === 'realm' ? REALM_BUTTON_STYLE : undefined
+
+  return (
+    <Section skin={skin} title={DEV_ACCESS_TITLE}>
+      {!settings ? (
+        <p>Loading settings…</p>
+      ) : workspaces.length === 0 ? (
+        <p className={MUTED}>No workspaces yet.</p>
+      ) : (
+        <>
+          <div className="space-y-2">
+            <label htmlFor={pickerId} className="block text-sm font-medium">
+              Workspace for dev app access
+            </label>
+            <select
+              id={pickerId}
+              value={slug ?? ''}
+              onChange={(e) => setPicked(e.target.value)}
+              className={`rounded px-2 py-1 text-sm ${skin === 'realm' ? '' : 'border border-co-border bg-co-bg-tertiary text-co-text-primary'}`}
+              style={skin === 'realm' ? REALM_BUTTON_STYLE : undefined}
+            >
+              {workspaces.map((w) => (
+                <option key={w.slug} value={w.slug}>
+                  {w.displayName}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <label className="inline-flex items-center gap-2">
+            {/* aria-disabled, not disabled: a disabled control drops keyboard focus. */}
+            <input type="checkbox" checked={port !== null} aria-disabled={busy} aria-describedby={helpId} onChange={(e) => void toggle(e.target.checked)} />
+            {DEV_ACCESS_TOGGLE}
+          </label>
+          <p id={helpId} className="text-sm">
+            {DEV_ACCESS_HELP}
+          </p>
+
+          {/* Always mounted, so a screen reader announces the text when it changes. First, so nobody follows the steps below against a closed port. */}
+          <p role="status" className="text-sm">
+            {pending ? (port !== null ? DEV_ACCESS_NEXT_START : DEV_ACCESS_STILL_PUBLISHED) : ''}
+          </p>
+          {port === null && published !== null && <p className="text-sm">{devAccessStillOpenCopy(published)}</p>}
+
+          {port !== null && (
+            <div className="space-y-1 text-sm">
+              <p>{devAccessRouteCopy(port)}</p>
+              <p className="flex flex-wrap items-center gap-2">
+                <CopyCommand command={`127.0.0.1:${port}`} buttonClass={buttonClass} buttonStyle={buttonStyle} />
+              </p>
+              <p className={MUTED}>{devAccessInspectCopy(port)}</p>
+              <p className={MUTED}>{DEV_ACCESS_ROUTINE_USE}</p>
+            </div>
+          )}
+
+          {pending && slug && status?.exists && <SandboxActions slug={slug} skin={skin} recreateOnly forceRecreate recreateLabel="Recreate now" label={workspaceName} />}
+
+          {failed && (
+            <p role="alert" className="text-sm">
+              {DEV_ACCESS_SAVE_FAILED}
+            </p>
+          )}
+        </>
+      )}
+    </Section>
+  )
+}
+
 // ── Sandboxes ───────────────────────────────────────────────────────────────
 
 function SandboxesSection({ skin }: SectionProps): React.ReactElement {
   const summaries = useSandboxStore((s) => s.summaries)
   const status = useSandboxStore((s) => s.status)
   const workspaces = useWorkspaceStore((s) => s.workspaces)
+  const offInProfile = useSandboxStore((s) => s.environment?.offInProfile === true)
   const slugs = Object.keys(summaries).filter((slug) => summaries[slug]?.exists)
 
   function stateCopy(slug: string): string {
@@ -568,7 +707,9 @@ function SandboxesSection({ skin }: SectionProps): React.ReactElement {
 
   return (
     <Section skin={skin} title="Sandboxes">
-      {slugs.length === 0 ? (
+      {offInProfile ? (
+        <p className={MUTED}>{ELIGIBILITY_COPY['sandbox-off-in-profile']}</p>
+      ) : slugs.length === 0 ? (
         <p className={MUTED}>No sandboxes yet. Start a sandbox session from a workspace to create one.</p>
       ) : (
         <ul className="space-y-2">
@@ -600,6 +741,7 @@ export function SandboxSettingsPanel({ skin = 'office', onRecreateNow, initialWo
   const fetchSummaries = useSandboxStore((s) => s.fetchSummaries)
   const fetchStatus = useSandboxStore((s) => s.fetchStatus)
   const sandboxSlugs = useSandboxStore((s) => Object.keys(s.summaries).join('\u0000'))
+  const offInProfile = useSandboxStore((s) => s.environment?.offInProfile === true)
 
   useEffect(() => {
     void fetchEnvironment(true)
@@ -612,12 +754,23 @@ export function SandboxSettingsPanel({ skin = 'office', onRecreateNow, initialWo
     for (const slug of sandboxSlugs.split('\u0000').filter(Boolean)) void fetchStatus(slug)
   }, [sandboxSlugs, fetchStatus])
 
+  // A profile has no image, toolchains or network to configure: only the Docker line and the empty Sandboxes list.
+  if (offInProfile) {
+    return (
+      <div className="space-y-4">
+        <DockerSection skin={skin} />
+        <SandboxesSection skin={skin} />
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-4">
       <DockerSection skin={skin} />
       <ImageSection skin={skin} onRecreateNow={onRecreateNow} />
       <ToolchainsSection skin={skin} />
       <NetworkSection skin={skin} initialWorkspace={initialWorkspace} />
+      <DevAppAccessSection skin={skin} initialWorkspace={initialWorkspace} />
       <SandboxesSection skin={skin} />
     </div>
   )

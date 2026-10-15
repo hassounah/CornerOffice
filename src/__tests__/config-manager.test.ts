@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { useProfile } from './helpers/profile'
 import { ConfigManager } from '../main/services/config-manager'
 import type { AppConfig } from '../main/types/config'
 import { ConfigUpdateSchema } from '../main/ipc/schemas'
@@ -22,6 +23,7 @@ describe('ConfigManager', () => {
   let manager: ConfigManager
 
   beforeEach(() => {
+    useProfile('/home/test')
     vi.clearAllMocks()
     manager = new ConfigManager()
     mockFs.existsSync = vi.fn().mockReturnValue(false)
@@ -67,6 +69,13 @@ describe('ConfigManager', () => {
     it('returns null when config.json does not exist (first launch)', () => {
       mockFs.existsSync = vi.fn().mockReturnValue(false)
       expect(manager.loadConfig()).toBeNull()
+    })
+
+    it('reads config.json from the active profile home (#0038)', () => {
+      useProfile('/home/test', 'dev')
+      mockFs.existsSync = vi.fn().mockReturnValue(false)
+      manager.loadConfig()
+      expect(mockFs.existsSync).toHaveBeenCalledWith('/home/test/.corner-office/profiles/dev/config.json')
     })
 
     it('returns default config and warns on parse error', () => {
@@ -308,7 +317,7 @@ describe('ConfigManager', () => {
   // ---------------------------------------------------------------------------
 
   const DEFAULT_SANDBOX = {
-    toolchains: { node: true, go: true, buildBase: true },
+    toolchains: { node: true, go: true, buildBase: true, electron: false },
     globalAllowlist: [],
     workspaces: {},
     eventsSplitAt: null,
@@ -319,6 +328,15 @@ describe('ConfigManager', () => {
       const cfg = manager.getDefaultConfig()
       expect(cfg.sandbox).toBeUndefined()
       expect(manager.getSandboxConfig(cfg)).toEqual(DEFAULT_SANDBOX)
+    })
+
+    it('parses an old config without toolchains.electron as electron:false (#0038 D9)', () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      mockFs.readFileSync = vi.fn().mockReturnValue(
+        JSON.stringify({ ...manager.getDefaultConfig(), sandbox: { toolchains: { node: true, go: true, buildBase: false }, globalAllowlist: [], workspaces: {} } }),
+      )
+      const cfg = manager.loadConfig()
+      expect(cfg?.sandbox?.toolchains).toEqual({ node: true, go: true, buildBase: false, electron: false })
     })
 
     it('returns the stored section when present', () => {
@@ -410,7 +428,12 @@ describe('ConfigManager', () => {
       mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
       const result = manager.loadConfig()
       expect(result).not.toBeNull()
-      expect(result!.sandbox).toEqual({ ...stored, eventsSplitAt: null }) // the schema default fills the D23 split
+      expect(result!.sandbox).toEqual({
+        ...stored,
+        toolchains: { ...stored.toolchains, electron: false },
+        workspaces: { 'my-ws': { ...stored.workspaces['my-ws'], devCdpPort: null } },
+        eventsSplitAt: null,
+      }) // the schema defaults fill the D23 split, electron and the dev CDP port
     })
 
     it('rejects a workspace key that fails SANDBOX_SLUG_RE, falling back to defaults', () => {
@@ -443,6 +466,34 @@ describe('ConfigManager', () => {
       const result = manager.loadConfig()
       expect(result).not.toBeNull()
       expect(result!.sandbox).toEqual(DEFAULT_SANDBOX)
+    })
+
+    it.each([22, 65000, 1.5])('rejects devCdpPort %s on load, falling back to defaults (#0038 3a)', (devCdpPort) => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      const cfg = {
+        ...manager.getDefaultConfig(),
+        sandbox: {
+          toolchains: { node: true, go: true, buildBase: true },
+          globalAllowlist: [],
+          workspaces: { 'my-ws': { channelPort: 20001, devCdpPort, allowlist: [] } },
+        },
+      }
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
+      expect(manager.loadConfig()!.sandbox).toEqual(DEFAULT_SANDBOX)
+    })
+
+    it('keeps a valid devCdpPort on load (#0038 3a)', () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      const cfg = {
+        ...manager.getDefaultConfig(),
+        sandbox: {
+          toolchains: { node: true, go: true, buildBase: true },
+          globalAllowlist: [],
+          workspaces: { 'my-ws': { channelPort: 20001, devCdpPort: 29000, allowlist: [] } },
+        },
+      }
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
+      expect(manager.loadConfig()!.sandbox?.workspaces['my-ws']).toEqual({ channelPort: 20001, devCdpPort: 29000, allowlist: [] })
     })
 
     it('rejects a channelPort outside CHANNEL_PORT_RANGE, falling back to defaults', () => {
@@ -506,7 +557,7 @@ describe('ConfigManager', () => {
 
       const result = await manager.updateConfig(partial)
       expect(result.companyName).toBe('New Name')
-      expect(result.sandbox).toEqual({ ...storedSandbox, eventsSplitAt: null })
+      expect(result.sandbox).toEqual({ ...storedSandbox, toolchains: { ...storedSandbox.toolchains, electron: false }, eventsSplitAt: null })
     })
   })
 

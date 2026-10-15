@@ -3,6 +3,7 @@ import os from 'os'
 import path from 'path'
 import type { AppState } from '../ipc/handlers'
 import { denied, notFound } from './safe-fs'
+import { isNonDefaultProfile } from './app-home'
 import { SANDBOX_SLUG_RE, worktreePin } from './sandbox-spec'
 import { resolveRealHome, sandboxPaths } from './sandbox-paths'
 import type { SandboxPaths } from './sandbox-paths'
@@ -107,6 +108,9 @@ export async function resolveCodeRoot(
   paths: SandboxPaths = sandboxPaths(resolveRealHome()),
 ): Promise<RepoTarget> {
   if (root === 'workspace') return { root: await resolveRepoRoot(slug, appState) }
+
+  // #0038 D6: the sandboxes root is the real app's, whatever the profile; a profile never reads or watches it.
+  if (isNonDefaultProfile()) throw denied()
 
   const ws = appState.workspaces.get(slug)
   if (!ws || !SANDBOX_SLUG_RE.test(slug)) throw denied()

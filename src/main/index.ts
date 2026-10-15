@@ -33,7 +33,7 @@ import type { RepoService } from './services/git-service'
 import { createCodeWatcher } from './services/code-watcher'
 import type { CodeWatcher, CodeWatcherGitSnapshot } from './services/code-watcher'
 import { buildCodeHandlers } from './ipc/code-handlers'
-import { buildSandboxHandlers, createSandboxPushSenders } from './ipc/sandbox-handlers'
+import { buildOffSandboxHandlers, buildSandboxHandlers, createSandboxPushSenders } from './ipc/sandbox-handlers'
 import { makeIsAppOrigin, installNavigationLockdown, onCrossDocumentMainFrameNavigation } from './ipc/app-origin'
 import { createQuitGuard } from './services/quit-guard'
 import { runQuitSequence } from './services/quit-sequence'
@@ -47,11 +47,13 @@ import {
   sourceByLocation,
 } from './services/event-attribution'
 import type { EventSource } from './services/event-attribution'
-import { createDockerRunner } from './services/docker-runner'
+import { createDockerRunner, createRefusingDockerRunner } from './services/docker-runner'
 import { createSandboxImageService, resolveBuildContext } from './services/sandbox-image'
-import { createSandboxManager } from './services/sandbox-manager'
+import { createSandboxManager, sandboxSettings } from './services/sandbox-manager'
 import type { SandboxManagerService } from './services/sandbox-manager'
 import { resolveRealHome, sandboxPaths } from './services/sandbox-paths'
+import { resolveProfile, ensureProfileHome, setActiveProfile, fatalProfileError, coHome, claudeHome } from './services/app-home'
+import type { Profile } from './services/app-home'
 import { ensure, resolveBase, status, unmerged, remove, identity, verify, autoDetach, handOff } from './services/sandbox-worktree'
 import {
   dockerRefusalRoots,
@@ -74,11 +76,36 @@ import type {
 } from './types'
 import type { AppNotification } from './services/notification-service'
 
-// Single-instance enforcement — must happen before any initialization
+// ---------------------------------------------------------------------------
+// Profile, userData and single-instance lock (#0038, TRD §3.3) — must happen
+// before any initialization. Errors go to stderr only: logging is not set up yet.
+// ---------------------------------------------------------------------------
+
+let profile: Profile
+try {
+  profile = resolveProfile(process.env, { isPackaged: app.isPackaged, realHome: resolveRealHome(), appPath: app.getAppPath() })
+} catch (err) {
+  profile = fatalProfileError(err instanceof Error ? err.message : String(err))
+}
+if (profile.warning) fs.writeSync(2, `${profile.warning}\n`)
+const profileFile = profile.logFile
+if (profileFile) log.transports.file.resolvePathFn = () => profileFile
+log.info(`Profile ${profile.name ?? 'default'}: home ${profile.home}`)
+ensureProfileHome(profile)
+setActiveProfile(profile)
+if (profile.userDataDir) app.setPath('userData', profile.userDataDir) // before the lock: the lock lives in userData
+if (profile.debugPort) {
+  app.commandLine.appendSwitch('remote-debugging-port', String(profile.debugPort))
+  log.info(`CDP on 127.0.0.1:${profile.debugPort}`)
+}
+
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 
 if (!gotSingleInstanceLock) {
-  app.quit()
+  const label = profile.name === null ? 'default profile' : `profile "${profile.name}"`
+  fs.writeSync(2, `Corner Office (${label}) is already running (userData: ${app.getPath('userData')}); focused the existing window.\n`)
+  // Synchronous: app.exit() does not return control to whenReady/initialize.
+  app.exit(0)
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -291,6 +318,7 @@ function setupCSP(): void {
 }
 
 async function createWindow(): Promise<void> {
+  const windowTitle = profile.name === null ? 'Corner Office' : `Corner Office (${profile.name})`
   windowStateService = new WindowStateService(screen as ScreenLike)
   const savedState = windowStateService.load()
 
@@ -304,7 +332,7 @@ async function createWindow(): Promise<void> {
     height: savedState.height,
     minWidth: 960,
     minHeight: 600,
-    title: 'Corner Office',
+    title: windowTitle,
     show: false,
     frame: false,
     icon: app.isPackaged
@@ -318,8 +346,16 @@ async function createWindow(): Promise<void> {
       allowRunningInsecureContent: false,
       webSecurity: true,
       preload: path.join(__dirname, '../preload/index.js'),
+      ...(profile.name !== null
+        ? { additionalArguments: [`--co-profile=${profile.name}`, `--co-profile-home=${profile.home}`] }
+        : {}),
     },
   })
+
+  // The renderer's <title> overrides BrowserWindow.title on load; keep the profile name visible.
+  if (profile.name !== null) {
+    mainWindow.on('page-title-updated', (event) => event.preventDefault())
+  }
 
   if (savedState.maximized) mainWindow.maximize()
 
@@ -381,6 +417,9 @@ async function createWindow(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function initialize(): Promise<void> {
+  // The lock was refused: app.exit() is mocked in unit tests, so code after it can still run.
+  if (!gotSingleInstanceLock) return
+
   // Initialize file logging — writes to ~/.config/corner-office/logs/main.log
   log.initialize()
   log.info('Corner Office starting')
@@ -502,7 +541,7 @@ async function initialize(): Promise<void> {
   )
 
   // ── Phase 7: Parse homunculus ─────────────────────────────────────────────
-  const homunculusDir = path.join(os.homedir(), '.claude', 'homunculus')
+  const homunculusDir = path.join(claudeHome(), 'homunculus')
   appState.homunculusState = homunculusParserService.parseAll(homunculusDir)
 
   // ── Phase 8: Recompute gamification from live filesystem data ─────────────
@@ -717,7 +756,7 @@ async function initialize(): Promise<void> {
     .map((ws) => ws.slug)
   notificationService.startIdleCheck(activePipelineSlugs)
 
-  const eventsDir = path.join(os.homedir(), '.corner-office', 'events')
+  const eventsDir = path.join(coHome(), 'events')
   const sandboxesRoot = sandboxPaths(resolveRealHome()).sandboxesRoot
   const inSandboxRoot = (filePath: string): boolean => sandboxEventSlug(sandboxStateRoot, filePath) !== null
 
@@ -1009,9 +1048,15 @@ async function initialize(): Promise<void> {
   // first docker call happens on the background refresh after READY.
   const realHome = resolveRealHome()
   const sandboxDirs = sandboxPaths(realHome)
-  const dockerRunner = createDockerRunner({
-    refusalRoots: () => dockerRefusalRoots(appState.workspaces.values(), sandboxDirs),
-  })
+  // #0038 D6: a named profile never talks to Docker. The refusing runner is the backstop under the off
+  // IPC handlers below; it is shared by the image service and the manager.
+  const sandboxOffInProfile = profile.name !== null
+  sandboxSettings.offInProfile = sandboxOffInProfile
+  const dockerRunner = sandboxOffInProfile
+    ? createRefusingDockerRunner()
+    : createDockerRunner({
+        refusalRoots: () => dockerRefusalRoots(appState.workspaces.values(), sandboxDirs),
+      })
   const sandboxPush = createSandboxPushSenders(() => mainWindow)
   const buildRequester = createBuildRequesterTracker()
   const sandboxImage = createSandboxImageService(
@@ -1080,27 +1125,32 @@ async function initialize(): Promise<void> {
   })
   swapHandlers(codeHandlers)
 
-  const sandboxHandlers = buildSandboxHandlers(sandboxManager, {
-    getMainWindow: () => mainWindow,
-    isAppOrigin,
-    image: sandboxImage,
-    config: {
-      get: currentSandboxConfig,
-      update: updateSandboxConfig,
-    },
-    workspaceSlugs: () => Array.from(appState.workspaces.keys()),
-    noteBuildRequester: buildRequester.note,
-    recordSessionStart: rememberSessionStart,
-  })
+  const sandboxHandlers = sandboxOffInProfile
+    ? buildOffSandboxHandlers({ getMainWindow: () => mainWindow, isAppOrigin })
+    : buildSandboxHandlers(sandboxManager, {
+        getMainWindow: () => mainWindow,
+        isAppOrigin,
+        image: sandboxImage,
+        config: {
+          get: currentSandboxConfig,
+          update: updateSandboxConfig,
+        },
+        workspaceSlugs: () => Array.from(appState.workspaces.keys()),
+        noteBuildRequester: buildRequester.note,
+        recordSessionStart: rememberSessionStart,
+      })
   swapHandlers(sandboxHandlers)
 
   // ── Phase 12: Signal renderer that app is ready ───────────────────────────
   mainWindow?.webContents.send(MAIN_CHANNELS.READY, { phase: 'ready' })
 
   // Probe Docker in the background; the first transition into `ok` triggers the reconcile.
-  sandboxManager.getEnvironment({ refresh: true }).catch((err: unknown) => {
-    log.warn('[sandbox-manager] Initial Docker probe failed:', err)
-  })
+  // A profile never probes (D6), so `reconcile()` never runs.
+  if (!sandboxOffInProfile) {
+    sandboxManager.getEnvironment({ refresh: true }).catch((err: unknown) => {
+      log.warn('[sandbox-manager] Initial Docker probe failed:', err)
+    })
+  }
 
   if (_isDev) {
     const elapsed = Date.now() - _t0

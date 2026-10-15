@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { useProfile } from './helpers/profile'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -49,6 +50,7 @@ describe('ConfigManager durability (real filesystem)', () => {
     dataDir = path.join(mockHomeDir, '.corner-office')
     cfgFile = path.join(dataDir, 'config.json')
     bakFile = `${cfgFile}.bak`
+    useProfile(mockHomeDir)
     manager = new ConfigManager()
   })
 

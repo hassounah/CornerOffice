@@ -61,6 +61,12 @@ vi.mock('electron', () => {
 
   const app = {
     requestSingleInstanceLock: vi.fn().mockReturnValue(true),
+    isPackaged: false,
+    getAppPath: vi.fn().mockReturnValue('/app'),
+    getPath: vi.fn().mockReturnValue('/home/test/.config/corner-office'),
+    setPath: vi.fn(),
+    exit: vi.fn(),
+    commandLine: { appendSwitch: vi.fn() },
     quit: vi.fn(),
     whenReady: vi.fn().mockReturnValue(
       new Promise<void>((resolve) => resolve())
@@ -121,6 +127,8 @@ vi.mock('fs', () => ({
     readFileSync: vi.fn().mockReturnValue('{}'),
     writeFileSync: vi.fn(),
     renameSync: vi.fn(),
+    realpathSync: vi.fn((p: string) => p),
+    writeSync: vi.fn(),
   },
   existsSync: vi.fn().mockReturnValue(true),
   mkdirSync: vi.fn(),
@@ -128,6 +136,8 @@ vi.mock('fs', () => ({
   readFileSync: vi.fn().mockReturnValue('{}'),
   writeFileSync: vi.fn(),
   renameSync: vi.fn(),
+  realpathSync: vi.fn((p: string) => p),
+  writeSync: vi.fn(),
 }))
 
 vi.mock('os', () => ({

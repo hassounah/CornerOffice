@@ -9,6 +9,8 @@ vi.mock('electron-log/main', () => ({ default: { info, warn, error: vi.fn() } })
 import { GUARD_BASELINE_FILE, cleanupCodexSession, closeCodexGuard, codexGuardIsOpen, inGuardNameSet, openCodexGuard, prepareCodexSession } from '../../main/agents/codex/guard'
 import { GUARD_ACTIVE_FILE, codexStatePaths } from '../../main/agents/codex/sandbox-config'
 import { sandboxPaths } from '../../main/services/sandbox-paths'
+import { resetActiveProfileForTests } from '../../main/services/app-home'
+import { useProfile } from '../helpers/profile'
 import type { SandboxPaths } from '../../main/services/sandbox-paths'
 
 // ---------------------------------------------------------------------------
@@ -82,6 +84,20 @@ describe('openCodexGuard / closeCodexGuard', () => {
     const baseline = readBaseline()
     expect(baseline.state).toBe('open')
     expect(baseline.names).toEqual(expect.arrayContaining(['auth.json', '.env', 'AGENTS.md', 'config.toml', 'plugins', 'rules']))
+  })
+
+  it('names the profile home in the quarantine destination', () => {
+    useProfile(home, 'dev')
+    try {
+      paths = sandboxPaths(home)
+      startSession()
+      fs.writeFileSync(inHome('hooks.json'), 'x')
+      expect(closeCodexGuard(paths, SLUG, NOW)).toMatchObject({
+        destination: expect.stringContaining(`~/.corner-office/profiles/dev/sandbox/${SLUG}/codex-quarantine/`),
+      })
+    } finally {
+      resetActiveProfileForTests()
+    }
   })
 
   it('with an open baseline, new name-set files and a new top-level symlink are quarantined; the link target is untouched', () => {

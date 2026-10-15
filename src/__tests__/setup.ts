@@ -23,3 +23,9 @@ const zeroRect: DOMRect = {
 Range.prototype.getBoundingClientRect = () => zeroRect
 Range.prototype.getClientRects = () =>
   ({ length: 0, item: () => null, [Symbol.iterator]: function* () {} }) as unknown as DOMRectList
+
+// #0038: unit tests are hermetic with respect to the dev-profile env knobs. The suite also runs
+// inside a Corner Office sandbox, where CORNER_OFFICE_SANDBOX=1 would flip app-home into sandbox mode.
+delete process.env.CORNER_OFFICE_SANDBOX
+delete process.env.CORNER_OFFICE_PROFILE
+delete process.env.CORNER_OFFICE_DEBUG_PORT

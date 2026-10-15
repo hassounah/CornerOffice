@@ -6,6 +6,29 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 
 // ESLint 10 flat config — replaces .eslintrc.cjs
 // Uses .mjs because package.json has no "type": "module"
+// Selector arrays shared by the `no-restricted-syntax` blocks below (flat config replaces a rule per block).
+const CHILD_PROCESS_SYNTAX = [
+  {
+    selector: 'ImportExpression[source.value=/child_process$/]',
+    message: 'Dynamic import of child_process may only be used in git-runner.ts or docker-runner.ts (Sec M-9).',
+  },
+]
+
+const HOME_MSG =
+  'Build Corner Office paths with coHome() / coHomeDisplay() and Claude paths with claudeHome() from src/main/services/app-home.ts. Mount sources come from sandboxPaths(). Allowed files: app-home.ts, sandbox-paths.ts, agents/claude/descriptor.ts.'
+const HOME_PATH_RE = '/(^|[\\/~])\\.(corner-office|claude)(\\/|$)/'
+const HOME_PATH_SYNTAX = [
+  { selector: `Literal[value=${HOME_PATH_RE}]`, message: HOME_MSG },
+  { selector: `TemplateElement[value.raw=${HOME_PATH_RE}]`, message: HOME_MSG },
+]
+
+const CDP_MSG = 'Never pass --remote-allow-origins or --remote-debugging-address: Chromium must stay on 127.0.0.1 with its default origin check (#0038).'
+const CDP_FLAG_RE = '/remote-(allow-origins|debugging-address)/'
+const CDP_FLAG_SYNTAX = [
+  { selector: `Literal[value=${CDP_FLAG_RE}]`, message: CDP_MSG },
+  { selector: `TemplateElement[value.raw=${CDP_FLAG_RE}]`, message: CDP_MSG },
+]
+
 export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
@@ -59,6 +82,10 @@ export default tseslint.config(
   // (Sec M-9): git-runner.ts and docker-runner.ts are the only files allowed
   // to spawn processes, so every other main/preload/renderer file — and any
   // dynamic import() of it — is rejected. Tests are unrestricted (§D-7).
+  //
+  // Flat config replaces a rule per block, so the `no-restricted-syntax` selector arrays are
+  // defined once and composed: A (this block) = child_process + CDP flags; B adds the home
+  // paths for main/preload; C is the two runners (no child_process ban, but CDP + home paths).
   {
     files: ['src/main/**/*.{ts,tsx}', 'src/preload/**/*.{ts,tsx}', 'src/renderer/**/*.{ts,tsx}'],
     ignores: ['src/main/services/git-runner.ts', 'src/main/services/docker-runner.ts'],
@@ -69,11 +96,24 @@ export default tseslint.config(
           { name: 'node:child_process', message: 'child_process may only be imported in git-runner.ts or docker-runner.ts (Sec M-9).' },
         ],
       }],
-      'no-restricted-syntax': ['error', {
-        selector: 'ImportExpression[source.value=/child_process$/]',
-        message: 'Dynamic import of child_process may only be used in git-runner.ts or docker-runner.ts (Sec M-9).',
-      }],
+      'no-restricted-syntax': ['error', ...CHILD_PROCESS_SYNTAX, ...CDP_FLAG_SYNTAX],
     },
+  },
+  // #0038: Corner Office / Claude home paths come from app-home.ts and sandbox-paths.ts only.
+  {
+    files: ['src/main/**/*.{ts,tsx}', 'src/preload/**/*.{ts,tsx}'],
+    ignores: [
+      'src/main/services/app-home.ts',
+      'src/main/services/sandbox-paths.ts',
+      'src/main/agents/claude/descriptor.ts',
+      'src/main/services/git-runner.ts',
+      'src/main/services/docker-runner.ts',
+    ],
+    rules: { 'no-restricted-syntax': ['error', ...CHILD_PROCESS_SYNTAX, ...CDP_FLAG_SYNTAX, ...HOME_PATH_SYNTAX] },
+  },
+  {
+    files: ['src/main/services/git-runner.ts', 'src/main/services/docker-runner.ts'],
+    rules: { 'no-restricted-syntax': ['error', ...CDP_FLAG_SYNTAX, ...HOME_PATH_SYNTAX] },
   },
   { ignores: ['dist/', 'out/', 'release/', 'node_modules/'] },
 )

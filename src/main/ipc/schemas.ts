@@ -453,12 +453,14 @@ export const SandboxCancelBuildSchema = SandboxNoInput
 export const SandboxGetSettingsSchema = SandboxNoInput
 export const SandboxUpdateSettingsSchema = z
   .object({
-    toolchains: z.object({ node: z.boolean(), go: z.boolean(), buildBase: z.boolean() }).strict().optional(),
+    toolchains: z.object({ node: z.boolean(), go: z.boolean(), buildBase: z.boolean(), electron: z.boolean().optional() }).strict().optional(),
     globalAllowlist: z.array(AllowlistEntrySchema).max(200).optional(),
     workspaceAllowlist: z
       .object({ workspaceSlug: SandboxSlugSchema, entries: z.array(AllowlistEntrySchema).max(200) })
       .strict()
       .optional(),
+    // #0038 3a: on or off only; the port is allocated by main and never travels over IPC.
+    workspaceDevAccess: z.object({ workspaceSlug: SandboxSlugSchema, enabled: z.boolean() }).strict().optional(),
   })
   .strict()
 export const SandboxGetBlockedSchema = SandboxSlugOnly

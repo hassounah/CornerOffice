@@ -95,6 +95,8 @@ export interface SandboxImageToolchains {
   node: boolean
   go: boolean
   buildBase: boolean
+  /** #0038 D9: Xvfb + GUI libraries for `make dev-sandbox`. Absent or false leaves the build args, hash and signature as they were. */
+  electron?: boolean
 }
 
 export interface SandboxImageDeps {
@@ -185,6 +187,7 @@ export async function buildHashSignature(ctx: string, identity: SandboxImageIden
     parts.push(`${filename}:${stat.mtimeMs}:${stat.size}`)
   }
   parts.push(`${toolchains.node}:${toolchains.go}:${toolchains.buildBase}:${identity.uid}:${identity.gid}:${identity.home}:${ASSET_VERSION}`)
+  if (toolchains.electron) parts.push('electron')
   return parts.join('|')
 }
 
@@ -206,6 +209,7 @@ export async function computeBuildHash(ctx: string, identity: SandboxImageIdenti
     `AGENT_UID=${identity.uid}`,
     `AGENT_GID=${identity.gid}`,
     `AGENT_HOME=${identity.home}`,
+    ...(toolchains.electron ? ['WITH_ELECTRON=1'] : []),
   ].sort()
   hash.update(args.join('\n'))
   hash.update(String(ASSET_VERSION))

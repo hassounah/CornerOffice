@@ -24,7 +24,7 @@ vi.mock('child_process', () => ({
   default: { execFile: execFileMock, spawn: spawnMock },
 }))
 
-import { createDockerRunner, describeDockerError, DockerError } from '../main/services/docker-runner'
+import { createDockerRunner, createRefusingDockerRunner, describeDockerError, DockerError } from '../main/services/docker-runner'
 import { FakeDockerRunner } from './helpers/fake-docker-runner'
 
 // execFile's real error.code can be a number (exit code) or a string ('ENOENT'
@@ -452,5 +452,15 @@ describe('describeDockerError (BE-M6)', () => {
     const line = describeDockerError(err)
     expect(line.startsWith('kind=timeout exit=none stderr="')).toBe(true)
     expect(line.length).toBeLessThan(2_200)
+  })
+})
+
+describe('createRefusingDockerRunner (#0038 D6)', () => {
+  it('rejects run and stream with kind off-in-profile and has no docker binary', async () => {
+    const runner = createRefusingDockerRunner()
+
+    await expect(runner.run(['ps'])).rejects.toMatchObject({ name: 'DockerError', kind: 'off-in-profile' })
+    await expect(runner.stream(['build', '.'], () => undefined, new AbortController().signal)).rejects.toMatchObject({ kind: 'off-in-profile' })
+    expect(runner.binary()).toEqual({ available: false, reason: 'not-found' })
   })
 })

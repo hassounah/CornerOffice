@@ -1,7 +1,7 @@
 import log from 'electron-log/main'
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
+import { coHome } from './app-home'
 import type { BrowserWindow } from 'electron'
 
 // ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ const DEFAULT_STATE: WindowStateData = {
 // ---------------------------------------------------------------------------
 
 function statePath(): string {
-  return path.join(os.homedir(), '.corner-office', 'window-state.json')
+  return path.join(coHome(), 'window-state.json')
 }
 
 // ---------------------------------------------------------------------------

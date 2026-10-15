@@ -102,7 +102,8 @@ export function RecreateDialog({ slug, plan: initialPlan, newPort = false, skin 
     return () => document.removeEventListener('keydown', onKey, true)
   }, [onCancel])
 
-  const description = describeRecreatePlan(plan)
+  const devCdpPort = useSandboxStore((s) => s.settings?.workspaceDevAccess[slug] ?? null)
+  const description = describeRecreatePlan(plan, { devCdpPort, newPort })
   const creating = plan.reason === 'new-container'
 
   async function confirm(): Promise<void> {
@@ -160,6 +161,8 @@ export function RecreateDialog({ slug, plan: initialPlan, newPort = false, skin 
             )}
 
             <p>{description.reasonLine}</p>
+
+            {description.devCdpLine && <p>{description.devCdpLine}</p>}
 
             {description.memoryMdChanged && <p className="font-semibold text-co-status-attention">{MEMORY_MD_CHANGED_COPY}</p>}
 

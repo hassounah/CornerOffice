@@ -35,6 +35,7 @@ import type { SandboxManagerService } from '../services/sandbox-manager'
 import type { SandboxImageService } from '../services/sandbox-image'
 import type { SessionStart } from '../services/session-defaults'
 import { DEFAULT_ALLOWLIST } from '../services/sandbox-allowlist'
+import { AGENT_DESCRIPTORS } from '../agents/descriptors'
 import type { SandboxConfig } from '../types/config'
 import type {
   BlockedEntry,
@@ -108,6 +109,7 @@ function settingsView(cfg: SandboxConfig): SandboxSettingsView {
     defaultAllowlist: DEFAULT_ALLOWLIST,
     globalAllowlist: [...cfg.globalAllowlist],
     workspaceAllowlists: Object.fromEntries(Object.entries(cfg.workspaces).map(([slug, ws]) => [slug, [...ws.allowlist]])),
+    workspaceDevAccess: Object.fromEntries(Object.entries(cfg.workspaces).map(([slug, ws]) => [slug, ws.devCdpPort ?? null])),
   }
 }
 
@@ -124,15 +126,22 @@ export function buildSandboxHandlers(manager: SandboxManagerService, deps: Build
     const known = workspaceSlugs()
     if (patch.workspaceAllowlist && !known.includes(patch.workspaceAllowlist.workspaceSlug)) throw unknownWorkspaceError()
 
+    if (patch.workspaceDevAccess) {
+      if (!known.includes(patch.workspaceDevAccess.workspaceSlug)) throw unknownWorkspaceError()
+      // main picks and persists the port (or clears it); a port number never travels over IPC.
+      const ok = await manager.setDevAccess(patch.workspaceDevAccess.workspaceSlug, patch.workspaceDevAccess.enabled)
+      if (!ok) throw new Error('no free port for dev app access')
+    }
+
     const next = await config.update((current) => {
       const merged: SandboxConfig = {
-        toolchains: patch.toolchains ?? current.toolchains,
+        toolchains: patch.toolchains ? { ...current.toolchains, ...patch.toolchains } : current.toolchains,
         globalAllowlist: patch.globalAllowlist ?? current.globalAllowlist,
         workspaces: { ...current.workspaces },
       }
       if (patch.workspaceAllowlist) {
         const { workspaceSlug, entries } = patch.workspaceAllowlist
-        merged.workspaces[workspaceSlug] = { channelPort: current.workspaces[workspaceSlug]?.channelPort ?? null, allowlist: entries }
+        merged.workspaces[workspaceSlug] = { ...current.workspaces[workspaceSlug], channelPort: current.workspaces[workspaceSlug]?.channelPort ?? null, allowlist: entries }
       }
       return merged
     })
@@ -238,6 +247,95 @@ export function buildSandboxHandlers(manager: SandboxManagerService, deps: Build
     ),
     [SANDBOX_CHANNELS.GET_BLOCKED]: wrapCodeHandler<SandboxGetBlockedInput, BlockedEntry[]>(
       async (input) => manager.getBlocked(input.workspaceSlug),
+      SandboxGetBlockedSchema,
+      wrapDeps,
+    ),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// #0038 D6 — the handler set of a dev profile. Sandbox sessions are structurally
+// off: every invoke channel is answered here, with no manager, image service or
+// config involved, so nothing can reach Docker or the real app's worktrees.
+// Typed over `SANDBOX_CHANNELS`, so `tsc` forces a new channel to be covered.
+// ---------------------------------------------------------------------------
+
+type SandboxInvokeKey = Exclude<keyof typeof SANDBOX_CHANNELS, 'CHANGED' | 'BUILD_PROGRESS' | 'BLOCKED'>
+
+export type OffSandboxHandlers = { [K in SandboxInvokeKey as (typeof SANDBOX_CHANNELS)[K]]: HandlerFn }
+
+function offInProfileError(): Error {
+  return Object.assign(new Error('sandbox sessions are off in this profile'), { code: IPC_ERROR_CODES.SANDBOX_OFF_IN_PROFILE })
+}
+
+export function buildOffSandboxHandlers(deps: Pick<BuildSandboxHandlersDeps, 'getMainWindow' | 'isAppOrigin'>): OffSandboxHandlers {
+  const wrapDeps = { getMainWindow: deps.getMainWindow, isAppOrigin: deps.isAppOrigin }
+
+  const rejecting = <TInput>(schema: Parameters<typeof wrapCodeHandler<TInput, never>>[1]): HandlerFn =>
+    wrapCodeHandler<TInput, never>(
+      async () => {
+        throw offInProfileError()
+      },
+      schema,
+      wrapDeps,
+    ) as HandlerFn
+
+  return {
+    [SANDBOX_CHANNELS.GET_ENVIRONMENT]: wrapCodeHandler<SandboxGetEnvironmentInput, SandboxEnvironment>(
+      async () => ({
+        docker: 'not-installed',
+        dockerVersion: null,
+        image: { state: 'absent', builtAt: null, sizeBytes: null },
+        offInProfile: true,
+      }),
+      SandboxGetEnvironmentSchema,
+      wrapDeps,
+    ),
+    [SANDBOX_CHANNELS.GET_STATUS]: wrapCodeHandler<SandboxGetStatusInput, SandboxStatus>(
+      async (input) => ({
+        workspaceSlug: input.workspaceSlug,
+        eligibility: { ok: false, reason: 'sandbox-off-in-profile' },
+        exists: false,
+        container: 'absent',
+        containers: Object.fromEntries(AGENT_DESCRIPTORS.map((d) => [d.id, 'absent' as const])),
+        agentReadiness: {},
+        worktree: 'absent',
+        session: { state: 'idle', agentId: null, permissionMode: null, networkMode: null, lastExit: null },
+        git: null,
+        recreatePending: false,
+        recreatePlan: null,
+        recreatePlans: [],
+        channel: 'none',
+      }),
+      SandboxGetStatusSchema,
+      wrapDeps,
+    ),
+    [SANDBOX_CHANNELS.GET_SUMMARIES]: wrapCodeHandler<Record<string, never>, Record<string, SandboxSummary>>(
+      async () => ({}),
+      SandboxGetSummariesSchema,
+      wrapDeps,
+    ),
+    [SANDBOX_CHANNELS.START_SESSION]: rejecting<SandboxStartSessionInput>(SandboxStartSessionSchema),
+    [SANDBOX_CHANNELS.HAND_OFF]: rejecting<SandboxHandOffInput>(SandboxHandOffSchema),
+    [SANDBOX_CHANNELS.PREVIEW_DELETE]: rejecting<SandboxPreviewDeleteInput>(SandboxPreviewDeleteSchema),
+    [SANDBOX_CHANNELS.DELETE]: rejecting<SandboxDeleteInput>(SandboxDeleteSchema),
+    [SANDBOX_CHANNELS.RECREATE]: rejecting<SandboxRecreateInput>(SandboxRecreateSchema),
+    [SANDBOX_CHANNELS.BUILD_IMAGE]: rejecting<SandboxBuildImageInput>(SandboxBuildImageSchema),
+    [SANDBOX_CHANNELS.CANCEL_BUILD]: rejecting<Record<string, never>>(SandboxCancelBuildSchema),
+    [SANDBOX_CHANNELS.GET_SETTINGS]: wrapCodeHandler<Record<string, never>, SandboxSettingsView>(
+      async () => ({
+        toolchains: { node: true, go: true, buildBase: true, electron: false },
+        defaultAllowlist: DEFAULT_ALLOWLIST,
+        globalAllowlist: [],
+        workspaceAllowlists: {},
+        workspaceDevAccess: {},
+      }),
+      SandboxGetSettingsSchema,
+      wrapDeps,
+    ),
+    [SANDBOX_CHANNELS.UPDATE_SETTINGS]: rejecting<SandboxUpdateSettingsInput>(SandboxUpdateSettingsSchema),
+    [SANDBOX_CHANNELS.GET_BLOCKED]: wrapCodeHandler<SandboxGetBlockedInput, BlockedEntry[]>(
+      async () => [],
       SandboxGetBlockedSchema,
       wrapDeps,
     ),

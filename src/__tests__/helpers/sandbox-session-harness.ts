@@ -197,6 +197,7 @@ export function setup(): Harness {
     const config: SandboxManagerConfigDeps = {
       getSandboxConfig: () => sandboxConfig,
       getWorkspaceDocsRootOverride: () => null,
+      setWorkspaceDevCdpPort: async () => {},
       setWorkspaceChannelPort: async (slug, port) => {
         sandboxConfig.workspaces[slug] = { channelPort: port, allowlist: sandboxConfig.workspaces[slug]?.allowlist ?? [] }
       },

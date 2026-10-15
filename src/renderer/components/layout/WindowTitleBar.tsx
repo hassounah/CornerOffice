@@ -74,11 +74,30 @@ function TrafficDot({
 }
 
 // ---------------------------------------------------------------------------
+// Profile badge — always visible in a named profile so it is never mistaken for the real app.
+// #422006 on #fde68a is about 11:1, well above WCAG AA.
+// ---------------------------------------------------------------------------
+
+function ProfileBadge({ name, home }: { name: string; home: string }): React.ReactElement {
+  return (
+    <span
+      className="ml-3 px-2 py-0.5 rounded text-[11px] font-semibold tracking-wide"
+      style={{ backgroundColor: '#fde68a', color: '#422006', WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      title={home}
+      aria-label={`Profile ${name}, home ${home}`}
+    >
+      {name}
+    </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // WindowTitleBar — frameless window chrome replacement
 // ---------------------------------------------------------------------------
 
 export function WindowTitleBar(): React.ReactElement {
   const [groupHovered, setGroupHovered] = useState(false)
+  const profile = window.cornerOffice?.profile ?? null
   // Check maximized state on mount and when window resizes
   const checkMaximized = useCallback(async () => {
     try {
@@ -108,6 +127,8 @@ export function WindowTitleBar(): React.ReactElement {
       className="co-titlebar flex items-center h-10 shrink-0 select-none"
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
+      {profile && <ProfileBadge name={profile.name} home={profile.home} />}
+
       {/* Title with logo — centered absolutely across the full width */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none gap-1.5">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">

@@ -26,6 +26,10 @@ export interface SandboxActionsProps {
   deleteOnly?: boolean
   /** Only Recreate (the "sandboxes use the previous image" prompt in Settings → Image). */
   recreateOnly?: boolean
+  /** The Recreate button's text (default "Recreate sandbox"); its accessible name is "<text> for <label>" when `label` is set. */
+  recreateLabel?: string
+  /** Show Recreate whatever the status flags say: the caller already knows the container is out of date (Dev app access). */
+  forceRecreate?: boolean
   /** Names the workspace in the Delete and Recreate buttons' accessible names when several rows share a page. */
   label?: string
 }
@@ -47,7 +51,7 @@ function handOffMessage(result: Exclude<HandOffResult, { ok: true } | { code: 'D
   return HAND_OFF_FAILURE_COPY[result.code] ?? ''
 }
 
-export function SandboxActions({ slug, skin = 'office', deleteOnly = false, recreateOnly = false, label }: SandboxActionsProps): React.ReactElement | null {
+export function SandboxActions({ slug, skin = 'office', deleteOnly = false, recreateOnly = false, recreateLabel = 'Recreate sandbox', forceRecreate = false, label }: SandboxActionsProps): React.ReactElement | null {
   const status = useSandboxStore((s) => s.status[slug])
   const fetchStatus = useSandboxStore((s) => s.fetchStatus)
   const handOff = useSandboxStore((s) => s.handOff)
@@ -73,7 +77,7 @@ export function SandboxActions({ slug, skin = 'office', deleteOnly = false, recr
   const ending = isSessionStopping(state)
   const idle = state === 'idle'
   const plan = status.recreatePlan
-  const showRecreate = !deleteOnly && (status.recreatePending || plan !== null || portConflict)
+  const showRecreate = !deleteOnly && (forceRecreate || status.recreatePending || plan !== null || portConflict)
   const showDelete = !recreateOnly && status.exists && idle
   const showHandOff = !deleteOnly && !recreateOnly && status.worktree !== 'absent'
 
@@ -166,8 +170,8 @@ export function SandboxActions({ slug, skin = 'office', deleteOnly = false, recr
         {showRecreate && (
           <DisabledReason reason={recreateReason} skin={skin}>
             {(props) => (
-              <button type="button" className={buttonClass} style={buttonStyle} onClick={() => void openRecreate()} aria-label={label ? `Recreate sandbox for ${label}` : undefined} {...props}>
-                Recreate sandbox
+              <button type="button" className={buttonClass} style={buttonStyle} onClick={() => void openRecreate()} aria-label={label ? `${recreateLabel} for ${label}` : undefined} {...props}>
+                {recreateLabel}
               </button>
             )}
           </DisabledReason>

@@ -2,6 +2,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { AGENT_DESCRIPTORS } from '../agents/descriptors'
+import { coHomeOr } from './app-home'
 
 // ---------------------------------------------------------------------------
 // sandbox-paths.ts — the single source of every sandbox-related host path
@@ -86,14 +87,24 @@ export function resolveRealHome(): string {
   return _realHome
 }
 
+/** `<realHome>/.corner-office/profiles` — named dev profile homes (#0038 D3a). Never a mount source or target. */
+export function profilesRoot(realHome: string): string {
+  return path.join(realHome, '.corner-office', 'profiles')
+}
+
 /**
  * Derive every sandbox-related path from one `realHome` (SEC-M2). Pure and
  * synchronous: no filesystem access beyond what resolving `realHome` already
  * did.
  */
-export function sandboxPaths(realHome: string): SandboxPaths {
+export function sandboxPaths(realHome: string, coHomeDir: string = coHomeOr(path.join(realHome, '.corner-office'))): SandboxPaths {
+  // #0038: `sandboxesRoot` and `rwMountRoots` are security classifications ("agent-controlled")
+  // and never follow the profile; only the app's own reads (`sandboxStateRoot`, `eventsRoot`) do.
+  // `claudeDir` is what containers mount; `claudeHome()` is the directory this app reads.
   const sandboxesRoot = path.join(realHome, '.corner-office', 'sandboxes')
-  const sandboxStateRoot = path.join(realHome, '.corner-office', 'sandbox')
+  const realSandboxStateRoot = path.join(realHome, '.corner-office', 'sandbox')
+  const realEventsRoot = path.join(realHome, '.corner-office', 'events')
+  const sandboxStateRoot = path.join(coHomeDir, 'sandbox')
   const claudeDir = path.join(realHome, '.claude')
   const codexDir = path.join(realHome, '.codex')
   const claudeJson = path.join(realHome, '.claude.json')
@@ -102,7 +113,7 @@ export function sandboxPaths(realHome: string): SandboxPaths {
   const claudeSettingsLocal = path.join(claudeDir, 'settings.local.json')
   const claudeRoDirs = ['plugins', 'commands', 'agents', 'skills', 'hooks'].map((d) => path.join(claudeDir, d))
   const claudeShadowDirs = ['shell-snapshots', 'session-env', 'backups', 'security', 'ide'].map((d) => path.join(claudeDir, d))
-  const eventsRoot = path.join(realHome, '.corner-office', 'events')
+  const eventsRoot = path.join(coHomeDir, 'events')
 
   return {
     sandboxesRoot,
@@ -121,8 +132,8 @@ export function sandboxPaths(realHome: string): SandboxPaths {
         .filter((entry) => !isFileEntry(entry))
         .map((entry) => path.join(realHome, entry)),
       sandboxesRoot,
-      sandboxStateRoot,
-      eventsRoot,
+      realSandboxStateRoot,
+      realEventsRoot,
     ],
   }
 }

@@ -31,6 +31,8 @@ import type {
 } from '../main/types/sandbox'
 
 interface CornerOfficeAPI {
+  /** The named profile this window runs under, or null for the default profile. */
+  profile: { readonly name: string; readonly home: string } | null
   windowControls: {
     minimize: () => Promise<void>
     maximize: () => Promise<void>

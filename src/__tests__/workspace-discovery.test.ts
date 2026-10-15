@@ -220,6 +220,7 @@ describe('WorkspaceDiscoveryService', () => {
         throw new Error('unreachable')
       },
     }))
+    vi.doMock('@main/services/app-home', () => ({ discoveryRoots: () => [tmpDir], isInSandbox: () => false }))
     const homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpDir)
     try {
       const { WorkspaceDiscoveryService: FreshService } = await import('@main/services/workspace-discovery')
@@ -236,6 +237,51 @@ describe('WorkspaceDiscoveryService', () => {
     } finally {
       homedirSpy.mockRestore()
       vi.doUnmock('@main/services/sandbox-paths')
+      vi.doUnmock('@main/services/app-home')
+    }
+  })
+
+  it('sandbox mode discovers the worktree root that itself lives under the real sandboxes root (#0038)', async () => {
+    vi.resetModules()
+    const realHome = fs.realpathSync(tmpDir)
+    const worktree = path.join(sandboxPaths(realHome).sandboxesRoot, 'ws')
+    mkdir(path.join(worktree, '.rix'))
+    vi.doMock('@main/services/app-home', () => ({ discoveryRoots: () => [worktree], isInSandbox: () => true }))
+    const homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(realHome)
+    try {
+      const { WorkspaceDiscoveryService: FreshService } = await import('@main/services/workspace-discovery')
+      const result = await new FreshService().discover()
+      expect(result.workspaces.map((w) => w.path)).toEqual([worktree])
+    } finally {
+      homedirSpy.mockRestore()
+      vi.doUnmock('@main/services/app-home')
+    }
+  })
+
+  it('host mode with an active dev profile still excludes the real sandboxes root, even with dot:true (#0038 R4)', async () => {
+    vi.resetModules()
+    const realHome = fs.realpathSync(tmpDir)
+    const paths = sandboxPaths(realHome)
+    mkdir(path.join(paths.sandboxesRoot, 'some-workspace', '.rix'))
+    mkdir(path.join(realHome, 'real-project', '.rix'))
+    const homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(realHome)
+    try {
+      const appHome = await import('@main/services/app-home')
+      appHome.setActiveProfile(
+        appHome.resolveProfile({ CORNER_OFFICE_PROFILE: 'dev' }, { isPackaged: false, realHome, appPath: '/unused' }),
+      )
+      const { WorkspaceDiscoveryService: FreshService } = await import('@main/services/workspace-discovery')
+      const freshSvc = new FreshService()
+      const runGlob = vi.spyOn(freshSvc as unknown as { _runGlob: (h: string, i: string[], d?: boolean) => Promise<string[]> }, '_runGlob')
+      await freshSvc.discover()
+      const [root, patterns] = runGlob.mock.calls[0]
+      expect(root).toBe(realHome)
+
+      const results = await freshSvc['_runGlob'](root, patterns, true)
+      expect(results.some((p) => p.includes('real-project'))).toBe(true)
+      expect(results.some((p) => p.startsWith(paths.sandboxesRoot))).toBe(false)
+    } finally {
+      homedirSpy.mockRestore()
     }
   })
 })

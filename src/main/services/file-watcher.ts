@@ -1,7 +1,7 @@
 import log from 'electron-log/main'
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
+import { claudeHome, coHome } from './app-home'
 import chokidar, { FSWatcher } from 'chokidar'
 import { sandboxEventSlug } from './event-attribution'
 
@@ -316,7 +316,7 @@ export class FileWatcherService {
   private _startHomunculusWatcher(): void {
     if (this._homunculusWatcher) return
 
-    const homunculusDir = path.join(os.homedir(), '.claude', 'homunculus')
+    const homunculusDir = path.join(claudeHome(), 'homunculus')
     if (!fs.existsSync(homunculusDir)) return
 
     const debouncedInstincts = debounce(
@@ -363,7 +363,7 @@ export class FileWatcherService {
   private _startEventStreamWatcher(): void {
     if (this._eventStreamWatcher) return
 
-    const eventsDir = path.join(os.homedir(), '.corner-office', 'events')
+    const eventsDir = path.join(coHome(), 'events')
     if (!fs.existsSync(eventsDir)) return
 
     const debouncedPush = debouncePerKey((filePath) => this._callbacks.onEventStreamChange(filePath), 100)

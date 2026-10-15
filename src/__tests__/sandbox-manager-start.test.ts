@@ -238,6 +238,7 @@ describe('startSession', () => {
     const config: SandboxManagerConfigDeps = {
       getSandboxConfig: () => h.sandboxConfig,
       getWorkspaceDocsRootOverride: () => h.repo, // docs_root === REPO -> structural hard failure
+      setWorkspaceDevCdpPort: async () => {},
       setWorkspaceChannelPort: async (slug, port) => {
         h.sandboxConfig.workspaces[slug] = { channelPort: port, allowlist: [] }
       },
@@ -255,6 +256,7 @@ describe('startSession', () => {
     const config: SandboxManagerConfigDeps = {
       getSandboxConfig: () => h.sandboxConfig,
       getWorkspaceDocsRootOverride: () => h.repo, // docs_root === REPO -> only the real plan (wt existing) can detect this
+      setWorkspaceDevCdpPort: async () => {},
       setWorkspaceChannelPort: async (slug, port) => {
         h.sandboxConfig.workspaces[slug] = { channelPort: port, allowlist: [] }
       },

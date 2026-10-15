@@ -1,7 +1,7 @@
 import log from 'electron-log/main'
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
+import { coHome } from './app-home'
 import { z } from 'zod'
 import type { StateCache } from '../types'
 
@@ -43,7 +43,7 @@ const CURRENT_VERSION = 1
 const DEBOUNCE_MS = 200
 
 function dataDir(): string {
-  return path.join(os.homedir(), '.corner-office')
+  return coHome()
 }
 
 function statePath(): string {

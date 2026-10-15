@@ -1130,7 +1130,7 @@ describe('SettingsChamber', () => {
       window.cornerOffice = {
         sandbox: {
           getEnvironment: vi.fn().mockResolvedValue({ data: { docker: 'ok', dockerVersion: '28.0.1', image: { state: 'ready', builtAt: null, sizeBytes: null } }, error: null }),
-          getSettings: vi.fn().mockResolvedValue({ data: { toolchains: { node: true, go: true, buildBase: true }, defaultAllowlist: ['github.com'], globalAllowlist: [], workspaceAllowlists: {} }, error: null }),
+          getSettings: vi.fn().mockResolvedValue({ data: { toolchains: { node: true, go: true, buildBase: true }, defaultAllowlist: ['github.com'], globalAllowlist: [], workspaceAllowlists: {}, workspaceDevAccess: {} }, error: null }),
           getSummaries: vi.fn().mockResolvedValue({ data: {}, error: null }),
           getStatus: vi.fn().mockResolvedValue({ data: null, error: null }),
           getBlocked: vi.fn().mockResolvedValue({ data: [], error: null }),

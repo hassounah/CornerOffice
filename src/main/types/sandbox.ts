@@ -21,6 +21,8 @@ export interface SandboxEnvironment {
   docker: DockerState
   dockerVersion: string | null
   image: { state: 'absent' | 'building' | 'ready' | 'stale' | 'failed'; builtAt: string | null; sizeBytes: number | null }
+  /** Set only in a dev profile (#0038 D6): sandbox sessions are structurally off and Docker was never probed. */
+  offInProfile?: true
 }
 
 /**
@@ -36,6 +38,7 @@ export interface SandboxEnvironment {
  */
 export type EligibilityReason =
   | 'sandbox-disabled'
+  | 'sandbox-off-in-profile'
   | 'docker-not-installed'
   | 'docker-daemon-down'
   | 'docker-no-permission'
@@ -65,6 +68,8 @@ export interface RecreatePlan {
    * that mount is created.
    */
   reason: 'image' | 'mount-plan' | 'port' | 'new-container'
+  /** #0038 3a: set when the dev-app (CDP) publish alone is what changes: dev access turned on or off for this workspace. Claude container only. */
+  devCdpChange?: 'enabled' | 'disabled' | null
   /** Echoed back as `confirmedSpecHash` — ties a recreate to the plan the user actually saw. */
   specHash: string
   newHostMounts: { path: string; readonly: boolean; source: 'settings' | 'memory.md' | 'app' }[]
@@ -103,6 +108,8 @@ export interface SandboxStatus {
   }
   git: { branch: string | null; headShort: string | null; ahead: number; dirtyCount: number; base: string } | null
   recreatePending: boolean
+  /** #0038 3a: the port the claude container really publishes for the dev app on 127.0.0.1 (read from its `PortBindings`), or null. Until a recreate this is what is effective, whatever the setting says. */
+  publishedCdpPort?: number | null
   /** Non-null => the next start returns `RECREATE_REQUIRED`. The last-started agent's plan, kept for compatibility; see `recreatePlans`. */
   recreatePlan: RecreatePlan | null
   /** Every agent's pending plan, each tagged with its `agentId`. Always set by main. */
@@ -176,10 +183,12 @@ export type BuildImageResult = { ok: true } | { ok: false; cancelled: boolean; d
 
 export interface SandboxSettingsView {
   /** python/uv/bun are locked on (D4) — only these three are user-toggleable. */
-  toolchains: { node: boolean; go: boolean; buildBase: boolean }
+  toolchains: { node: boolean; go: boolean; buildBase: boolean; electron?: boolean }
   defaultAllowlist: readonly string[]
   globalAllowlist: string[]
   workspaceAllowlists: Record<string, string[]>
+  /** #0038 3a: per workspace slug, the host port dev app access publishes (127.0.0.1:P); null = off. main allocates it; no IPC input ever carries a port. */
+  workspaceDevAccess: Record<string, number | null>
 }
 
 export interface BlockedEntry {

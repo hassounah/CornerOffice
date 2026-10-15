@@ -1,7 +1,7 @@
 import log from 'electron-log/main'
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
+import { coHome } from './app-home'
 import lockfile from 'proper-lockfile'
 import { z } from 'zod'
 import type { AppConfig, RealmLocation } from '../types'
@@ -99,11 +99,12 @@ const WorkspaceConfigSchema = z.object({
 
 const SandboxWorkspaceConfigSchema = z.object({
   channelPort: z.number().int().min(CHANNEL_PORT_RANGE[0]).max(CHANNEL_PORT_RANGE[1]).nullable(),
+  devCdpPort: z.number().int().min(CHANNEL_PORT_RANGE[0]).max(CHANNEL_PORT_RANGE[1]).nullable().default(null),
   allowlist: AllowlistSchema,
 })
 
 const SandboxConfigSchema = z.object({
-  toolchains: z.object({ node: z.boolean(), go: z.boolean(), buildBase: z.boolean() }),
+  toolchains: z.object({ node: z.boolean(), go: z.boolean(), buildBase: z.boolean(), electron: z.boolean().default(false) }),
   globalAllowlist: AllowlistSchema,
   workspaces: z.record(z.string().regex(SANDBOX_SLUG_RE), SandboxWorkspaceConfigSchema),
   // D23 cutover: when container events moved to their own root. Host-root files at or before it keep the legacy attribution.
@@ -226,7 +227,7 @@ const CURRENT_VERSION = 4
 // ---------------------------------------------------------------------------
 
 function dataDir(): string {
-  return path.join(os.homedir(), '.corner-office')
+  return coHome()
 }
 
 function configPath(): string {
@@ -593,7 +594,7 @@ export class ConfigManager {
 
   private _defaultSandbox(): SandboxConfig {
     return {
-      toolchains: { node: true, go: true, buildBase: true },
+      toolchains: { node: true, go: true, buildBase: true, electron: false },
       globalAllowlist: [],
       workspaces: {},
       eventsSplitAt: null,
