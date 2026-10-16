@@ -92,7 +92,7 @@ export function resolveProfile(env: NodeJS.ProcessEnv, opts: ResolveOptions): Pr
   const sandbox = isInSandbox(env)
   if (sandbox && name === null) {
     throw new ProfileError(
-      'refusing to start with the default profile inside a sandbox (CORNER_OFFICE_SANDBOX=1): it would rotate your live session\'s events and connect to its own channel. Run: make dev-sandbox',
+      'refusing to start with the default profile inside a sandbox (CORNER_OFFICE_SANDBOX=1): it would rotate your live session\'s events and connect to its own channel. Run: make dev',
     )
   }
 

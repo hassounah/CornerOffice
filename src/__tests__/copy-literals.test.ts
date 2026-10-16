@@ -23,16 +23,6 @@ const ALLOWED: readonly { file: string; text: string; why: string }[] = [
     text: 'Update the Corner Office plugin in Claude Code',
     why: 'Channels exist only for Claude, so a rejected channel or outdated plugin is always the Claude plugin.',
   },
-  ...[
-    'Applies to Claude sessions in this workspace.',
-    'use your Claude sign-in',
-    'Takes effect when your Claude session next starts.',
-    'until your Claude session next starts.',
-  ].map((text) => ({
-    file: 'utils/sandbox-copy.ts',
-    text,
-    why: 'Dev app access (#0038 3a) publishes the CDP port of the claude container only, and the copy says so on purpose.',
-  })),
   {
     file: 'components/channels/ChatPanel.tsx',
     text: 'Message Claude…',

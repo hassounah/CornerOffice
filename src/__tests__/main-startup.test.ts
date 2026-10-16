@@ -169,7 +169,7 @@ describe('main/index startup (#0038)', () => {
   it('D4: the default profile inside a sandbox is fatal with the exact text', async () => {
     await expect(startup({ CORNER_OFFICE_SANDBOX: '1' })).rejects.toBeInstanceOf(ExitSentinel)
     expect(stderr).toEqual([
-      'Corner Office: refusing to start with the default profile inside a sandbox (CORNER_OFFICE_SANDBOX=1): it would rotate your live session\'s events and connect to its own channel. Run: make dev-sandbox\n',
+      'Corner Office: refusing to start with the default profile inside a sandbox (CORNER_OFFICE_SANDBOX=1): it would rotate your live session\'s events and connect to its own channel. Run: make dev\n',
     ])
     expect(appMock.exit).toHaveBeenCalledWith(1)
     expect(appMock.requestSingleInstanceLock).not.toHaveBeenCalled()

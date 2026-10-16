@@ -86,13 +86,7 @@ export function createSandboxConfigDeps(): SandboxManagerConfigDeps {
     setWorkspaceChannelPort: async (slug, port) => {
       await updateSandboxConfig((current) => ({
         ...current,
-        workspaces: { ...current.workspaces, [slug]: { ...current.workspaces[slug], channelPort: port, allowlist: current.workspaces[slug]?.allowlist ?? [] } },
-      }))
-    },
-    setWorkspaceDevCdpPort: async (slug, port) => {
-      await updateSandboxConfig((current) => ({
-        ...current,
-        workspaces: { ...current.workspaces, [slug]: { ...current.workspaces[slug], channelPort: current.workspaces[slug]?.channelPort ?? null, allowlist: current.workspaces[slug]?.allowlist ?? [], devCdpPort: port } },
+        workspaces: { ...current.workspaces, [slug]: { channelPort: port, allowlist: current.workspaces[slug]?.allowlist ?? [] } },
       }))
     },
   }

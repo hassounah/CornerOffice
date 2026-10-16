@@ -90,16 +90,25 @@ describe('buildArgv', () => {
     }
   }
 
-  it('passes WITH_ELECTRON=1 and an electron toolchain label only when the toolchain is on (#0038 D9)', () => {
+  it('passes EXTRA_PACKAGES only when the list is non-empty, and leaves the toolchain label alone', () => {
     const home = mkTmp('co-argv-home-')
     const ctx = mkTmp('co-argv-ctx-')
-    const off = buildArgv({ ...baseOpts(home, ctx), toolchains: { node: true, go: false, buildBase: true, electron: false } })
-    expect(off).toEqual(buildArgv(baseOpts(home, ctx)))
-    expect(off.join(' ')).not.toContain('WITH_ELECTRON')
+    const plain = baseOpts(home, ctx)
+    const empty = buildArgv({ ...plain, toolchains: { ...plain.toolchains, extraPackages: [] } })
+    expect(empty).toEqual(buildArgv(plain))
+    expect(empty.join(' ')).not.toContain('EXTRA_PACKAGES')
 
-    const on = buildArgv({ ...baseOpts(home, ctx), toolchains: { node: true, go: false, buildBase: true, electron: true } })
-    expect(on).toContain('WITH_ELECTRON=1')
-    expect(on).toContain(`${LABEL.toolchains}=node,build-base,electron`)
+    const on = buildArgv({ ...plain, toolchains: { ...plain.toolchains, extraPackages: ['xvfb', 'gtk-3'] } })
+    expect(on).toContain('EXTRA_PACKAGES=xvfb gtk-3')
+    expect(on.filter((a) => a.startsWith('EXTRA_PACKAGES'))).toHaveLength(1)
+    expect(on.find((a) => a.startsWith(`${LABEL.toolchains}=`))).toBe(buildArgv(plain).find((a) => a.startsWith(`${LABEL.toolchains}=`)))
+  })
+
+  it.each(['', 'Xvfb', '-x', 'a b', 'a;b', '$(id)', 'a'.repeat(65)])('refuses the extra package %j', (name) => {
+    const home = mkTmp('co-argv-home-')
+    const ctx = mkTmp('co-argv-ctx-')
+    const plain = baseOpts(home, ctx)
+    expect(() => buildArgv({ ...plain, toolchains: { ...plain.toolchains, extraPackages: ['xvfb', name] } })).toThrow(/extra package/)
   })
 
   it('builds the golden argv: --pull always, no --no-cache when not rebuilding, toolchain build-args and labels', () => {
@@ -243,29 +252,7 @@ describe('createArgv', () => {
     }
   }
 
-  it('createArgv publishes the CDP port on 127.0.0.1 only, with its env, and leaves the default argv untouched (#0038 3a)', () => {
-    const base = makeBaseOpts()
-    const without = createArgv(base)
-    const withCdp = createArgv({ ...base, cdpPort: 29000 })
 
-    expect(without.join(' ')).not.toContain('CDP')
-    expect(withCdp).toEqual(
-      without.flatMap((arg) => {
-        if (arg === `127.0.0.1:${base.port}:${base.port}`) return [arg, '--publish', '127.0.0.1:29000:29000']
-        if (arg === `CORNER_OFFICE_CHANNEL_PORT=${base.port}`) return [arg, '--env', 'CORNER_OFFICE_CDP_PUBLISH_PORT=29000']
-        return [arg]
-      }),
-    )
-    expect(withCdp.filter((a) => /^\d+\.\d+\.\d+\.\d+:\d+:\d+$/.test(a)).every((a) => a.startsWith('127.0.0.1:'))).toBe(true)
-    expect(withCdp.join(' ')).not.toMatch(/remote-debugging-address|remote-allow-origins/)
-  })
-
-  it('createArgv refuses a CDP port for another agent, outside the port range, or equal to the channel port', () => {
-    const base = makeBaseOpts()
-    expect(() => createArgv({ ...base, cdpPort: 22 })).toThrow(/cdpPort/)
-    expect(() => createArgv({ ...base, cdpPort: base.port })).toThrow(/cdpPort/)
-    expect(() => createArgv({ ...base, agentId: 'codex', port: null, cdpPort: 29000, c: 'co-sandbox-my-ws.codex' })).toThrow(/only for the claude/)
-  })
 
   it('builds the golden argv per TRD §3.5', () => {
     const opts = makeBaseOpts()

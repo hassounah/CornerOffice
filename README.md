@@ -80,17 +80,16 @@ Unit tests (`pnpm test`) never download Electron.
 
 ### Dev profiles
 
-A profile is a separate home for one running instance: its own config, state, window state, events, logs, Electron `userData` and single-instance lock. `make dev` uses the profile `dev` by default (`~/.corner-office/profiles/dev`); `make dev PROFILE=name` picks another; `make dev PROFILE=` (empty) runs the dev build against your real data and prints a loud banner. Profiles only work in unpackaged builds. Sandbox sessions are switched off in a profile, so it never touches the real app's containers or worktrees. A coloured badge with the profile name is shown in the title bar.
+A profile is a separate home for one running instance: its own config, state, window state, events, logs, Electron `userData` and single-instance lock. `make dev` uses the profile `dev` by default (`~/.corner-office/profiles/dev`); `make dev PROFILE=name` picks another; `make dev PROFILE=` (empty) runs the dev build against your real data and prints a loud banner. Profiles only work in unpackaged builds. Sandbox sessions are switched off in a profile, so it never touches the real app's containers or worktrees.
 
 | Knob | Read by | Set by | Default |
 | --- | --- | --- | --- |
-| `PROFILE` | Makefile, launcher | you | `dev` |
-| `DEBUG_PORT` | Makefile, launcher | you | none on the host; 9222 in a sandbox |
+| `PROFILE` | Makefile (host only; the launcher is fixed to `dev`) | you | `dev` |
+| `DEBUG_PORT` | Makefile (host only; the launcher is fixed to 9222) | you | none |
 | `CORNER_OFFICE_PROFILE` | app | Makefile, launcher | unset = default profile |
 | `CORNER_OFFICE_DEBUG_PORT` | app | Makefile, launcher | unset (Chromium remote debugging stays off) |
 | `CORNER_OFFICE_SANDBOX` | app, launcher | host app, when it creates a sandbox container | unset |
 | `CORNER_OFFICE_CHANNEL_PORT` | launcher (stripped) | host app, when it creates a sandbox container | unset |
-| `CORNER_OFFICE_CDP_PUBLISH_PORT` | launcher (stripped from the app) | host app, when "Dev app access" is on | unset |
 
 Both `CORNER_OFFICE_*` profile variables are ignored (with a warning on stderr) in packaged builds. An invalid value is fatal and the message names the variable.
 
@@ -175,24 +174,30 @@ The first sandbox session in a workspace asks you to trust the folder once, in t
 
 ### Dev app in a sandbox
 
-To work on Corner Office itself inside a sandbox session, the agent can run the app headless and look at it over CDP.
+To work on Corner Office itself inside a sandbox session, the agent can run the app headless and look at it over CDP on `127.0.0.1:9222` (inside the container only; nothing is published to the host).
 
-One-time setup on the host, in Corner Office: turn on **Settings > Sandbox > Toolchains > Electron dev runtime** and rebuild the image (this rebuilds the shared image for all workspaces), add `electronjs.org` to the workspace's allowlist, then restart the session.
+One-time setup on the host. `make dev` prints the exact lines when something is missing:
+
+1. Quit Corner Office and add the Electron runtime packages to `"sandbox"` in `~/.corner-office/config.json`: `"extraPackages": ["xvfb", "glib", ...]` (the full list is printed by `make dev`). Restart the app, then **Settings > Sandbox > Image: Rebuild** (this rebuilds the shared image for all workspaces).
+2. Add `electronjs.org` and `release-assets.githubusercontent.com` to the workspace's sandbox allowlist.
+3. Restart the session.
+
+`sandbox.extraPackages` is a generic, currently config-only setting: any system packages from the Wolfi repo, installed as root at image build time and shared by all workspaces. Names must be lowercase package names (`a-z`, `0-9`, `+._-`); invalid entries are dropped with a warning, and the list is capped at 64.
 
 Then, inside the sandbox session:
 
 ```bash
-make dev-sandbox        # installs Electron on first use, starts Xvfb :99 and the dev app, waits for CDP on :9222
+make dev                              # installs Electron on first use, starts Xvfb :99 and the dev app, waits for CDP on :9222
 node scripts/co_dev_shot.mjs          # screenshot, path printed on stdout
 node scripts/co_dev_shot.mjs --text   # the page text instead
-make dev-sandbox-stop
+make dev-stop
 ```
 
-- **If it can't start**, `make dev-sandbox` prints one checklist of host-side steps (the toolchain, the allowlist, a restart). Do only the lines it lists and relay it to the host verbatim.
-- **Banner:** it shows the CDP address, a `host:` line (the host port when "Dev app access" is on, otherwise "not published"), the log paths and the screenshot and stop commands.
+- **If it can't start**, `make dev` prints one checklist of host-side steps (the packages, the allowlist, a restart). Do only the lines it lists and relay it to the host verbatim.
+- **Banner:** it shows the CDP address, the log paths and the screenshot and stop commands.
 - **Profile:** the dev app runs as profile `dev`, with its data under `~/.corner-office/profiles/dev` inside the container. It is lost when the sandbox container is recreated.
 - **Chromium's own sandbox is off, inside the container only** (`--noSandbox`, required because Docker's seccomp blocks user namespaces and setuid bits are stripped). The container itself is never relaxed.
-- **Release note:** the Dockerfile changed once for this feature, so every existing sandbox image shows as out of date and is rebuilt once.
+- **Release note:** the Dockerfile changed, so every existing sandbox image shows as out of date and is rebuilt once.
 
 ### Troubleshooting
 

@@ -43,7 +43,7 @@ const VALID_INPUT: Record<string, unknown> = {
 const REQUEST_CHANNELS = Object.keys(VALID_INPUT)
 
 function baseConfig(): SandboxConfig {
-  return { toolchains: { node: true, go: true, buildBase: true }, globalAllowlist: ['example.org'], workspaces: { other: { channelPort: 4242, devCdpPort: 27000, allowlist: ['a.dev'] } } }
+  return { toolchains: { node: true, go: true, buildBase: true }, extraPackages: ['xvfb'], eventsSplitAt: '2026-01-01T00:00:00.000Z', globalAllowlist: ['example.org'], workspaces: { other: { channelPort: 4242, allowlist: ['a.dev'] } } }
 }
 
 function makeManager(fail = false): SandboxManagerService {
@@ -61,7 +61,6 @@ function makeManager(fail = false): SandboxManagerService {
     previewDelete: impl({ sessionRunning: false, dirtyCount: 0, unmergedBranches: [] }),
     delete: impl({ ok: true }),
     recreate: impl({ ok: true }),
-    setDevAccess: impl(true),
     getBlocked: vi.fn(() => {
       if (fail) throw LEAKY
       return []
@@ -269,7 +268,6 @@ describe('buildSandboxHandlers', () => {
         defaultAllowlist: DEFAULT_ALLOWLIST,
         globalAllowlist: ['example.org'],
         workspaceAllowlists: { other: ['a.dev'] },
-        workspaceDevAccess: { other: 27000 },
       })
     })
   })
@@ -284,6 +282,17 @@ describe('buildSandboxHandlers', () => {
       expect(manager.onSettingsChanged).not.toHaveBeenCalled()
     })
 
+    it.each([
+      ['toolchains', { toolchains: { node: false, go: true, buildBase: true } }],
+      ['globalAllowlist', { globalAllowlist: ['new.example.com'] }],
+      ['workspaceAllowlist', { workspaceAllowlist: { workspaceSlug: 'other', entries: ['b.dev'] } }],
+    ])('a %s save keeps extraPackages and eventsSplitAt', async (_name, patch) => {
+      const { handlers, saved } = makeRig()
+      await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), patch)
+      expect(saved[0].extraPackages).toEqual(['xvfb'])
+      expect(saved[0].eventsSplitAt).toBe('2026-01-01T00:00:00.000Z')
+    })
+
     it('a global allowlist change notifies every known workspace', async () => {
       const { handlers, saved, manager } = makeRig()
       await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), { globalAllowlist: ['new.example.com'] })
@@ -294,7 +303,7 @@ describe('buildSandboxHandlers', () => {
     it('a workspace allowlist change notifies only that workspace and keeps its stored channel port', async () => {
       const { handlers, saved, manager } = makeRig()
       await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), { workspaceAllowlist: { workspaceSlug: 'other', entries: ['b.dev'] } })
-      expect(saved[0].workspaces.other).toEqual({ channelPort: 4242, devCdpPort: 27000, allowlist: ['b.dev'] }) // the dev CDP port survives
+      expect(saved[0].workspaces.other).toEqual({ channelPort: 4242, allowlist: ['b.dev'] })
       expect(manager.onSettingsChanged).toHaveBeenCalledWith(['other'])
     })
 
@@ -302,78 +311,6 @@ describe('buildSandboxHandlers', () => {
       const { handlers, saved } = makeRig()
       await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), { workspaceAllowlist: { workspaceSlug: SLUG, entries: ['c.dev'] } })
       expect(saved[0].workspaces[SLUG]).toEqual({ channelPort: null, allowlist: ['c.dev'] })
-    })
-
-    it('dev app access: on and off go to the manager as a plain boolean', async () => {
-      const { handlers, manager } = makeRig()
-      const on = await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), { workspaceDevAccess: { workspaceSlug: SLUG, enabled: true } })
-      expect(on.error).toBeNull()
-      expect(manager.setDevAccess).toHaveBeenLastCalledWith(SLUG, true)
-      await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), { workspaceDevAccess: { workspaceSlug: SLUG, enabled: false } })
-      expect(manager.setDevAccess).toHaveBeenLastCalledWith(SLUG, false)
-    })
-
-    it('dev app access: config.update runs first, and a failed save never reaches setDevAccess', async () => {
-      const order: string[] = []
-      const { handlers, manager } = makeRig({
-        save: async () => {
-          order.push('update')
-          throw new Error('disk full')
-        },
-      })
-      vi.mocked(manager.setDevAccess).mockImplementation(async () => {
-        order.push('setDevAccess')
-        return true
-      })
-      const res = await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), {
-        toolchains: { node: false, go: true, buildBase: true },
-        workspaceDevAccess: { workspaceSlug: SLUG, enabled: true },
-      })
-      expect(res.error).not.toBeNull()
-      expect(order).toEqual(['update'])
-      expect(manager.setDevAccess).not.toHaveBeenCalled()
-    })
-
-    it('dev app access: setDevAccess runs after a successful update', async () => {
-      const order: string[] = []
-      const { handlers, manager } = makeRig({
-        save: async () => {
-          order.push('update')
-        },
-      })
-      vi.mocked(manager.setDevAccess).mockImplementation(async () => {
-        order.push('setDevAccess')
-        return true
-      })
-      const res = await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), {
-        toolchains: { node: false, go: true, buildBase: true },
-        workspaceDevAccess: { workspaceSlug: SLUG, enabled: true },
-      })
-      expect(res.error).toBeNull()
-      expect(order).toEqual(['update', 'setDevAccess'])
-    })
-
-    it('dev app access: an unknown workspace is NOT_FOUND and nothing is changed', async () => {
-      const { handlers, manager } = makeRig()
-      const res = await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), { workspaceDevAccess: { workspaceSlug: 'ghost', enabled: true } })
-      expect(res.error?.code).toBe(IPC_ERROR_CODES.NOT_FOUND)
-      expect(manager.setDevAccess).not.toHaveBeenCalled()
-    })
-
-    it('dev app access: the schema has no port input', async () => {
-      const { handlers, manager } = makeRig()
-      const res = await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), {
-        workspaceDevAccess: { workspaceSlug: SLUG, enabled: true, port: 9222 },
-      })
-      expect(res.error?.code).toBe(IPC_ERROR_CODES.VALIDATION_ERROR)
-      expect(manager.setDevAccess).not.toHaveBeenCalled()
-    })
-
-    it('dev app access: no free port is a generic error', async () => {
-      const { handlers, manager } = makeRig()
-      vi.mocked(manager.setDevAccess).mockResolvedValueOnce(false)
-      const res = await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), { workspaceDevAccess: { workspaceSlug: SLUG, enabled: true } })
-      expect(res.error?.code).toBe(IPC_ERROR_CODES.INTERNAL_ERROR)
     })
 
     it('rejects an unknown workspace with NOT_FOUND and writes nothing', async () => {

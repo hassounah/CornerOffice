@@ -8,7 +8,6 @@ import {
   removeIdentity,
   buildTestImage,
   createTestContainer,
-  testPort,
   createSandboxRig,
   removeTestContainer,
   removeTestImage,
@@ -23,9 +22,9 @@ import { DEFAULT_ALLOWLIST } from '../../main/services/sandbox-allowlist'
 
 // ---------------------------------------------------------------------------
 // dev-profile.test.ts (#0038 TRD §7.2 D1-D4) — the in-sandbox dev instance:
-// the WITH_ELECTRON image, a profile home created next to the real mounts, and
+// an image built with sandbox.extraPackages, a profile home created next to the real mounts, and
 // the egress allowlist for the Electron download hosts. Needs Docker and
-// network (D4 is the Dev app access publish, 3a); run via `CO_DOCKER_TESTS=1 pnpm test:docker`. D1 (ldd) and D2 also
+// network; run via `CO_DOCKER_TESTS=1 pnpm test:docker`. D1 (ldd) and D2 also
 // need an unpacked Electron: set CO_ELECTRON_DIST to its directory (the one
 // holding the `electron` binary), as the host spike (spike-2.1.sh) does.
 // ---------------------------------------------------------------------------
@@ -33,6 +32,11 @@ import { DEFAULT_ALLOWLIST } from '../../main/services/sandbox-allowlist'
 const ELECTRON_DIST = process.env.CO_ELECTRON_DIST ?? ''
 const HAS_ELECTRON = ELECTRON_DIST !== '' && fs.existsSync(path.join(ELECTRON_DIST, 'electron'))
 const DEBUG_PORT = 9222
+// The package list `make dev` prints for sandbox.extraPackages (scripts/co_dev_sandbox.sh ELECTRON_PACKAGES).
+const ELECTRON_PACKAGES = [
+  'xvfb', 'glib', 'nss', 'nspr', 'atk', 'at-spi2-core', 'cups-libs', 'dbus-libs', 'libdrm', 'libxkbcommon', 'libxcomposite',
+  'libxdamage', 'libxfixes', 'libxrandr', 'mesa-gbm', 'pango', 'cairo', 'alsa-lib', 'gtk-3', 'fontconfig', 'font-dejavu',
+]
 
 /** Runs `script` with `sh -c` as the agent in `container`; tolerates a failing exit so the caller can assert it. */
 function shAsAgent(d: DockerRunner, container: TestContainer, identity: TestIdentity, script: string, env: Record<string, string> = {}) {
@@ -53,7 +57,7 @@ describe.skipIf(!process.env.CO_DOCKER_TESTS || !dockerOk())('dev profile — #0
     identity = makeIdentity()
     await buildTestImage(d, identity, {
       image: ELECTRON_TEST_IMAGE,
-      toolchains: { node: false, go: false, buildBase: false, electron: true },
+      toolchains: { node: false, go: false, buildBase: false, extraPackages: ELECTRON_PACKAGES },
     })
     const mountFlags = HAS_ELECTRON ? ['--mount', `type=bind,src=${ELECTRON_DIST},dst=/opt/electron,readonly`] : []
     electron = await createTestContainer(d, identity, { image: ELECTRON_TEST_IMAGE, extraCreateFlags: mountFlags })
@@ -74,7 +78,7 @@ describe.skipIf(!process.env.CO_DOCKER_TESTS || !dockerOk())('dev profile — #0
     if (identity) removeIdentity(identity)
   }, 120_000)
 
-  describe('D1 — WITH_ELECTRON image', () => {
+  describe('D1 — image with the Electron extraPackages', () => {
     it('has no setuid or setgid files', async () => {
       const result = await d.run(['exec', '--user', 'root', electron.name, 'find', '/', '-xdev', '-perm', '/6000', '-type', 'f'])
       expect(result.stdout.trim()).toBe('')
@@ -144,86 +148,17 @@ describe.skipIf(!process.env.CO_DOCKER_TESTS || !dockerOk())('dev profile — #0
       return match[1]
     }
 
-    it('forwards release-assets.githubusercontent.com from the default allowlist', async () => {
-      expect(await dnsStatus('release-assets.githubusercontent.com')).not.toBe('REFUSED')
-    })
+    const HOSTS = ['electronjs.org', 'release-assets.githubusercontent.com']
 
-    it('refuses electronjs.org until the workspace allowlist lists it', async () => {
-      expect(await dnsStatus('electronjs.org')).toBe('REFUSED')
+    it('refuses the Electron download hosts until the workspace allowlist lists them', async () => {
+      for (const host of HOSTS) expect(await dnsStatus(host)).toBe('REFUSED')
 
       await d.run(firewallInitArgv(electron.name, 'allowlist'), {
-        stdin: [...DEFAULT_ALLOWLIST, 'electronjs.org'].join('\n'),
+        stdin: [...DEFAULT_ALLOWLIST, ...HOSTS].join('\n'),
         timeoutMs: 30_000,
       })
 
-      expect(await dnsStatus('electronjs.org')).not.toBe('REFUSED')
-    })
-  })
-
-  describe('D4 — Dev app access: CDP published on 127.0.0.1 through socat', () => {
-    let cdp: TestContainer
-    let cdpPort: number
-    let gateway: string
-
-    /** The default route's gateway from /proc/net/route (little-endian hex), as the launcher's parse_gw reads it. */
-    function parseGateway(route: string): string {
-      for (const line of route.split('\n').slice(1)) {
-        const [, dest, gw] = line.trim().split(/\s+/)
-        if (dest === '00000000' && /^[0-9A-Fa-f]{8}$/.test(gw)) {
-          return [6, 4, 2, 0].map((i) => parseInt(gw.slice(i, i + 2), 16)).join('.')
-        }
-      }
-      throw new Error('no default route in the container')
-    }
-
-    beforeAll(async () => {
-      cdpPort = testPort()
-      cdp = await createTestContainer(d, identity, { image: ELECTRON_TEST_IMAGE, cdpPort })
-      gateway = parseGateway((await d.run(['exec', cdp.name, 'cat', '/proc/net/route'])).stdout)
-      // A stand-in for the dev app's CDP endpoint, then the launcher's socat, limited to the gateway.
-      const script = [
-        `bun -e "Bun.serve({ hostname: '127.0.0.1', port: ${DEBUG_PORT}, fetch: () => new Response('{\\"Browser\\":\\"stand-in\\"}') })" >/tmp/cdp-server.log 2>&1 &`,
-        `socat -d -d TCP-LISTEN:${cdpPort},bind=0.0.0.0,fork,reuseaddr,range=${gateway}/32 TCP:127.0.0.1:${DEBUG_PORT} >/tmp/socat.log 2>&1 &`,
-        'sleep 1',
-      ].join('\n')
-      await d.run(['exec', '--detach', '--user', `${identity.uid}:${identity.gid}`, cdp.name, '/bin/sh', '-c', script])
-    }, 5 * 60_000)
-
-    afterAll(async () => {
-      if (cdp) await removeTestContainer(d, cdp.name)
-    }, 30_000)
-
-    it('docker port shows only 127.0.0.1 bindings, including the CDP port', async () => {
-      const lines = (await d.run(['port', cdp.name])).stdout.trim().split('\n').filter(Boolean)
-      expect(lines.length).toBe(2)
-      for (const line of lines) expect(line).toMatch(/-> 127\.0\.0\.1:\d+$/)
-      expect(lines.some((l) => l.endsWith(`127.0.0.1:${cdpPort}`))).toBe(true)
-    })
-
-    it('the host reaches /json/version through socat, and socat saw the gateway as the source', async () => {
-      let body = ''
-      for (let attempt = 0; attempt < 20 && body === ''; attempt++) {
-        try {
-          body = await (await fetch(`http://127.0.0.1:${cdpPort}/json/version`, { signal: AbortSignal.timeout(2_000) })).text()
-        } catch {
-          await new Promise((resolve) => setTimeout(resolve, 500))
-        }
-      }
-      expect(body).toContain('stand-in')
-
-      const log = (await d.run(['exec', cdp.name, 'cat', '/tmp/socat.log'])).stdout
-      expect(log).toContain(`accepting connection from AF=2 ${gateway}`)
-    })
-
-    it('a second bridge container is refused', async () => {
-      const ip = (await d.run(['inspect', '-f', '{{.NetworkSettings.IPAddress}}', cdp.name])).stdout.trim()
-      expect(ip).not.toBe('')
-      const peer = await d.run(
-        ['run', '--rm', '--entrypoint', 'curl', ELECTRON_TEST_IMAGE, '-sS', '--max-time', '5', `http://${ip}:${cdpPort}/json/version`],
-        { allowExit: [1, 7, 28, 52, 56], timeoutMs: 60_000 },
-      )
-      expect(peer.exitCode).not.toBe(0)
-      expect(peer.stdout).not.toContain('stand-in')
+      for (const host of HOSTS) expect(await dnsStatus(host)).not.toBe('REFUSED')
     })
   })
 })

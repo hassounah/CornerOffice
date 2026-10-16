@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { SandboxSettingsPanel } from '../../../renderer/components/sandbox/SandboxSettingsPanel'
 import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
 import { useWorkspaceStore } from '../../../renderer/stores/workspace-store'
-import { ELECTRON_TOOLCHAIN_COPY, LIVE_UPDATE_FAILURE_COPY } from '../../../renderer/utils/sandbox-copy'
+import { LIVE_UPDATE_FAILURE_COPY } from '../../../renderer/utils/sandbox-copy'
 import type { Workspace } from '@main/types/workspace'
 import type { BlockedEntry, SandboxEnvironment, SandboxSettingsView, SandboxStatus, SandboxSummary } from '@main/types/sandbox'
 
@@ -32,7 +32,7 @@ Object.defineProperty(window, 'cornerOffice', { value: { sandbox: api, on: vi.fn
 const ok = <T,>(data: T) => ({ data, error: null })
 
 const ENV_READY: SandboxEnvironment = { docker: 'ok', dockerVersion: '28.0.1', image: { state: 'ready', builtAt: '2026-01-02T03:04:05Z', sizeBytes: 1.3 * 1024 ** 3 } }
-const SETTINGS: SandboxSettingsView = { toolchains: { node: true, go: false, buildBase: true }, defaultAllowlist: [], globalAllowlist: [], workspaceAllowlists: {}, workspaceDevAccess: {} }
+const SETTINGS: SandboxSettingsView = { toolchains: { node: true, go: false, buildBase: true }, defaultAllowlist: [], globalAllowlist: [], workspaceAllowlists: {} }
 
 function status(slug: string, recreatePending: boolean): SandboxStatus {
   return {
@@ -437,7 +437,7 @@ const NET_SETTINGS: SandboxSettingsView = {
   toolchains: { node: true, go: true, buildBase: true },
   defaultAllowlist: ['api.anthropic.com', 'github.com'],
   globalAllowlist: ['global.dev'],
-  workspaceAllowlists: { alpha: ['alpha-only.dev'] }, workspaceDevAccess: {},
+  workspaceAllowlists: { alpha: ['alpha-only.dev'] },
 }
 
 const blockedEntry = (domain: string, count = 1): BlockedEntry => ({ domain, count, firstSeen: 't1', lastSeen: 't2' })
@@ -493,14 +493,6 @@ describe('Network section', () => {
     const list = within(network()).getByText('api.anthropic.com').closest('ul') as HTMLElement
     expect(within(list).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['api.anthropic.com', 'github.com'])
     expect(within(list).queryByRole('button')).toBeNull()
-  })
-
-  it('warns against running make dev or pnpm on the host inside a sandbox worktree (L5)', async () => {
-    setNetwork()
-    render(<SandboxSettingsPanel />)
-    expect(
-      within(network()).getByText(/Never run make dev or pnpm on your computer inside a sandbox worktree/),
-    ).toBeInTheDocument()
   })
 
   describe('allowlist editors', () => {
@@ -796,44 +788,5 @@ describe('Sandboxes section', () => {
 
     await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }))
     await vi.waitFor(() => expect(api.delete).toHaveBeenCalledWith('alpha', false))
-  })
-})
-
-describe('off in a profile (#0038 D6)', () => {
-  const OFF_COPY = 'Sandbox sessions are off in this profile. Use the installed app, or make dev PROFILE=.'
-  const ENV_OFF: SandboxEnvironment = { docker: 'not-installed', dockerVersion: null, image: { state: 'absent', builtAt: null, sizeBytes: null }, offInProfile: true }
-
-  it('shows the off copy in the Docker line and the Sandboxes empty state, and no other sections', async () => {
-    api.getEnvironment.mockResolvedValue(ok(ENV_OFF))
-    setStore({ environment: ENV_OFF })
-
-    render(<SandboxSettingsPanel />)
-
-    expect(await screen.findAllByText(OFF_COPY)).toHaveLength(2)
-    expect(screen.getByText('Docker')).toBeInTheDocument()
-    expect(screen.getByText('Sandboxes')).toBeInTheDocument()
-    expect(screen.queryByText('Image')).toBeNull()
-    expect(screen.queryByText('Network')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
-    expect(screen.queryByText(/isn't installed/)).toBeNull()
-  })
-})
-
-describe('Electron toolchain row (#0038 D9)', () => {
-  it('has copy without a TODO or ~N placeholder', () => {
-    expect(ELECTRON_TOOLCHAIN_COPY).not.toMatch(/TODO|~\s?N\b/)
-    expect(ELECTRON_TOOLCHAIN_COPY).toContain('all workspaces')
-    expect(ELECTRON_TOOLCHAIN_COPY).toContain('electronjs.org')
-  })
-
-  it('toggles electron on while keeping the other toolchains', async () => {
-    api.updateSettings.mockResolvedValue(ok({ ...SETTINGS, toolchains: { ...SETTINGS.toolchains, electron: true } }))
-    render(<SandboxSettingsPanel />)
-
-    const box = await screen.findByRole('checkbox', { name: ELECTRON_TOOLCHAIN_COPY })
-    expect(box).not.toBeChecked()
-    await userEvent.click(box)
-
-    expect(api.updateSettings).toHaveBeenCalledWith({ toolchains: { node: true, go: false, buildBase: true, electron: true } })
   })
 })

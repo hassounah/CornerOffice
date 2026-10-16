@@ -320,13 +320,6 @@ function setupCSP(): void {
 
 async function createWindow(): Promise<void> {
   const windowTitle = profile.name === null ? 'Corner Office' : `Corner Office (${profile.name})`
-  // Read by the preload: the profile badge (display path only) and the dev-build-on-real-data badge.
-  const additionalArguments =
-    profile.name !== null
-      ? [`--co-profile=${profile.name}`, `--co-profile-home=${profile.homeDisplay}`]
-      : app.isPackaged
-        ? []
-        : ['--co-dev-real-data']
   windowStateService = new WindowStateService(screen as ScreenLike)
   const savedState = windowStateService.load()
 
@@ -354,7 +347,6 @@ async function createWindow(): Promise<void> {
       allowRunningInsecureContent: false,
       webSecurity: true,
       preload: path.join(__dirname, '../preload/index.js'),
-      ...(additionalArguments.length > 0 ? { additionalArguments } : {}),
     },
   })
 
@@ -1070,7 +1062,7 @@ async function initialize(): Promise<void> {
       docker: dockerRunner,
       buildContext: () => resolveBuildContext({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appPath: app.getAppPath() }),
       identity: () => ({ uid: os.userInfo().uid, gid: os.userInfo().gid, home: realHome }),
-      toolchains: () => currentSandboxConfig().toolchains,
+      toolchains: () => ({ ...currentSandboxConfig().toolchains, extraPackages: currentSandboxConfig().extraPackages }),
     },
     {
       onProgress: (line, phase) => sandboxPush.buildProgress({ line, phase }),

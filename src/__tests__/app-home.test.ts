@@ -92,7 +92,7 @@ describe('resolveProfile', () => {
   describe('sandbox mode', () => {
     it('D4: the default profile throws with the exact message', () => {
       expect(() => resolveProfile({ CORNER_OFFICE_SANDBOX: '1' }, base)).toThrow(
-        "refusing to start with the default profile inside a sandbox (CORNER_OFFICE_SANDBOX=1): it would rotate your live session's events and connect to its own channel. Run: make dev-sandbox",
+        "refusing to start with the default profile inside a sandbox (CORNER_OFFICE_SANDBOX=1): it would rotate your live session's events and connect to its own channel. Run: make dev",
       )
     })
 

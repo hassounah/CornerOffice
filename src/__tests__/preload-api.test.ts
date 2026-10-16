@@ -20,7 +20,7 @@ vi.mock('electron', () => ({
   },
 }))
 
-import { ALLOWED_PUSH_CHANNELS, isAllowedChannel, api, parseProfile, parseDevRealData } from '../preload/api'
+import { ALLOWED_PUSH_CHANNELS, isAllowedChannel, api } from '../preload/api'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -576,35 +576,5 @@ describe('code.* trailing optional root (#0029)', () => {
     mockInvoke.mockResolvedValueOnce({ data: null, error: null })
     await api.code.getStatus('ws', 'head')
     expect((mockInvoke.mock.calls[0][1] as { root?: string }).root).toBeUndefined()
-  })
-})
-
-// ---------------------------------------------------------------------------
-// profile (#0038)
-// ---------------------------------------------------------------------------
-
-describe('parseProfile', () => {
-  it('is null without the arguments', () => {
-    expect(parseProfile(['electron', '.'])).toBeNull()
-    expect(api.profile).toBeNull()
-  })
-
-  it('is null when only one of the two arguments is present', () => {
-    expect(parseProfile(['--co-profile=dev'])).toBeNull()
-    expect(parseProfile(['--co-profile-home=/x'])).toBeNull()
-  })
-
-  it('returns a frozen name and home when both are present', () => {
-    const profile = parseProfile(['x', '--co-profile=dev', '--co-profile-home=/h/.corner-office/profiles/dev'])
-    expect(profile).toEqual({ name: 'dev', home: '/h/.corner-office/profiles/dev' })
-    expect(Object.isFrozen(profile)).toBe(true)
-  })
-})
-
-describe('parseDevRealData', () => {
-  it('is true only with the --co-dev-real-data argument', () => {
-    expect(parseDevRealData(['electron', '--co-dev-real-data'])).toBe(true)
-    expect(parseDevRealData(['electron', '.'])).toBe(false)
-    expect(api.devRealData).toBe(false)
   })
 })

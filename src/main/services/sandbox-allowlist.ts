@@ -105,8 +105,6 @@ export const DEFAULT_ALLOWLIST = [
   'api.github.com',
   'codeload.github.com',
   'objects.githubusercontent.com',
-  // Electron binary downloads (#0038) redirect here. `electron_use_remote_checksums` must never be set.
-  'release-assets.githubusercontent.com',
 ] as const
 
 /**

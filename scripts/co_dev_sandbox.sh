@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # Launch the headless Corner Office dev app inside a sandbox session (#0038, TRD §3.8).
+# Normally run through make: `make dev` (= --wait) and `make dev-stop` (= --stop).
 #
-#   scripts/co_dev_sandbox.sh [--wait | --stop]
+#   scripts/co_dev_sandbox.sh --wait | --stop
 #
-#   (no flag)  run in the foreground
 #   --wait     detach, write the pidfile, block until the app answers on CDP, print the banner
-#   --stop     stop a detached or foreground run
+#   --stop     stop a detached run
 #
-# Knobs: PROFILE (default dev), DEBUG_PORT (default 9222), CORNER_OFFICE_CDP_PUBLISH_PORT (set by the host app).
-# Never prints env values or secret files.
+# Fixed profile "dev", CDP on 127.0.0.1:9222. Never prints env values or secret files.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,45 +25,33 @@ REPO_ROOT="${CO_REPO_ROOT:-$(cd "$HERE/.." && pwd)}"
 #   CORNER_OFFICE_SANDBOX is deliberately kept (it marks the session as sandboxed).
 HOST_ATTRIBUTION_ENV=(
   CORNER_OFFICE_CHANNEL_PORT
-  CORNER_OFFICE_CDP_PUBLISH_PORT
 )
 
-# Keep equal to PROFILE_NAME_RE in src/main/services/app-home.ts (profile-name-regex.test.ts pins it).
-PROFILE_RE='^[a-z0-9][a-z0-9-]{0,31}$'
+# System packages the Electron dev runtime needs (Wolfi names), for sandbox.extraPackages in config.json.
+ELECTRON_PACKAGES=(
+  xvfb glib nss nspr atk at-spi2-core cups-libs dbus-libs libdrm libxkbcommon libxcomposite
+  libxdamage libxfixes libxrandr mesa-gbm pango cairo alsa-lib gtk-3 fontconfig font-dejavu
+)
+
+PROFILE=dev
+DEBUG_PORT=9222
 DISPLAY_NUM=99
 X_LOCK="${CO_X_LOCK:-/tmp/.X$DISPLAY_NUM-lock}"
 X_SOCKET="${CO_X_SOCKET:-/tmp/.X11-unix/X$DISPLAY_NUM}"
 X_NAME="${CO_X_NAME:-Xvfb}"
 WAIT_SECONDS=90
 
-PROFILE="${PROFILE:-dev}"
-DEBUG_PORT="${DEBUG_PORT:-9222}"
 HOME_DIR="$HOME/.corner-office/profiles/$PROFILE"
 HOME_DISPLAY="~/.corner-office/profiles/$PROFILE"
 PIDFILE="$HOME_DIR/dev-sandbox.pid"
-CDP_FAILED="$HOME_DIR/cdp-publish.failed"
-ROUTE_FILE="${CO_ROUTE_FILE:-/proc/net/route}"
 LOG="$HOME_DIR/logs/dev-sandbox.log"
 
-MODE=foreground
 case "${1:-}" in
-  '') ;;
   --wait) MODE=wait ;;
   --stop) MODE=stop ;;
   --run) MODE=run ;; # internal: the detached child of --wait
-  *) echo "usage: co_dev_sandbox.sh [--wait | --stop]" >&2; exit 64 ;;
+  *) echo "usage: co_dev_sandbox.sh --wait | --stop (normally: make dev, make dev-stop)" >&2; exit 64 ;;
 esac
-
-# ── validation ────────────────────────────────────────────────────────────────
-# [[ =~ ]] matches the whole string: a value with an embedded newline cannot slip past the anchors.
-if ! [[ $PROFILE =~ $PROFILE_RE ]]; then
-  echo "PROFILE=\"$PROFILE\" is invalid. Use 1-32 lowercase letters, digits or '-', starting with a letter or digit. Example: make dev-sandbox PROFILE=dev" >&2
-  exit 2
-fi
-if ! [[ $DEBUG_PORT =~ ^[0-9]{1,5}$ ]] || [ "$DEBUG_PORT" -lt 1024 ] || [ "$DEBUG_PORT" -gt 65535 ]; then
-  echo "DEBUG_PORT=\"$DEBUG_PORT\" is invalid. Use a port from 1024 to 65535. Example: make dev-sandbox DEBUG_PORT=9222" >&2
-  exit 2
-fi
 
 pid_alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
 
@@ -101,7 +88,7 @@ clear_stale_display() {
 # ── --stop ────────────────────────────────────────────────────────────────────
 stop_app() {
   if [ ! -f "$PIDFILE" ]; then
-    echo "==> dev-sandbox is not running"
+    echo "==> the headless dev app is not running"
     clear_stale_display >/dev/null || true
     return 0
   fi
@@ -118,22 +105,12 @@ stop_app() {
   fi
   rm -f "$PIDFILE"
   clear_stale_display >/dev/null || true
-  echo "==> dev-sandbox stopped"
+  echo "==> the headless dev app stopped"
 }
 
 if [ "$MODE" = stop ]; then
   stop_app
   exit 0
-fi
-
-# Dev app access (3a): the host sets CORNER_OFFICE_CDP_PUBLISH_PORT when it published a port for this container.
-# Refuse anything but a plain port (and the debug port itself), so the socat argv below is built only from validated values.
-if [ -n "${CORNER_OFFICE_CDP_PUBLISH_PORT:-}" ]; then
-  P="$CORNER_OFFICE_CDP_PUBLISH_PORT"
-  if ! [[ $P =~ ^[0-9]{1,5}$ ]] || [ "$P" -lt 1024 ] || [ "$P" -gt 65535 ] || [ "$P" = "$DEBUG_PORT" ]; then
-    echo "CORNER_OFFICE_CDP_PUBLISH_PORT=\"$P\" is invalid. It must be a port from 1024 to 65535 other than DEBUG_PORT; restart the session from Corner Office." >&2
-    exit 2
-  fi
 fi
 
 # ── preflight ─────────────────────────────────────────────────────────────────
@@ -146,9 +123,30 @@ electron_libs_missing() { [ -e "$ELECTRON_BIN" ] && ldd "$ELECTRON_BIN" 2>/dev/n
 # Every mode that starts something refuses outside a sandbox session; --stop is harmless anywhere.
 require_sandbox() {
   if [ "${CORNER_OFFICE_SANDBOX:-}" != 1 ]; then
-    echo 'This target runs inside a Corner Office sandbox session. On the host use `make dev`.' >&2
+    echo 'make dev outside a sandbox session runs the windowed app; this launcher is for inside a sandbox.' >&2
     exit 2
   fi
+}
+
+# The ELECTRON_PACKAGES list as a JSON array, e.g. ["xvfb", "glib"].
+packages_json() {
+  local out="" p
+  for p in "${ELECTRON_PACKAGES[@]}"; do out+="${out:+, }\"$p\""; done
+  printf '[%s]' "$out"
+}
+
+# The host checklist, printed once with only the lines that apply, then exit 3. $1: toolchain 0|1, $2: allowlist 0|1.
+print_checklist() {
+  {
+    echo "make dev can't start the headless app yet. On the host:"
+    if [ "$1" = 1 ]; then
+      echo '  [ ] Add these to "sandbox" in ~/.corner-office/config.json (quit Corner Office first), then Settings > Sandbox > Image: Rebuild:'
+      echo "      \"extraPackages\": $(packages_json)"
+    fi
+    [ "$2" = 1 ] && echo "  [ ] This workspace's sandbox allowlist: add electronjs.org and release-assets.githubusercontent.com"
+    echo "  [ ] Restart this session"
+  } >&2
+  exit 3
 }
 
 preflight() {
@@ -156,7 +154,7 @@ preflight() {
 
   # Host-side problems, collected into ONE checklist so it can be relayed verbatim.
   local toolchain=0 allowlist=0
-  if ! command -v Xvfb >/dev/null 2>&1 || ! command -v socat >/dev/null 2>&1 || electron_libs_missing; then toolchain=1; fi
+  if ! command -v Xvfb >/dev/null 2>&1 || electron_libs_missing; then toolchain=1; fi
   if ! electron_present; then
     if ! curl -s -o /dev/null --max-time 5 https://www.electronjs.org/ \
       || ! curl -s -o /dev/null --max-time 5 https://release-assets.githubusercontent.com/; then
@@ -164,27 +162,21 @@ preflight() {
     fi
   fi
   if [ "$toolchain" = 1 ] || [ "$allowlist" = 1 ]; then
-    {
-      echo "make dev-sandbox can't start yet. On the host, in Corner Office:"
-      [ "$toolchain" = 1 ] && echo '  [ ] Settings > Sandbox > Toolchains: turn on "Electron dev runtime" and rebuild the image (affects all workspaces)'
-      [ "$allowlist" = 1 ] && echo "  [ ] This workspace's sandbox settings > Allowlist: add electronjs.org"
-      echo "  [ ] Restart this session"
-    } >&2
-    exit 3
+    print_checklist "$toolchain" "$allowlist"
   fi
 
   # Problems inside this container, reported separately.
   if [ -f "$PIDFILE" ] && launcher_alive "$(head -n 1 "$PIDFILE")"; then
-    echo "dev-sandbox is already running (pid $(head -n 1 "$PIDFILE")); run make dev-sandbox-stop first" >&2
+    echo "the headless dev app is already running (pid $(head -n 1 "$PIDFILE")); run make dev-stop first" >&2
     exit 1
   fi
   if curl -s --max-time 2 "http://127.0.0.1:$DEBUG_PORT/json/version" >/dev/null 2>&1; then
-    echo "port $DEBUG_PORT is in use; set DEBUG_PORT= to another port" >&2
+    echo "port $DEBUG_PORT is in use" >&2
     exit 1
   fi
   local x_pid
   if ! x_pid="$(clear_stale_display)"; then
-    echo "display :$DISPLAY_NUM is in use by pid $x_pid; run make dev-sandbox-stop" >&2
+    echo "display :$DISPLAY_NUM is in use by pid $x_pid; run make dev-stop" >&2
     exit 1
   fi
 }
@@ -196,99 +188,37 @@ ensure_electron() {
   (cd "$REPO_ROOT" && pnpm exec install-electron && make rebuild-native) >&2 \
     || { echo "installing Electron failed; see the output above" >&2; exit 1; }
   if electron_libs_missing; then
-    {
-      echo "make dev-sandbox can't start yet. On the host, in Corner Office:"
-      echo '  [ ] Settings > Sandbox > Toolchains: turn on "Electron dev runtime" and rebuild the image (affects all workspaces)'
-      echo "  [ ] Restart this session"
-    } >&2
-    exit 3
+    print_checklist 1 0
   fi
 }
 
 prepare_profile() {
   mkdir -p "$HOME_DIR/logs" "$HOME_DIR/shots" "$HOME_DIR/claude"
-  rm -f "$CDP_FAILED"
   if [ ! -e "$HOME_DIR/claude/plugins" ] && [ ! -L "$HOME_DIR/claude/plugins" ]; then
     ln -s "$HOME/.claude/plugins" "$HOME_DIR/claude/plugins"
   fi
 }
 
-# ── Dev app access: the default gateway, fail closed ──────────────────────────
-# Prints the default route's gateway from a /proc/net/route-format file as a dotted quad. Fails (no output) on an
-# unreadable or empty file, no default route, a malformed or 0.0.0.0 gateway: then nothing is published.
-parse_gw() {
-  local file="$1" iface dest gw rest
-  [ -r "$file" ] || return 1
-  while read -r iface dest gw rest; do
-    [ "$dest" = 00000000 ] || continue
-    [[ $gw =~ ^[0-9A-Fa-f]{8}$ ]] || return 1
-    local ip="$((16#${gw:6:2})).$((16#${gw:4:2})).$((16#${gw:2:2})).$((16#${gw:0:2}))"
-    [ "$ip" != 0.0.0.0 ] || return 1
-    printf '%s' "$ip"
-    return 0
-  done <"$file"
-  return 1
-}
-
-# ── the banner (the host line is always present) ──────────────────────────────
 print_banner() {
-  local host_line="not published. Ask the user to turn on Settings > Sandbox > Dev app access for this workspace in Corner Office (then recreate)"
-  if [ -n "${CORNER_OFFICE_CDP_PUBLISH_PORT:-}" ]; then
-    if [ -e "$CDP_FAILED" ] || ! parse_gw "$ROUTE_FILE" >/dev/null; then
-      host_line="not published (see the launcher log)"
-    else
-      host_line="127.0.0.1:$CORNER_OFFICE_CDP_PUBLISH_PORT"
-    fi
-  fi
   cat <<EOF
 ==> Corner Office dev profile "$PROFILE" (sandbox, headless Xvfb :$DISPLAY_NUM)
     cdp:  http://127.0.0.1:$DEBUG_PORT
-    host: $host_line
     logs: $HOME_DISPLAY/logs/dev-sandbox.log (launcher+vite), $HOME_DISPLAY/logs/main.log (app)
     shot: node scripts/co_dev_shot.mjs [--text]
-    stop: make dev-sandbox-stop
+    stop: make dev-stop
     note: these paths are inside the container and are lost when the sandbox is recreated.
 EOF
 }
 
-# ── run: Xvfb, (socat), electron-vite ─────────────────────────────────────────
+# ── run: Xvfb, electron-vite ──────────────────────────────────────────────────
 XVFB_PID=""
-SOCAT_PID=""
-VITE_PID=""
 
 cleanup() {
   trap - EXIT INT TERM
   rm -f "$PIDFILE"
-  if [ "$(pgid_of "$$")" = "$$" ]; then
-    # The detached run leads its own group, and vite, electron, Xvfb and socat are all in it.
-    trap '' TERM
-    kill -TERM -- "-$$" 2>/dev/null || true
-  else
-    # Foreground run, sharing the user's group: stop only what this script started.
-    [ -n "$VITE_PID" ] && { kill -TERM "$VITE_PID" 2>/dev/null || true; }
-    [ -n "$SOCAT_PID" ] && { kill "$SOCAT_PID" 2>/dev/null || true; }
-    [ -n "$XVFB_PID" ] && { kill "$XVFB_PID" 2>/dev/null || true; }
-  fi
-}
-
-# Step 5: with Dev app access on, expose the dev app's CDP port to the host only, through socat limited to the gateway.
-start_cdp_publish() {
-  rm -f "$CDP_FAILED"
-  [ -n "${CORNER_OFFICE_CDP_PUBLISH_PORT:-}" ] || return 0
-  local gw
-  if ! gw="$(parse_gw "$ROUTE_FILE")"; then
-    echo "Dev app access: could not read the gateway from /proc/net/route; not publishing"
-    touch "$CDP_FAILED"
-    return 0
-  fi
-  socat -T 600 "TCP-LISTEN:$CORNER_OFFICE_CDP_PUBLISH_PORT,bind=0.0.0.0,fork,reuseaddr,max-children=8,range=$gw/32" "TCP:127.0.0.1:$DEBUG_PORT" >>"$LOG" 2>&1 &
-  SOCAT_PID=$!
-  sleep 0.3
-  if ! pid_alive "$SOCAT_PID"; then
-    echo "Dev app access: socat exited at once; not publishing"
-    SOCAT_PID=""
-    touch "$CDP_FAILED"
-  fi
+  # The detached run leads its own group, and vite, electron and Xvfb are all in it.
+  trap '' TERM
+  kill -TERM -- "-$$" 2>/dev/null || true
 }
 
 run_app() {
@@ -300,16 +230,13 @@ run_app() {
   XVFB_PID=$!
   export DISPLAY=":$DISPLAY_NUM"
 
-  start_cdp_publish
-
   local strip=()
   for name in "${HOST_ATTRIBUTION_ENV[@]}"; do strip+=(-u "$name"); done
   # Same process group as this script: one group signal stops the whole tree (see cleanup and --stop).
   env "${strip[@]}" CORNER_OFFICE_PROFILE="$PROFILE" CORNER_OFFICE_DEBUG_PORT="$DEBUG_PORT" \
     "$REPO_ROOT/node_modules/.bin/electron-vite" dev --noSandbox -- --disable-gpu --disable-dev-shm-usage \
     >>"$LOG" 2>&1 &
-  VITE_PID=$!
-  wait "$VITE_PID"
+  wait "$!"
 }
 
 wait_ready() {
@@ -317,7 +244,7 @@ wait_ready() {
   echo "==> waiting for CDP on :$DEBUG_PORT (up to $WAIT_SECONDS s)..." >&2
   for _ in $(seq 1 "$WAIT_SECONDS"); do
     if ! pid_alive "$pid"; then
-      echo "dev-sandbox exited before CDP came up. Last lines of $LOG:" >&2
+      echo "the headless dev app exited before CDP came up. Last lines of $LOG:" >&2
       tail -n 30 "$LOG" >&2 || true
       echo "Full log: $LOG" >&2
       return 1
@@ -352,12 +279,5 @@ case "$MODE" in
       kill -TERM -- "-$child" 2>/dev/null || kill -TERM "$child" 2>/dev/null || true
       exit 1
     fi
-    ;;
-  foreground)
-    preflight
-    ensure_electron
-    prepare_profile
-    print_banner
-    run_app
     ;;
 esac

@@ -4,7 +4,7 @@ import path from 'node:path'
 
 // ---------------------------------------------------------------------------
 // README drift guard (#0038, UX M8): every CORNER_OFFICE_* variable read by app-home.ts or
-// the dev-sandbox launcher must appear in the README's Dev profiles knob table.
+// the dev sandbox launcher must appear in the README's Dev profiles knob table.
 // ---------------------------------------------------------------------------
 
 const ROOT = path.resolve(__dirname, '../..')

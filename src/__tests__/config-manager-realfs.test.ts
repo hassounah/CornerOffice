@@ -99,8 +99,8 @@ describe('ConfigManager durability (real filesystem)', () => {
         toolchains: { node: false, go: true, buildBase: true },
         globalAllowlist: ['keep.me'],
         workspaces: {
-          bad: { channelPort: 99, devCdpPort: 29000, allowlist: ['bad.dev'] },
-          good: { channelPort: 20002, devCdpPort: 29001, allowlist: ['good.dev'] },
+          bad: { channelPort: 99, allowlist: ['bad.dev'] },
+          good: { channelPort: 20002, allowlist: ['good.dev'] },
         },
       }
       fs.writeFileSync(cfgFile, JSON.stringify(raw))
@@ -108,10 +108,31 @@ describe('ConfigManager durability (real filesystem)', () => {
       const loaded = manager.loadConfig()!
 
       expect(loaded.workspaces).toHaveLength(1)
-      expect(loaded.sandbox!.workspaces.bad).toEqual({ channelPort: null, devCdpPort: 29000, allowlist: ['bad.dev'] })
+      expect(loaded.sandbox!.workspaces.bad).toEqual({ channelPort: null, allowlist: ['bad.dev'] })
       expect(loaded.sandbox!.workspaces.good.allowlist).toEqual(['good.dev'])
       expect(loaded.sandbox!.globalAllowlist).toEqual(['keep.me'])
       expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('invalid sandbox channelPort'))
+    })
+  })
+
+  describe('sandbox extraPackages on disk', () => {
+    it('drops bad entries one by one, keeps the valid ones sorted, and leaves the rest of the sandbox section alone', () => {
+      manager.saveConfig(withWorkspace(manager))
+      const raw = JSON.parse(fs.readFileSync(cfgFile, 'utf-8'))
+      raw.sandbox = {
+        toolchains: { node: false, go: true, buildBase: true },
+        extraPackages: ['xvfb', 'NOT VALID', 'glib', 'xvfb'],
+        globalAllowlist: ['keep.me'],
+        workspaces: {},
+      }
+      fs.writeFileSync(cfgFile, JSON.stringify(raw))
+
+      const loaded = manager.loadConfig()!
+
+      expect(loaded.workspaces).toHaveLength(1)
+      expect(loaded.sandbox!.extraPackages).toEqual(['glib', 'xvfb'])
+      expect(loaded.sandbox!.globalAllowlist).toEqual(['keep.me'])
+      expect(loaded.sandbox!.toolchains.node).toBe(false)
     })
   })
 

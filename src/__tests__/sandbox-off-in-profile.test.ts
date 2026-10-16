@@ -104,12 +104,11 @@ describe('buildOffSandboxHandlers', () => {
       docker: 'not-installed',
       dockerVersion: null,
       image: { state: 'absent', builtAt: null, sizeBytes: null },
-      offInProfile: true,
     })
     const status = (await call(SANDBOX_CHANNELS.GET_STATUS)).data as Record<string, unknown>
     expect(status).toMatchObject({
       workspaceSlug: SLUG,
-      eligibility: { ok: false, reason: 'sandbox-off-in-profile' },
+      eligibility: { ok: false, reason: 'sandbox-disabled' },
       exists: false,
       container: 'absent',
       containers: { claude: 'absent', codex: 'absent' },

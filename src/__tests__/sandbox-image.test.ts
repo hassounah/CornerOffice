@@ -176,15 +176,20 @@ describe('computeBuildHash', () => {
     expect(h1).not.toBe(h2)
   })
 
-  it('electron off (false or absent) leaves the hash and the signature identical to today; on changes both (#0038 D9)', async () => {
+  it('an empty or absent extraPackages leaves the hash and the signature identical to today; a list changes both, whatever its order', async () => {
     const ctx = makeCtx()
     const base = await computeBuildHash(ctx, IDENTITY, TOOLCHAINS)
-    expect(await computeBuildHash(ctx, IDENTITY, { ...TOOLCHAINS, electron: false })).toBe(base)
-    expect(await computeBuildHash(ctx, IDENTITY, { ...TOOLCHAINS, electron: true })).not.toBe(base)
+    expect(await computeBuildHash(ctx, IDENTITY, { ...TOOLCHAINS, extraPackages: [] })).toBe(base)
+    const withList = await computeBuildHash(ctx, IDENTITY, { ...TOOLCHAINS, extraPackages: ['xvfb', 'glib'] })
+    expect(withList).not.toBe(base)
+    expect(await computeBuildHash(ctx, IDENTITY, { ...TOOLCHAINS, extraPackages: ['glib', 'xvfb'] })).toBe(withList)
+    expect(await computeBuildHash(ctx, IDENTITY, { ...TOOLCHAINS, extraPackages: ['xvfb'] })).not.toBe(withList)
 
     const sig = await buildHashSignature(ctx, IDENTITY, TOOLCHAINS)
-    expect(await buildHashSignature(ctx, IDENTITY, { ...TOOLCHAINS, electron: false })).toBe(sig)
-    expect(await buildHashSignature(ctx, IDENTITY, { ...TOOLCHAINS, electron: true })).not.toBe(sig)
+    expect(await buildHashSignature(ctx, IDENTITY, { ...TOOLCHAINS, extraPackages: [] })).toBe(sig)
+    const sigWithList = await buildHashSignature(ctx, IDENTITY, { ...TOOLCHAINS, extraPackages: ['xvfb', 'glib'] })
+    expect(sigWithList).not.toBe(sig)
+    expect(await buildHashSignature(ctx, IDENTITY, { ...TOOLCHAINS, extraPackages: ['glib', 'xvfb'] })).toBe(sigWithList)
   })
 
   it('covers the WITH_NODE=0/WITH_GO=0/WITH_BUILD=0 branches (all toolchains off)', async () => {

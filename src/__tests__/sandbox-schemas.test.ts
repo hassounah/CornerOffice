@@ -132,16 +132,11 @@ describe('request schemas', () => {
     expect(SandboxRecreateSchema.safeParse({ ...base, agentId: 'nope' }).success).toBe(false)
   })
 
-  it('updateSettings takes workspaceDevAccess as on or off only: no port in any IPC input (#0038 3a)', () => {
-    expect(SandboxUpdateSettingsSchema.safeParse({ workspaceDevAccess: { workspaceSlug: SLUG, enabled: true } }).success).toBe(true)
-    expect(SandboxUpdateSettingsSchema.safeParse({ workspaceDevAccess: { workspaceSlug: SLUG, enabled: true, port: 29000 } }).success).toBe(false)
-    expect(SandboxUpdateSettingsSchema.safeParse({ workspaceDevAccess: { workspaceSlug: SLUG, enabled: 'yes' } }).success).toBe(false)
-  })
 
-  it('updateSettings accepts toolchains with or without electron (#0038 D9)', () => {
+  it('updateSettings toolchains are the three booleans only: extraPackages is config-only', () => {
     expect(SandboxUpdateSettingsSchema.safeParse({ toolchains: { node: true, go: true, buildBase: true } }).success).toBe(true)
-    expect(SandboxUpdateSettingsSchema.safeParse({ toolchains: { node: true, go: true, buildBase: true, electron: true } }).success).toBe(true)
-    expect(SandboxUpdateSettingsSchema.safeParse({ toolchains: { node: true, go: true, buildBase: true, electron: 'yes' } }).success).toBe(false)
+    expect(SandboxUpdateSettingsSchema.safeParse({ toolchains: { node: true, go: true, buildBase: true, electron: true } }).success).toBe(false)
+    expect(SandboxUpdateSettingsSchema.safeParse({ extraPackages: ['xvfb'] }).success).toBe(false)
   })
 
   it('updateSettings validates allowlist entries and caps both lists at 200', () => {

@@ -30,27 +30,7 @@ export function isAllowedChannel(channel: string): channel is AllowedPushChannel
   return (ALLOWED_PUSH_CHANNELS as readonly string[]).includes(channel)
 }
 
-export interface ProfileInfo {
-  name: string
-  home: string
-}
-
-/** Reads `--co-profile=` / `--co-profile-home=` (set by the main process for a non-default profile; home is the `~`-relative display path). */
-export function parseProfile(argv: readonly string[]): Readonly<ProfileInfo> | null {
-  const value = (flag: string): string | undefined => argv.find((a) => a.startsWith(flag))?.slice(flag.length)
-  const name = value('--co-profile=')
-  const home = value('--co-profile-home=')
-  return name && home ? Object.freeze({ name, home }) : null
-}
-
-/** True when `--co-dev-real-data` is present: an unpackaged build running on the default profile (real data). */
-export function parseDevRealData(argv: readonly string[]): boolean {
-  return argv.includes('--co-dev-real-data')
-}
-
 export const api = {
-  profile: parseProfile(process.argv),
-  devRealData: parseDevRealData(process.argv),
   windowControls: {
     minimize: () => ipcRenderer.invoke('window:minimize'),
     maximize: () => ipcRenderer.invoke('window:maximize'),

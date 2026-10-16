@@ -17,7 +17,6 @@ import {
   STOP_UNCONFIRMED_CHIP,
   isSessionStopping,
   startFailureMessage,
-  DEBUG_PORT_CONFLICT_COPY,
   recreateFailureMessage,
   agentDisplayName,
   agentReadinessCommand,
@@ -48,7 +47,6 @@ import { useProfile } from './helpers/profile'
 
 const ALL_REASONS: Record<EligibilityReason, true> = {
   'sandbox-disabled': true,
-  'sandbox-off-in-profile': true,
   'docker-not-installed': true,
   'docker-daemon-down': true,
   'docker-no-permission': true,
@@ -129,7 +127,6 @@ describe('copy quality', () => {
 
   it('uses the exact §14.5 copy for a Claude home that is missing, from the descriptor, and the kill-switch copy for sandbox-disabled', () => {
     expect(agentReadinessMessage('claude', 'home-missing')).toBe('Run Claude Code on this machine once first, then try again.')
-    expect(ELIGIBILITY_COPY['sandbox-off-in-profile']).toBe('Sandbox sessions are off in this profile. Use the installed app, or make dev PROFILE=.')
     expect(ELIGIBILITY_COPY['sandbox-disabled']).toBe('Sandbox is disabled in this build.')
   })
 
@@ -306,8 +303,6 @@ describe('startFailureMessage', () => {
 
   it('returns the table copy, or null for the flow codes', () => {
     expect(startFailureMessage('PORT_CONFLICT')).toBe(START_FAILURE_COPY.PORT_CONFLICT)
-    expect(startFailureMessage('PORT_CONFLICT', null, 'debug-port')).toBe(DEBUG_PORT_CONFLICT_COPY)
-    expect(DEBUG_PORT_CONFLICT_COPY).not.toMatch(/cdp|channel/i)
     expect(startFailureMessage('IMAGE_MISSING')).toBeNull()
     expect(startFailureMessage('RECREATE_REQUIRED')).toBeNull()
   })
@@ -316,31 +311,6 @@ describe('startFailureMessage', () => {
 describe('describeRecreatePlan', () => {
   const mount = (path: string, readonly: boolean, source: 'settings' | 'memory.md' | 'app' = 'settings') => ({ path, readonly, source })
   const plan = (overrides: Partial<RecreatePlan>): RecreatePlan => ({ reason: 'mount-plan', specHash: 'a'.repeat(64), newHostMounts: [], removedHostMounts: [], agentId: 'claude', ...overrides })
-
-  const ENABLED = 'Dev app debug port on 127.0.0.1:27000. Anything on this computer can control the dev app and run commands in this sandbox.'
-  const ENABLED_NO_PORT = 'Dev app debug port on 127.0.0.1. Anything on this computer can control the dev app and run commands in this sandbox.'
-  const CLOSED = 'Dev app debug port closed.'
-
-  it.each([
-    ['port', 'enabled', false, ENABLED, null],
-    ['port', 'disabled', false, CLOSED, null],
-    ['port', 'enabled', true, RECREATE_REASON_COPY.port, ENABLED],
-    ['port', 'disabled', true, RECREATE_REASON_COPY.port, CLOSED],
-    ['image', 'enabled', false, RECREATE_REASON_COPY.image, ENABLED],
-    ['image', 'disabled', false, RECREATE_REASON_COPY.image, CLOSED],
-    ['mount-plan', 'enabled', true, RECREATE_REASON_COPY['mount-plan'], ENABLED],
-    ['new-container', 'enabled', false, RECREATE_REASON_COPY['new-container'], ENABLED],
-    ['port', undefined, false, RECREATE_REASON_COPY.port, null],
-    ['port', undefined, true, RECREATE_REASON_COPY.port, null],
-  ] as const)('renders reason %s, dev app change %s, new channel port %s as one reason and one dev app line', (reason, change, newPort, reasonLine, devCdpLine) => {
-    const d = describeRecreatePlan(plan({ reason, devCdpChange: change }), { devCdpPort: 27000, newPort })
-    expect(d.reasonLine).toBe(reasonLine)
-    expect(d.devCdpLine).toBe(devCdpLine)
-  })
-
-  it('names no port in the enabled line when none is configured', () => {
-    expect(describeRecreatePlan(plan({ reason: 'port', devCdpChange: 'enabled' })).reasonLine).toBe(ENABLED_NO_PORT)
-  })
 
   it.each(Object.keys(ALL_PLAN_REASONS) as RecreatePlan['reason'][])('gives one reason line for %s', (reason) => {
     expect(describeRecreatePlan(plan({ reason })).reasonLine).toBe(RECREATE_REASON_COPY[reason])

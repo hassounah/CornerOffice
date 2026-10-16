@@ -21,14 +21,10 @@ RUN chmod 0755 /opt/co-sandbox/co-entrypoint.sh /opt/co-sandbox/init-firewall.sh
  && mkdir -p "$AGENT_HOME/.corner-office/sandboxes" "$AGENT_HOME/.corner-office/events" \
  && chown -R "$AGENT_UID:$AGENT_GID" "$AGENT_HOME/.corner-office" && chmod -R 0755 "$AGENT_HOME/.corner-office" \
  && { find / -xdev -perm /6000 -type f -exec chmod a-s {} + || true; }
-# #0038 D9: the Electron dev runtime (`make dev-sandbox`) is its own last root layer, after the setuid strip, so earlier layers stay cached.
-# The package list is provisional until the host spike (docs/IN_PROGRESS/0038-dev-profile/spike-2.1.sh) settles it.
-ARG WITH_ELECTRON=0
-RUN if [ "$WITH_ELECTRON" = 1 ]; then \
-      apk add --no-cache xvfb socat glib nss nspr atk at-spi2-core cups-libs dbus-libs libdrm libxkbcommon \
-        libxcomposite libxdamage libxfixes libxrandr mesa-gbm pango cairo alsa-lib gtk-3 fontconfig font-dejavu \
-      && { find / -xdev -perm /6000 -type f -exec chmod a-s {} + || true; }; \
-    fi
+# Extra system packages from config.json sandbox.extraPackages (validated by the app); own last root layer, setuid stripped again.
+ARG EXTRA_PACKAGES=""
+RUN if [ -n "$EXTRA_PACKAGES" ]; then apk add --no-cache $EXTRA_PACKAGES \
+      && { find / -xdev -perm /6000 -type f -exec chmod a-s {} + || true; }; fi
 USER agent
 ENV HOME=${AGENT_HOME} PATH=${AGENT_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin \
     DISABLE_AUTOUPDATER=1 COREPACK_ENABLE_DOWNLOAD_PROMPT=0

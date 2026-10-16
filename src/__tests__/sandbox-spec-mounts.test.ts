@@ -686,19 +686,6 @@ describe('specHash', () => {
     expect(specHash(baseInput([mountA, mountB]))).toBe(specHash(baseInput([mountB, mountA])))
   })
 
-  it('without a CDP port the hash is today\'s pinned value (#0038 3a), whether cdpPort is absent or null', () => {
-    const PINNED = '037dfaad191edc4f07bfca199716b87144a7dcf7be9e2739ce5d5e8c1d7e68c3'
-    expect(specHash(baseInput([mountA, mountB]))).toBe(PINNED)
-    expect(specHash({ ...baseInput([mountA, mountB]), cdpPort: null })).toBe(PINNED)
-  })
-
-  it('changes with the CDP port, and with a different one', () => {
-    const base = specHash(baseInput([mountA]))
-    const a = specHash({ ...baseInput([mountA]), cdpPort: 29000 })
-    expect(a).not.toBe(base)
-    expect(specHash({ ...baseInput([mountA]), cdpPort: 29001 })).not.toBe(a)
-  })
-
   it('changes when the docs_root source (provenance) changes', () => {
     const settings: Mount = { ...mountA, provenance: 'settings' }
     const memoryMd: Mount = { ...mountA, provenance: 'memory.md' }

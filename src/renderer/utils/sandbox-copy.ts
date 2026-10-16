@@ -34,7 +34,6 @@ export type RecreateFailureCode = Extract<RecreateResult, { ok: false }>['code']
 
 export const ELIGIBILITY_COPY: Record<EligibilityReason, string> = {
   'sandbox-disabled': 'Sandbox is disabled in this build.',
-  'sandbox-off-in-profile': 'Sandbox sessions are off in this profile. Use the installed app, or make dev PROFILE=.',
   'docker-not-installed': "Docker isn't installed. Install Docker Engine 28 or newer, then press Check again.",
   'docker-daemon-down': "The Docker daemon isn't running. Start it, then press Check again.",
   'docker-no-permission': "Your user can't access Docker. Add it to the docker group and log in again.",
@@ -173,9 +172,6 @@ export const LIVE_UPDATE_FAILURE_COPY = 'Firewall update failed — the previous
 /** Shown when main isn't reachable or not ready (the store's "not available" error). */
 export const SANDBOX_UNAVAILABLE_COPY = "The sandbox isn't available right now. Try again in a moment."
 
-/** The dev app's debug port (Dev app access) is taken. A new channel port would not help, so no recreate is offered. */
-export const DEBUG_PORT_CONFLICT_COPY = 'Another program is using the dev app debug port. Close it, or turn off Dev app access in Settings > Sandbox, and try again.'
-
 /** The channel port is taken and there is no plan to recreate with: say what to do instead of asking a question with no button. */
 export const PORT_CONFLICT_NO_RECREATE_COPY = "Another program is using the sandbox's channel port. Close it and try again."
 
@@ -190,7 +186,6 @@ export function startFailureMessage(
   if (code === 'AGENT_NOT_READY') {
     return (agent?.readiness && agentReadinessMessage(agent.agentId ?? LEGACY_AGENT_ID, agent.readiness)) || "This agent isn't ready to run in the sandbox yet."
   }
-  if (code === 'PORT_CONFLICT' && detail === 'debug-port') return DEBUG_PORT_CONFLICT_COPY
   // The wording that names the agent follows the session's own agent, not a fixed one.
   const message = code === 'SPAWN_FAILED' ? spawnFailedCopy(agent?.agentId) : code === 'AGENT_CONFIG_INVALID' ? configCopy(agent?.agentId) : START_FAILURE_COPY[code]
   return code === 'AGENT_CONFIG_INVALID' && message !== null && detail ? `${detail} ${message}` : message
@@ -288,8 +283,6 @@ export const MEMORY_MD_CHANGED_COPY =
 
 export interface RecreateDescription {
   reasonLine: string
-  /** Added after the reason when a dev-app publish change comes with other changes; null otherwise. */
-  devCdpLine: string | null
   /** Every new mount is read-only: say so and list nothing else (B-H2). */
   readOnlyOnly: boolean
   /** Each new read-write host mount, with its full path, its source and whether it needs the memory.md warning. */
@@ -301,21 +294,10 @@ export interface RecreateDescription {
   memoryMdChanged: boolean
 }
 
-export interface DescribeRecreateOptions {
-  /** The host port dev app access publishes on, for the "enabled" line. */
-  devCdpPort?: number | null
-  /** The recreate also picks a new channel port (PORT_CONFLICT): the channel-port reason still applies. */
-  newPort?: boolean
-}
-
-export function describeRecreatePlan(plan: RecreatePlan, opts: DescribeRecreateOptions = {}): RecreateDescription {
+export function describeRecreatePlan(plan: RecreatePlan): RecreateDescription {
   const readWrite = plan.newHostMounts.filter((m) => !m.readonly)
-  const devCdpLine = plan.devCdpChange ? devCdpChangeCopy(plan.devCdpChange, opts.devCdpPort) : null
-  // A dev-app-only change arrives as reason 'port': its own sentence replaces the channel-port one.
-  const cdpOnly = devCdpLine !== null && plan.reason === 'port' && !opts.newPort
   return {
-    reasonLine: cdpOnly ? devCdpLine : RECREATE_REASON_COPY[plan.reason],
-    devCdpLine: cdpOnly ? null : devCdpLine,
+    reasonLine: RECREATE_REASON_COPY[plan.reason],
     readOnlyOnly: plan.newHostMounts.length > 0 && readWrite.length === 0,
     readWriteMounts: readWrite.map((m) => ({ path: m.path, source: m.source, memoryMdWarning: m.source === 'memory.md' })),
     removedMounts: plan.removedHostMounts,
@@ -338,47 +320,3 @@ export function unmergedLine(branches: readonly string[]): string {
   const more = branches.length - named.length
   return `Unmerged sandbox work: ${named.join(', ')}${more > 0 ? `, +${more} more` : ''}`
 }
-
-// ── Dev app access (#0038 3a) ───────────────────────────────────────────────
-
-export const DEV_ACCESS_TITLE = 'Dev app access'
-export const DEV_ACCESS_TOGGLE = 'Publish the dev app debug port on 127.0.0.1'
-export const DEV_ACCESS_APPLIES = 'Applies to Claude sessions in this workspace.'
-export const DEV_ACCESS_HELP =
-  `Anything on this computer can then run commands in this sandbox and use your Claude sign-in. That includes other user accounts. ${DEV_ACCESS_APPLIES} The port is served from inside the sandbox, so treat what it shows as coming from the agent.`
-export const DEV_ACCESS_NEXT_START = 'Takes effect when your Claude session next starts.'
-export const DEV_ACCESS_SAVE_FAILED = 'Your setting was not changed. Try again.'
-export const DEV_ACCESS_ROUTINE_USE =
-  'For routine agent use, run make dev-sandbox and co_dev_shot.mjs inside the session. Use this port only from DevTools you drive yourself.'
-
-/** The enabled state: where the host port goes. */
-export function devAccessRouteCopy(port: number): string {
-  return `This computer 127.0.0.1:${port} → dev app port 9222 in the sandbox. ${DEV_ACCESS_APPLIES}`
-}
-
-/** The off-but-still-open state: which port is still published, and until when. */
-export function devAccessStillPublishedCopy(published: number): string {
-  return `Off. 127.0.0.1:${published} stays open until your Claude session next starts.`
-}
-
-/** The persistent indicator in the sandbox header while the container publishes a debug port. */
-export function debugPortOpenCopy(published: number): string {
-  return `Debug port open: 127.0.0.1:${published}`
-}
-
-export function devAccessInspectCopy(port: number): string {
-  return `In Chrome: chrome://inspect → Configure… → add 127.0.0.1:${port}.`
-}
-
-/** The recreate dialog's line for a dev-app publish change. `port` is the configured host port; absent when disabling. */
-export function devCdpChangeCopy(change: 'enabled' | 'disabled', port: number | null | undefined): string {
-  if (change === 'disabled') return 'Dev app debug port closed.'
-  const where = port ? `127.0.0.1:${port}` : '127.0.0.1'
-  return `Dev app debug port on ${where}. Anything on this computer can control the dev app and run commands in this sandbox.`
-}
-
-// ── Electron dev runtime (#0038 D9) ─────────────────────────────────────────
-
-/** The size reads "shown after the first build" until the host spike (H.3) supplies the number. */
-export const ELECTRON_TOOLCHAIN_COPY =
-  'Electron dev runtime (Xvfb + GUI libraries, size shown after the first build), for make dev-sandbox. Rebuilds the shared sandbox image for all workspaces. Also add electronjs.org to this workspace’s allowlist.'

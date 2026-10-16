@@ -88,7 +88,7 @@ export function buildContext(): string {
   return resolveBuildContext({ isPackaged: false, resourcesPath: '', appPath: path.resolve(__dirname, '..', '..', '..') })
 }
 
-const TEST_TOOLCHAINS: { node: boolean; go: boolean; buildBase: boolean; electron?: boolean } = { node: false, go: false, buildBase: false }
+const TEST_TOOLCHAINS: { node: boolean; go: boolean; buildBase: boolean; extraPackages?: readonly string[] } = { node: false, go: false, buildBase: false }
 
 export const ELECTRON_TEST_IMAGE = 'claude-sandbox:test-electron'
 
@@ -147,8 +147,6 @@ export interface CreateTestContainerOpts {
   /** The container's `--workdir` (defaults to the temp HOME). */
   workTree?: string
   port?: number
-  /** #0038 3a: the dev-app CDP port to publish on 127.0.0.1 (claude container only). */
-  cdpPort?: number | null
   /** Defaults to `TEST_IMAGE`. */
   image?: string
   /** Defaults to Claude. Codex has no channel, so it gets no port. */
@@ -169,7 +167,6 @@ export async function createTestContainer(d: DockerRunner, identity: TestIdentit
     gid: identity.gid,
     agentId,
     port: agentId === 'codex' ? null : port,
-    cdpPort: opts.cdpPort ?? null,
     home: identity.home,
     base: 'main',
     specHash: 'docker-suite-test',

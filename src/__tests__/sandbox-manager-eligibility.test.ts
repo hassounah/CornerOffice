@@ -122,7 +122,6 @@ function setup(): Harness {
     const config: SandboxManagerConfigDeps = {
       getSandboxConfig: () => ({ toolchains: { node: true, go: true, buildBase: true }, globalAllowlist: [], workspaces: {} }),
       getWorkspaceDocsRootOverride: () => null,
-      setWorkspaceDevCdpPort: async () => {},
       setWorkspaceChannelPort: async () => {},
     }
 
@@ -282,21 +281,20 @@ describe('getEligibility — kill switch', () => {
     expect(docker.calls.length).toBe(0)
   })
 
-  it('in a profile (offInProfile=true), every workspace gets sandbox-off-in-profile, ahead of the kill switch and Docker, with zero docker calls (#0038 D6)', async () => {
+  it('in a profile (offInProfile=true), every workspace gets sandbox-disabled, ahead of Docker, with zero docker calls (#0038 D6)', async () => {
     const { makeDeps } = setup()
     sandboxSettings.offInProfile = true
     sandboxSettings.disabled = true
     const docker = new FakeDockerRunner()
     const manager = createSandboxManager(makeDeps({ docker }))
 
-    expect(await manager.getEligibility('myslug')).toEqual({ ok: false, reason: 'sandbox-off-in-profile' })
+    expect(await manager.getEligibility('myslug')).toEqual({ ok: false, reason: 'sandbox-disabled' })
     expect(await manager.getEnvironment({ refresh: true })).toEqual({
       docker: 'not-installed',
       dockerVersion: null,
       image: { state: 'absent', builtAt: null, sizeBytes: null },
-      offInProfile: true,
     })
-    expect((await manager.getStatus('myslug')).eligibility).toEqual({ ok: false, reason: 'sandbox-off-in-profile' })
+    expect((await manager.getStatus('myslug')).eligibility).toEqual({ ok: false, reason: 'sandbox-disabled' })
     expect(docker.calls.length).toBe(0)
   })
 })
@@ -785,7 +783,6 @@ describe('getEligibility — happy path', () => {
     const config: SandboxManagerConfigDeps = {
       getSandboxConfig: () => ({ toolchains: { node: true, go: true, buildBase: true }, globalAllowlist: [], workspaces: {} }),
       getWorkspaceDocsRootOverride: () => externalDocs,
-      setWorkspaceDevCdpPort: async () => {},
       setWorkspaceChannelPort: async () => {},
     }
     const manager = createSandboxManager(makeDeps({ config }))
@@ -823,7 +820,6 @@ describe('getEligibility — happy path', () => {
     const config: SandboxManagerConfigDeps = {
       getSandboxConfig: () => ({ toolchains: { node: true, go: true, buildBase: true }, globalAllowlist: [], workspaces: {} }),
       getWorkspaceDocsRootOverride: () => null,
-      setWorkspaceDevCdpPort: async () => {},
       setWorkspaceChannelPort: async () => {},
     }
 
@@ -1059,7 +1055,6 @@ describe('getEligibility — additional coverage', () => {
     const config: SandboxManagerConfigDeps = {
       getSandboxConfig: () => ({ toolchains: { node: true, go: true, buildBase: true }, globalAllowlist: [], workspaces: {} }),
       getWorkspaceDocsRootOverride: () => repo, // docs_root === REPO itself -> structural hard failure
-      setWorkspaceDevCdpPort: async () => {},
       setWorkspaceChannelPort: async () => {},
     }
     const manager = createSandboxManager(makeDeps({ config }))
