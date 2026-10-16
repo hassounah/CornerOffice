@@ -12,7 +12,6 @@ import {
   DEV_ACCESS_HELP,
   DEV_ACCESS_ROUTINE_USE,
   DEV_ACCESS_SAVE_FAILED,
-  DEV_ACCESS_STILL_PUBLISHED,
   DEV_ACCESS_TITLE,
   DEV_ACCESS_TOGGLE,
   ELECTRON_TOOLCHAIN_COPY,
@@ -21,7 +20,7 @@ import {
   STOP_UNCONFIRMED_CHIP,
   devAccessInspectCopy,
   devAccessRouteCopy,
-  devAccessStillOpenCopy,
+  devAccessStillPublishedCopy,
   dockerStateCopy,
   isSessionStopping,
 } from '../../utils/sandbox-copy'
@@ -660,9 +659,8 @@ function DevAppAccessSection({ skin, initialWorkspace }: SectionProps & { initia
 
           {/* Always mounted, so a screen reader announces the text when it changes. First, so nobody follows the steps below against a closed port. */}
           <p role="status" className="text-sm">
-            {pending ? (port !== null ? DEV_ACCESS_NEXT_START : DEV_ACCESS_STILL_PUBLISHED) : ''}
+            {pending ? (port !== null || published === null ? DEV_ACCESS_NEXT_START : devAccessStillPublishedCopy(published)) : ''}
           </p>
-          {port === null && published !== null && <p className="text-sm">{devAccessStillOpenCopy(published)}</p>}
 
           {port !== null && (
             <div className="space-y-1 text-sm">
@@ -675,7 +673,7 @@ function DevAppAccessSection({ skin, initialWorkspace }: SectionProps & { initia
             </div>
           )}
 
-          {pending && slug && status?.exists && <SandboxActions slug={slug} skin={skin} recreateOnly forceRecreate recreateLabel="Recreate now" label={workspaceName} />}
+          {pending && slug && status?.exists && <SandboxActions slug={slug} skin={skin} recreateOnly forceRecreate primaryRecreate={port === null && published !== null} recreateLabel="Recreate now" label={workspaceName} />}
 
           {failed && (
             <p role="alert" className="text-sm">

@@ -90,8 +90,9 @@ try {
 if (profile.warning) fs.writeSync(2, `${profile.warning}\n`)
 const profileFile = profile.logFile
 if (profileFile) log.transports.file.resolvePathFn = () => profileFile
-log.info(`Profile ${profile.name ?? 'default'}: home ${profile.home}`)
+// Before the first log call: electron-log would otherwise create the home with the default mode.
 ensureProfileHome(profile)
+log.info(`Profile ${profile.name ?? 'default'}: home ${profile.home}`)
 setActiveProfile(profile)
 if (profile.userDataDir) app.setPath('userData', profile.userDataDir) // before the lock: the lock lives in userData
 if (profile.debugPort) {
@@ -319,6 +320,13 @@ function setupCSP(): void {
 
 async function createWindow(): Promise<void> {
   const windowTitle = profile.name === null ? 'Corner Office' : `Corner Office (${profile.name})`
+  // Read by the preload: the profile badge (display path only) and the dev-build-on-real-data badge.
+  const additionalArguments =
+    profile.name !== null
+      ? [`--co-profile=${profile.name}`, `--co-profile-home=${profile.homeDisplay}`]
+      : app.isPackaged
+        ? []
+        : ['--co-dev-real-data']
   windowStateService = new WindowStateService(screen as ScreenLike)
   const savedState = windowStateService.load()
 
@@ -346,9 +354,7 @@ async function createWindow(): Promise<void> {
       allowRunningInsecureContent: false,
       webSecurity: true,
       preload: path.join(__dirname, '../preload/index.js'),
-      ...(profile.name !== null
-        ? { additionalArguments: [`--co-profile=${profile.name}`, `--co-profile-home=${profile.home}`] }
-        : {}),
+      ...(additionalArguments.length > 0 ? { additionalArguments } : {}),
     },
   })
 

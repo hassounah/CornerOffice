@@ -64,7 +64,7 @@ vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs')
   const overrides = {
     realpathSync: vi.fn((p: string) => p),
-    mkdirSync: vi.fn(),
+    mkdirSync: vi.fn((p: string) => { calls.push(`mkdir:${p}`) }),
     writeSync: vi.fn((_fd: number, text: string) => { stderr.push(text); calls.push(`stderr:${text.trim()}`) }),
     lstatSync: vi.fn(() => ({
       isSymbolicLink: () => false,
@@ -131,6 +131,9 @@ describe('main/index startup (#0038)', () => {
     const sw = idx('switch:remote-debugging-port=9223')
     const cdpLog = idx('log:CDP on 127.0.0.1:9223')
     const lock = idx('lock')
+    const home = idx('mkdir:/home/test/.corner-office/profiles/dev')
+    expect(home).toBeGreaterThanOrEqual(0)
+    expect(home).toBeLessThan(profileLog) // the home exists (0700) before the first log call
     expect(profileLog).toBeGreaterThanOrEqual(0)
     expect(profileLog).toBeLessThan(userData)
     expect(userData).toBeLessThan(sw)

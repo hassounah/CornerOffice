@@ -97,9 +97,24 @@ const WorkspaceConfigSchema = z.object({
 // Sandbox config schema (TRD §3.14, plan step 1.8)
 // ---------------------------------------------------------------------------
 
+// A bad port is dropped on its own (null: the channel port is re-allocated at the next start, dev app access reads as off)
+// instead of failing the whole file, which would reset every workspace's allowlist and the toolchains.
+function portField(field: string) {
+  return z
+    .number()
+    .int()
+    .min(CHANNEL_PORT_RANGE[0])
+    .max(CHANNEL_PORT_RANGE[1])
+    .nullable()
+    .catch(() => {
+      log.warn(`[ConfigManager] ignoring an invalid sandbox ${field} in config.json; it is reset to null`)
+      return null
+    })
+}
+
 const SandboxWorkspaceConfigSchema = z.object({
-  channelPort: z.number().int().min(CHANNEL_PORT_RANGE[0]).max(CHANNEL_PORT_RANGE[1]).nullable(),
-  devCdpPort: z.number().int().min(CHANNEL_PORT_RANGE[0]).max(CHANNEL_PORT_RANGE[1]).nullable().default(null),
+  channelPort: portField('channelPort'),
+  devCdpPort: portField('devCdpPort').default(null),
   allowlist: AllowlistSchema,
 })
 

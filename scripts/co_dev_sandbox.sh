@@ -19,8 +19,10 @@ REPO_ROOT="${CO_REPO_ROOT:-$(cd "$HERE/.." && pwd)}"
 # host through paths only:
 #   - ~/.corner-office/events/ (JSONL, written only when ~/.corner-office/events/enabled exists)
 #   - ~/.claude/channels/ and ~/.claude/*.log (channel servers)
-# Those are covered by the profile's own home (HOME-relative), not by env. The list below is
-# therefore just the baseline; the real gate is S9.
+# Those paths are HOME-relative, and a nested session started from the dev app keeps the container
+# HOME (only the app's own data lives in the profile home), so nested sessions can appear in the host
+# app. Accepted risk: dev mode in the sandbox is an internal testing tool. S9 only reports what it sees.
+# The list below is therefore just the baseline.
 #   CORNER_OFFICE_SANDBOX is deliberately kept (it marks the session as sandboxed).
 HOST_ATTRIBUTION_ENV=(
   CORNER_OFFICE_CHANNEL_PORT
@@ -30,6 +32,9 @@ HOST_ATTRIBUTION_ENV=(
 # Keep equal to PROFILE_NAME_RE in src/main/services/app-home.ts (profile-name-regex.test.ts pins it).
 PROFILE_RE='^[a-z0-9][a-z0-9-]{0,31}$'
 DISPLAY_NUM=99
+X_LOCK="${CO_X_LOCK:-/tmp/.X$DISPLAY_NUM-lock}"
+X_SOCKET="${CO_X_SOCKET:-/tmp/.X11-unix/X$DISPLAY_NUM}"
+X_NAME="${CO_X_NAME:-Xvfb}"
 WAIT_SECONDS=90
 
 PROFILE="${PROFILE:-dev}"
@@ -80,10 +85,24 @@ launcher_alive() {
   tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'co_dev_sandbox\.sh'
 }
 
+# The display counts as in use only while the pid in its Xvfb lock is a live Xvfb. A lock or socket
+# left behind by a killed Xvfb is removed; pids restart after a container restart, so a live pid that
+# is not Xvfb counts as stale too. Prints the live pid and fails when the display is really in use.
+clear_stale_display() {
+  local pid=""
+  [ -f "$X_LOCK" ] && pid="$(tr -d ' \n' <"$X_LOCK" 2>/dev/null || true)"
+  if [[ $pid =~ ^[0-9]+$ ]] && pid_alive "$pid" && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = "$X_NAME" ]; then
+    printf '%s' "$pid"
+    return 1
+  fi
+  rm -f "$X_LOCK" "$X_SOCKET"
+}
+
 # ── --stop ────────────────────────────────────────────────────────────────────
 stop_app() {
   if [ ! -f "$PIDFILE" ]; then
     echo "==> dev-sandbox is not running"
+    clear_stale_display >/dev/null || true
     return 0
   fi
   local pid group=0
@@ -98,6 +117,7 @@ stop_app() {
     pid_alive "$pid" && signal_launcher KILL
   fi
   rm -f "$PIDFILE"
+  clear_stale_display >/dev/null || true
   echo "==> dev-sandbox stopped"
 }
 
@@ -162,8 +182,9 @@ preflight() {
     echo "port $DEBUG_PORT is in use; set DEBUG_PORT= to another port" >&2
     exit 1
   fi
-  if [ -e "/tmp/.X11-unix/X$DISPLAY_NUM" ]; then
-    echo "display :$DISPLAY_NUM is in use; run make dev-sandbox-stop" >&2
+  local x_pid
+  if ! x_pid="$(clear_stale_display)"; then
+    echo "display :$DISPLAY_NUM is in use by pid $x_pid; run make dev-sandbox-stop" >&2
     exit 1
   fi
 }
@@ -211,7 +232,7 @@ parse_gw() {
 
 # ── the banner (the host line is always present) ──────────────────────────────
 print_banner() {
-  local host_line="not published (Dev app access is off for this session)"
+  local host_line="not published. Ask the user to turn on Settings > Sandbox > Dev app access for this workspace in Corner Office (then recreate)"
   if [ -n "${CORNER_OFFICE_CDP_PUBLISH_PORT:-}" ]; then
     if [ -e "$CDP_FAILED" ] || ! parse_gw "$ROUTE_FILE" >/dev/null; then
       host_line="not published (see the launcher log)"
@@ -260,7 +281,7 @@ start_cdp_publish() {
     touch "$CDP_FAILED"
     return 0
   fi
-  socat "TCP-LISTEN:$CORNER_OFFICE_CDP_PUBLISH_PORT,bind=0.0.0.0,fork,reuseaddr,range=$gw/32" "TCP:127.0.0.1:$DEBUG_PORT" >>"$LOG" 2>&1 &
+  socat -T 600 "TCP-LISTEN:$CORNER_OFFICE_CDP_PUBLISH_PORT,bind=0.0.0.0,fork,reuseaddr,max-children=8,range=$gw/32" "TCP:127.0.0.1:$DEBUG_PORT" >>"$LOG" 2>&1 &
   SOCAT_PID=$!
   sleep 0.3
   if ! pid_alive "$SOCAT_PID"; then

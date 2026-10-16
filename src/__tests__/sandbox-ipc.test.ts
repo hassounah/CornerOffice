@@ -313,6 +313,46 @@ describe('buildSandboxHandlers', () => {
       expect(manager.setDevAccess).toHaveBeenLastCalledWith(SLUG, false)
     })
 
+    it('dev app access: config.update runs first, and a failed save never reaches setDevAccess', async () => {
+      const order: string[] = []
+      const { handlers, manager } = makeRig({
+        save: async () => {
+          order.push('update')
+          throw new Error('disk full')
+        },
+      })
+      vi.mocked(manager.setDevAccess).mockImplementation(async () => {
+        order.push('setDevAccess')
+        return true
+      })
+      const res = await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), {
+        toolchains: { node: false, go: true, buildBase: true },
+        workspaceDevAccess: { workspaceSlug: SLUG, enabled: true },
+      })
+      expect(res.error).not.toBeNull()
+      expect(order).toEqual(['update'])
+      expect(manager.setDevAccess).not.toHaveBeenCalled()
+    })
+
+    it('dev app access: setDevAccess runs after a successful update', async () => {
+      const order: string[] = []
+      const { handlers, manager } = makeRig({
+        save: async () => {
+          order.push('update')
+        },
+      })
+      vi.mocked(manager.setDevAccess).mockImplementation(async () => {
+        order.push('setDevAccess')
+        return true
+      })
+      const res = await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), {
+        toolchains: { node: false, go: true, buildBase: true },
+        workspaceDevAccess: { workspaceSlug: SLUG, enabled: true },
+      })
+      expect(res.error).toBeNull()
+      expect(order).toEqual(['update', 'setDevAccess'])
+    })
+
     it('dev app access: an unknown workspace is NOT_FOUND and nothing is changed', async () => {
       const { handlers, manager } = makeRig()
       const res = await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), { workspaceDevAccess: { workspaceSlug: 'ghost', enabled: true } })

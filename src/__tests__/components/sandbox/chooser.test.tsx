@@ -20,6 +20,7 @@ import {
   RECREATE_FAILURE_COPY,
   SANDBOX_UNAVAILABLE_COPY,
   PORT_CONFLICT_NO_RECREATE_COPY,
+  DEBUG_PORT_CONFLICT_COPY,
   BUILD_CONFIRM_COPY,
   BUILD_FAILED_COPY,
   IMAGE_SIZE_COPY,
@@ -1332,6 +1333,17 @@ describe('StartSessionChooser — dialog behaviour (5.4 UX fix)', () => {
       const alert = await screen.findByRole('alert')
       expect(alert).toHaveTextContent(PORT_CONFLICT_NO_RECREATE_COPY)
       expect(alert).not.toHaveTextContent('Recreate the sandbox with a new port?')
+      expect(screen.queryByRole('button', { name: 'Recreate with a new port' })).toBeNull()
+    })
+
+    it('PORT_CONFLICT on the debug port names the debug port, not the channel port, and offers no recreate', async () => {
+      api.startSession.mockResolvedValueOnce(ok({ ok: false, code: 'PORT_CONFLICT', detail: 'debug-port' }))
+      renderChooser()
+      await userEvent.click(radio('Sandbox'))
+      await userEvent.click(screen.getByRole('button', { name: 'Start' }))
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent(DEBUG_PORT_CONFLICT_COPY)
+      expect(alert).not.toHaveTextContent('channel port')
       expect(screen.queryByRole('button', { name: 'Recreate with a new port' })).toBeNull()
     })
 

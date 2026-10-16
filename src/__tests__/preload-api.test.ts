@@ -20,7 +20,7 @@ vi.mock('electron', () => ({
   },
 }))
 
-import { ALLOWED_PUSH_CHANNELS, isAllowedChannel, api, parseProfile } from '../preload/api'
+import { ALLOWED_PUSH_CHANNELS, isAllowedChannel, api, parseProfile, parseDevRealData } from '../preload/api'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -598,5 +598,13 @@ describe('parseProfile', () => {
     const profile = parseProfile(['x', '--co-profile=dev', '--co-profile-home=/h/.corner-office/profiles/dev'])
     expect(profile).toEqual({ name: 'dev', home: '/h/.corner-office/profiles/dev' })
     expect(Object.isFrozen(profile)).toBe(true)
+  })
+})
+
+describe('parseDevRealData', () => {
+  it('is true only with the --co-dev-real-data argument', () => {
+    expect(parseDevRealData(['electron', '--co-dev-real-data'])).toBe(true)
+    expect(parseDevRealData(['electron', '.'])).toBe(false)
+    expect(api.devRealData).toBe(false)
   })
 })

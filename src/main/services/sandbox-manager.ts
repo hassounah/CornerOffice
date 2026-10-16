@@ -279,6 +279,8 @@ export interface StartSessionOptions {
 
 // ── Docker availability parsing (§3.9.1, D6, G2) ────────────────────────────
 
+/** `StartResult.detail` of a PORT_CONFLICT on the dev app (debug) port rather than the channel port. Fixed text, never stderr. */
+export const PORT_CONFLICT_DEBUG_DETAIL = 'debug-port'
 const MIN_DOCKER_MAJOR = 28
 const MIN_DOCKER_MINOR = 0
 const AVAILABILITY_TIMEOUT_MS = 5_000
@@ -782,15 +784,12 @@ function boundPorts(portBindings: Record<string, unknown> | null): number[] {
 /**
  * Which way the dev-app (CDP) publish differs between a container's bindings and what the spec now wants:
  * `enabled` (a CDP binding is wanted and not there, or it moved), `disabled` (one is there and no longer wanted), else `null`.
- * Claude container only; the channel port is the one binding the CDP check must not mistake for it.
+ * Claude container only. Decided from the set of bound ports alone (never their order, and whether the channel port moved
+ * does not matter): the container binds one channel port, plus the CDP port when dev app access was on.
  */
-function devCdpChangeOf(bound: readonly number[], channelPort: number | null, cdpPort: number | null): 'enabled' | 'disabled' | null {
-  // When the channel port itself moved it is not in `bound`: one binding is then the old channel port, and only the count of the rest can be compared.
-  const channelBound = channelPort !== null && bound.includes(channelPort)
-  const published = channelBound ? bound.filter((p) => p !== channelPort) : bound.slice(1)
-  if (cdpPort === null) return published.length > 0 ? 'disabled' : null
-  if (published.length !== 1) return 'enabled'
-  return !channelBound || published[0] === cdpPort ? null : 'enabled'
+function devCdpChangeOf(bound: readonly number[], cdpPort: number | null): 'enabled' | 'disabled' | null {
+  if (cdpPort === null) return bound.length > 1 ? 'disabled' : null
+  return bound.includes(cdpPort) && bound.length <= 2 ? null : 'enabled'
 }
 
 /** `delete`'s full teardown — the sandbox is gone, nothing will bind-mount
@@ -1345,7 +1344,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
       const diff = diffMountPlans(oldMounts, mountResult.mounts)
       const bound = boundPorts(parsed.HostConfig.PortBindings)
       const channelPortChanged = port !== null && bound.length > 0 && !bound.includes(port)
-      const devCdpChange = agentId === LEGACY_AGENT_ID ? devCdpChangeOf(bound, port, cdpPort) : null
+      const devCdpChange = agentId === LEGACY_AGENT_ID ? devCdpChangeOf(bound, cdpPort) : null
       const portChanged = channelPortChanged || devCdpChange !== null
       const reason: RecreatePlan['reason'] = imageChanged ? 'image' : portChanged ? 'port' : 'mount-plan'
       return {
@@ -1429,7 +1428,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
       const diff = diffMountPlans(oldMounts, mountResult.mounts)
       // A container that doesn't exist yet is still a create; otherwise keep the reason the user was already shown.
       const reason = current ? (recreatePlanFor(slug, agentId)?.reason ?? 'mount-plan') : 'new-container'
-      const devCdpChange = current && agentId === LEGACY_AGENT_ID ? devCdpChangeOf(boundPorts(current.HostConfig.PortBindings), port, cdpPort) : null
+      const devCdpChange = current && agentId === LEGACY_AGENT_ID ? devCdpChangeOf(boundPorts(current.HostConfig.PortBindings), cdpPort) : null
       setRecreatePlan(slug, agentId, { reason, specHash: hash, newHostMounts: diff.newHostMounts, removedHostMounts: diff.removedHostMounts, ...(devCdpChange ? { devCdpChange } : {}) })
       return { ok: false, code: 'PLAN_CHANGED' }
     }
@@ -1753,6 +1752,12 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     } catch (err) {
       if (err instanceof DockerError && err.subkind === 'port-conflict') {
         log.warn(`[sandbox-manager] docker start failed for ${slug}: ${describeDockerError(err)}`)
+        // Docker's message names the host port it could not bind. The debug port (dev app access) is not the channel
+        // port: a new channel port does not fix it, so no recreate plan, and the detail tells the UI which port it is.
+        const cdpPort = cdpPortFor(slug, agentId)
+        if (cdpPort !== null && new RegExp(`:${cdpPort}\\b`).test(err.stderrTail)) {
+          return failPreparing(slug, 'PORT_CONFLICT', true, PORT_CONFLICT_DEBUG_DETAIL)
+        }
         // The UI offers "Recreate with a new port"; recreate() needs the hash of the plan the user confirms.
         if (specHashForPort) setRecreatePlan(slug, agentId, { reason: 'port', specHash: specHashForPort, newHostMounts: [], removedHostMounts: [] })
         return failPreparing(slug, 'PORT_CONFLICT', true)
@@ -1840,18 +1845,23 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
   /** Unlike `inspectContainerTri`, keeps `daemon-down` and `no-such-container` apart from other failures — `ending` treats them differently. */
   async function observeContainer(c: string): Promise<ContainerObservation> {
+    return (await observeContainerPorts(c)).state
+  }
+
+  /** `observeContainer` plus the container's bound ports (empty unless the inspect parsed), from the same single `docker inspect`. */
+  async function observeContainerPorts(c: string): Promise<{ state: ContainerObservation; bound: number[] }> {
     let result
     try {
       result = await docker.run(inspectArgv(c))
     } catch (err) {
       if (!(err instanceof DockerError)) throw err
-      if (err.kind === 'daemon-down') return 'daemon-down'
-      if (err.subkind === 'no-such-container') return 'absent'
-      return 'unknown'
+      if (err.kind === 'daemon-down') return { state: 'daemon-down', bound: [] }
+      if (err.subkind === 'no-such-container') return { state: 'absent', bound: [] }
+      return { state: 'unknown', bound: [] }
     }
     const parsed = parseInspect(result.stdout)
-    if (!parsed) return 'unknown'
-    return parsed.State.Running ? 'running' : 'stopped'
+    if (!parsed) return { state: 'unknown', bound: [] }
+    return { state: parsed.State.Running ? 'running' : 'stopped', bound: boundPorts(parsed.HostConfig.PortBindings) }
   }
 
   function worktreeCtx(slug: string): { repo: string; wt: string; ctx: WorktreeRepoCtx } | null {
@@ -2256,16 +2266,18 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
   }
 
   /** One observation per agent's container; every agent reads `unknown` while Docker isn't known to be ok. */
-  async function observeAgentContainers(slug: string): Promise<Record<AgentId, SandboxStatus['container']>> {
+  async function observeAgentContainers(slug: string): Promise<{ containers: Record<AgentId, SandboxStatus['container']>; claudeBound: number[] }> {
     const containers = Object.fromEntries(AGENT_IDS.map((id) => [id, 'unknown'])) as Record<AgentId, SandboxStatus['container']>
-    if (cachedDockerState?.docker !== 'ok') return containers
+    let claudeBound: number[] = []
+    if (cachedDockerState?.docker !== 'ok') return { containers, claudeBound }
     // In parallel: each inspect can take as long as a hung Docker lets it, and they add up when run one after another.
-    const observed = await Promise.all(AGENT_IDS.map((id) => observeContainer(containerName(slug, id))))
+    const observed = await Promise.all(AGENT_IDS.map((id) => observeContainerPorts(containerName(slug, id))))
     AGENT_IDS.forEach((id, i) => {
-      const state = observed[i]
+      const { state, bound } = observed[i]
       containers[id] = state === 'absent' ? 'absent' : state === 'running' ? 'running' : state === 'stopped' ? 'stopped' : 'unknown'
+      if (id === LEGACY_AGENT_ID) claudeBound = bound
     })
-    return containers
+    return { containers, claudeBound }
   }
 
   /** running if any container runs, else stopped if any is stopped, else unknown if any is unknown, else absent. */
@@ -2282,9 +2294,9 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     // The modes exist from `preparing` on, but status reports them only for a live session, as it always did.
     const modes = state === 'running' || state === 'ending' ? sessionModes.get(slug) : undefined
 
-    const containers = await observeAgentContainers(slug)
+    const { containers, claudeBound } = await observeAgentContainers(slug)
     const container = aggregateContainer(containers)
-    const publishedCdpPort = containers[LEGACY_AGENT_ID] === 'absent' || containers[LEGACY_AGENT_ID] === 'unknown' ? null : await observePublishedCdpPort(slug)
+    const publishedCdpPort = publishedCdpPortOf(slug, claudeBound)
 
     let worktreeState: SandboxStatus['worktree'] = 'absent'
     let gitState: SandboxStatus['git'] = null
@@ -2326,11 +2338,9 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
   }
 
   /** The dev-app port the claude container really publishes (its bindings other than the channel port), or null. */
-  async function observePublishedCdpPort(slug: string): Promise<number | null> {
-    const inspected = await inspectContainerTri(containerName(slug, LEGACY_AGENT_ID))
-    if (inspected.state !== 'present') return null
+  function publishedCdpPortOf(slug: string, claudeBound: readonly number[]): number | null {
     const channelPort = config.getSandboxConfig().workspaces[slug]?.channelPort ?? null
-    const published = boundPorts(inspected.parsed.HostConfig.PortBindings).filter((p) => p !== channelPort)
+    const published = claudeBound.filter((p) => p !== channelPort)
     return published.length === 1 && channelPort !== null ? published[0] : null
   }
 

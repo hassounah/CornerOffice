@@ -288,6 +288,34 @@ describe('startSession', () => {
     expect(h.discovery.watcherCount).toBe(0)
   })
 
+  it('PORT_CONFLICT on the debug port names it in the detail and offers no channel-port recreate plan', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    prepareRepo(h)
+    h.sandboxConfig.workspaces.myslug = { channelPort: 27500, devCdpPort: 29000, allowlist: [] }
+    h.docker.script(['start'], {
+      error: { ...PORT_CONFLICT_ERROR, stderrTail: 'Error: Bind for 127.0.0.1:29000 failed: port is already allocated' },
+    })
+    const manager = createSandboxManager(h.makeDeps())
+
+    const result = await manager.startSession(h.opts())
+    expect(result).toEqual({ ok: false, code: 'PORT_CONFLICT', detail: 'debug-port' })
+    expect((await manager.getStatus('myslug')).recreatePlan).toBeNull()
+  })
+
+  it('PORT_CONFLICT on the channel port keeps a null detail even with dev access on', async () => {
+    sandboxSettings.disabled = false
+    const h = setup()
+    prepareRepo(h)
+    h.sandboxConfig.workspaces.myslug = { channelPort: 27500, devCdpPort: 29000, allowlist: [] }
+    h.docker.script(['start'], {
+      error: { ...PORT_CONFLICT_ERROR, stderrTail: 'Error: Bind for 0.0.0.0:27500 failed: port is already allocated' },
+    })
+    const manager = createSandboxManager(h.makeDeps())
+
+    expect(await manager.startSession(h.opts())).toEqual({ ok: false, code: 'PORT_CONFLICT', detail: null })
+  })
+
   it('BE-M2: a docker start that times out still stops the container (dockerd may finish it) and reports DOCKER_UNAVAILABLE', async () => {
     sandboxSettings.disabled = false
     const h = setup()

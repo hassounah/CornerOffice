@@ -3,6 +3,7 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { SandboxSettingsPanel } from '../../../renderer/components/sandbox/SandboxSettingsPanel'
 import { RecreateDialog } from '../../../renderer/components/sandbox/RecreateDialog'
+import { SandboxActions } from '../../../renderer/components/sandbox/SandboxActions'
 import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
 import { useWorkspaceStore } from '../../../renderer/stores/workspace-store'
 import {
@@ -10,7 +11,7 @@ import {
   DEV_ACCESS_HELP,
   DEV_ACCESS_NEXT_START,
   DEV_ACCESS_SAVE_FAILED,
-  DEV_ACCESS_STILL_PUBLISHED,
+  DEV_ACCESS_ROUTINE_USE,
   DEV_ACCESS_TOGGLE,
   RECREATE_REASON_COPY,
 } from '../../../renderer/utils/sandbox-copy'
@@ -95,8 +96,7 @@ describe('Dev app access section', () => {
     expect(within(section()).getByRole('checkbox', { name: DEV_ACCESS_TOGGLE })).not.toBeChecked()
     expect(section()).toHaveTextContent(DEV_ACCESS_APPLIES)
     expect(section()).toHaveTextContent(DEV_ACCESS_HELP)
-    expect(section()).toHaveTextContent('including other user accounts')
-    expect(section()).toHaveTextContent('~/.claude')
+    expect(section()).toHaveTextContent('Anything on this computer can then run commands in this sandbox and use your Claude sign-in.')
     expect(section()).toHaveTextContent('treat what it shows as coming from the agent')
   })
 
@@ -136,9 +136,35 @@ describe('Dev app access section', () => {
   it('off while still published: says the port stays open until the next start', () => {
     setup(null, status({ published: 27000, pending: true }))
     render(<SandboxSettingsPanel />)
-    expect(within(section()).getByText(DEV_ACCESS_STILL_PUBLISHED)).toBeInTheDocument()
-    expect(section()).toHaveTextContent('Off. The port stays open until your Claude session next starts.')
+    const line = 'Off. 127.0.0.1:27000 stays open until your Claude session next starts.'
+    expect(within(section()).getByRole('status')).toHaveTextContent(line)
+    // One merged sentence: no separate "still open" line next to it.
+    expect(section().textContent?.split('127.0.0.1:27000').length).toBe(2)
     expect(within(section()).getByRole('button', { name: 'Recreate now for My Workspace' })).toBeInTheDocument()
+  })
+
+  it('Recreate now is the primary action only while the port is open with the toggle off', () => {
+    setup(null, status({ published: 27000, pending: true }))
+    const { unmount } = render(<SandboxSettingsPanel />)
+    expect(within(section()).getByRole('button', { name: 'Recreate now for My Workspace' })).toHaveClass('font-semibold')
+    unmount()
+    setup(27000, status({ published: null, pending: true }))
+    render(<SandboxSettingsPanel />)
+    expect(within(section()).getByRole('button', { name: 'Recreate now for My Workspace' })).not.toHaveClass('font-semibold')
+  })
+
+  it('gives routine agent use the in-session launcher, not the host port', () => {
+    setup(27000, status())
+    render(<SandboxSettingsPanel />)
+    expect(section()).toHaveTextContent(DEV_ACCESS_ROUTINE_USE)
+    expect(DEV_ACCESS_ROUTINE_USE).toContain('make dev-sandbox')
+    expect(DEV_ACCESS_ROUTINE_USE).toContain('co_dev_shot.mjs')
+  })
+
+  it('never says CDP in the section', () => {
+    setup(27000, status({ published: 27000 }))
+    render(<SandboxSettingsPanel />)
+    expect(section().textContent).not.toMatch(/CDP/i)
   })
 
   it('without a container there is nothing to recreate', () => {
@@ -186,12 +212,6 @@ describe('Dev app access section', () => {
     const next = within(section()).getByText(DEV_ACCESS_NEXT_START)
     const route = within(section()).getByText(/This computer 127\.0\.0\.1:27000/)
     expect(next.compareDocumentPosition(route) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-  })
-
-  it('off while still published: names the port that is still open', () => {
-    setup(null, status({ published: 27000, pending: true }))
-    render(<SandboxSettingsPanel />)
-    expect(within(section()).getByText('Still open on 127.0.0.1:27000.')).toBeInTheDocument()
   })
 
   it('keeps the status region mounted, empty when nothing is pending', () => {
@@ -252,5 +272,27 @@ describe('RecreateDialog CDP wording', () => {
     open(plan(), null)
     expect(screen.getByRole('alertdialog')).toHaveTextContent(RECREATE_REASON_COPY.port)
     expect(screen.getByRole('alertdialog')).not.toHaveTextContent('Dev app debug port')
+  })
+})
+
+describe('Debug port open indicator', () => {
+  it('shows whenever the container publishes a port, even with the toggle off', () => {
+    setup(null, status({ published: 27000 }))
+    render(<SandboxActions slug="ws" />)
+    expect(screen.getByText('Debug port open: 127.0.0.1:27000')).toBeInTheDocument()
+  })
+
+  it('is absent when no port is published', () => {
+    setup(27000, status({ published: null }))
+    const { container } = render(<SandboxActions slug="ws" />)
+    expect(screen.queryByText(/Debug port open/)).toBeNull()
+    expect(container.textContent).not.toMatch(/CDP/i)
+  })
+
+  it('stays out of the delete-only and recreate-only rows', () => {
+    setup(null, status({ published: 27000 }))
+    render(<SandboxActions slug="ws" deleteOnly />)
+    render(<SandboxActions slug="ws" recreateOnly forceRecreate />)
+    expect(screen.queryByText(/Debug port open/)).toBeNull()
   })
 })

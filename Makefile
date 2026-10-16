@@ -16,7 +16,7 @@ DEBUG_PORT ?=
 PROFILE_RE := ^[a-z0-9][a-z0-9-]{0,31}$$
 export PROFILE DEBUG_PORT
 
-.PHONY: setup check-node rebuild-native dev dev-guard dev-sandbox dev-sandbox-stop build package-deb package-rpm package-appimage dist clean install test test-watch lint help
+.PHONY: setup check-node rebuild-native dev dev-guard dev-hints dev-sandboxdev-sandbox-stop build package-deb package-rpm package-appimage dist clean install test test-watch lint help
 .DEFAULT_GOAL := help
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ rebuild-native:
 # ──────────────────────────────────────────────────────────────────────────────
 # dev: start Electron in development mode with hot reload
 # ──────────────────────────────────────────────────────────────────────────────
-dev: dev-guard check-node rebuild-native
+dev: dev-guard dev-hints check-node rebuild-native
 	@echo "==> profile: $(if $(filter-out default,$(PROFILE)),$(PROFILE) (~/.corner-office/profiles/$(PROFILE))  [PROFILE= for your real data],default (REAL DATA, ~/.corner-office))"
 	CORNER_OFFICE_PROFILE=$(PROFILE) CORNER_OFFICE_DEBUG_PORT=$(DEBUG_PORT) $(NODE_BIN)/electron-vite dev
 
@@ -67,6 +67,17 @@ dev-guard:
 	  printf '%s\n' "PROFILE=\"$$PROFILE\" is invalid. Use 1-32 lowercase letters, digits or '-', starting with a letter or digit. Example: make dev PROFILE=dev" >&2; exit 2; fi
 	@if [ -n "$$DEBUG_PORT" ] && { ! printf '%s' "$$DEBUG_PORT" | grep -Eq '^[0-9]{1,5}$$' || [ "$$(printf '%s' "$$DEBUG_PORT" | wc -l)" -ne 0 ] || [ "$$DEBUG_PORT" -lt 1024 ] || [ "$$DEBUG_PORT" -gt 65535 ]; }; then \
 	  printf '%s\n' "DEBUG_PORT=\"$$DEBUG_PORT\" is invalid. Use a port from 1024 to 65535, or leave it empty. Example: make dev DEBUG_PORT=9223" >&2; exit 2; fi
+
+# dev-hints: advice only, never fails. A new named profile starts empty; real data plus a debug port is unauthenticated.
+dev-hints:
+	@if [ -n "$$PROFILE" ] && [ "$$PROFILE" != "default" ] && [ ! -d "$$HOME/.corner-office/profiles/$$PROFILE" ]; then \
+	  printf '%s\n' "New empty profile '$$PROFILE'. To start from your real settings: cp ~/.corner-office/config.json ~/.corner-office/profiles/$$PROFILE/config.json"; fi
+	@if { [ -z "$$PROFILE" ] || [ "$$PROFILE" = "default" ]; } && [ -n "$$DEBUG_PORT" ]; then \
+	  printf '%s\n' "" \
+	    "WARNING: DEBUG_PORT=$$DEBUG_PORT with your REAL data (no profile)." \
+	    "The debug port has no authentication: any local account can drive this dev build," \
+	    "with your real data and credentials." \
+	    "Prefer a named profile: make dev PROFILE=dev DEBUG_PORT=$$DEBUG_PORT" "" >&2; fi
 
 # ──────────────────────────────────────────────────────────────────────────────
 # build: compile all three processes for production

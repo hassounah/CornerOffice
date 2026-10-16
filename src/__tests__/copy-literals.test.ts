@@ -25,7 +25,7 @@ const ALLOWED: readonly { file: string; text: string; why: string }[] = [
   },
   ...[
     'Applies to Claude sessions in this workspace.',
-    'That includes using your Claude sign-in',
+    'use your Claude sign-in',
     'Takes effect when your Claude session next starts.',
     'until your Claude session next starts.',
   ].map((text) => ({

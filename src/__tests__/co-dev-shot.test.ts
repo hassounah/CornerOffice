@@ -27,6 +27,7 @@ interface ShotModule {
   pickPage: (urls: string[]) => number
   defaultOutPath: (profile: string, now: Date, home?: string) => string
   exitCodeFor: (error: unknown) => number
+  stripControl: (text: unknown) => string
   main: (argv: string[], env: Record<string, string>) => Promise<number>
 }
 
@@ -104,6 +105,20 @@ describe('defaultOutPath', () => {
     expect(defaultOutPath('dev', new Date('2026-10-12T23:00:01.123Z'), '/home/u')).toBe(
       '/home/u/.corner-office/profiles/dev/shots/2026-10-12T23-00-01.123Z.png',
     )
+  })
+})
+
+describe('stripControl', () => {
+  it('removes escape sequences, C0, DEL and C1 characters but keeps newline and tab', async () => {
+    const { stripControl } = await load()
+    const hostile = 'a\u001b[31mred\u0007\u0000b\u007f\u009bc\u0085\r\nd\te'
+    expect(stripControl(hostile)).toBe('a[31mredbc\nd\te')
+  })
+
+  it('leaves ordinary and non-ASCII text alone and coerces non-strings', async () => {
+    const { stripControl } = await load()
+    expect(stripControl('héllo wörld \u{1F600}  x')).toBe('héllo wörld \u{1F600}  x')
+    expect(stripControl(42)).toBe('42')
   })
 })
 

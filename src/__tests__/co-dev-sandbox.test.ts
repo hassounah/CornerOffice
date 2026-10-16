@@ -53,9 +53,21 @@ function installRepo(opts: { electron: boolean }): void {
   }
 }
 
+// The Xvfb lock and socket live under the temp root, so the tests never touch the real /tmp/.X99-lock.
+const xLock = (): string => path.join(root, 'X99-lock')
+const xSocket = (): string => path.join(root, 'X99')
+
 function run(args: string[], env: Record<string, string> = {}): { status: number | null; stdout: string; stderr: string } {
   const r = spawnSync('bash', [SCRIPT, ...args], {
-    env: { PATH: bin, HOME: home, CO_REPO_ROOT: repo, CORNER_OFFICE_SANDBOX: '1', ...env },
+    env: {
+      PATH: bin,
+      HOME: home,
+      CO_REPO_ROOT: repo,
+      CORNER_OFFICE_SANDBOX: '1',
+      CO_X_LOCK: xLock(),
+      CO_X_SOCKET: xSocket(),
+      ...env,
+    },
     encoding: 'utf8',
     timeout: 60_000,
   })
@@ -184,6 +196,55 @@ describe('preflight', () => {
   })
 })
 
+describe('stale display', () => {
+  // A pid that is certainly dead: a finished child.
+  const deadPid = (): string => String(spawnSync('true').pid)
+
+  it('a lock whose pid is dead is removed with its socket and the start continues', () => {
+    fs.writeFileSync(xLock(), `${deadPid().padStart(10)}\n`)
+    fs.writeFileSync(xSocket(), '')
+    const r = run(['--wait'])
+    expect(r.status).toBe(0)
+    expect(r.stderr).not.toContain('is in use')
+  })
+
+  it('a socket without a lock is stale too', () => {
+    fs.writeFileSync(xSocket(), '')
+    expect(run(['--wait']).status).toBe(0)
+  })
+
+  // This test process stands in for a live Xvfb: its own comm is passed as the expected name.
+  const liveX = (): Record<string, string> => ({ CO_X_NAME: fs.readFileSync(`/proc/${process.pid}/comm`, 'utf8').trim() })
+
+  it('a lock with a live pid blocks the start and names the pid', () => {
+    fs.writeFileSync(xLock(), `${String(process.pid).padStart(10)}\n`)
+    const r = run(['--wait'], liveX())
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain(`display :99 is in use by pid ${process.pid}; run make dev-sandbox-stop`)
+    expect(fs.existsSync(xLock())).toBe(true)
+  })
+
+  it('a lock whose live pid is not Xvfb (a pid reused after a container restart) is stale', () => {
+    fs.writeFileSync(xLock(), `${String(process.pid).padStart(10)}\n`)
+    fs.writeFileSync(xSocket(), '')
+    const r = run(['--wait'])
+    expect(r.status).toBe(0)
+    expect(r.stderr).not.toContain('is in use')
+  })
+
+  it('--stop removes a stale lock and socket but leaves a live one', () => {
+    fs.writeFileSync(xLock(), `${deadPid()}\n`)
+    fs.writeFileSync(xSocket(), '')
+    expect(run(['--stop']).status).toBe(0)
+    expect(fs.existsSync(xLock())).toBe(false)
+    expect(fs.existsSync(xSocket())).toBe(false)
+
+    fs.writeFileSync(xLock(), `${process.pid}\n`)
+    run(['--stop'], liveX())
+    expect(fs.existsSync(xLock())).toBe(true)
+  })
+})
+
 describe('--wait', () => {
   it('a vite that exits at once: exit 1, the log tail on stderr and the log path named', () => {
     const r = run(['--wait'], { EV_MODE: 'exit' })
@@ -197,7 +258,7 @@ describe('--wait', () => {
     const r = run(['--wait'])
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('==> Corner Office dev profile "dev" (sandbox, headless Xvfb :99)')
-    expect(r.stdout).toContain('host: not published (Dev app access is off for this session)')
+    expect(r.stdout).toContain('host: not published. Ask the user to turn on Settings > Sandbox > Dev app access for this workspace in Corner Office (then recreate)')
     expect(r.stdout).toContain('shot: node scripts/co_dev_shot.mjs [--text]')
     const pidfile = path.join(home, '.corner-office/profiles/dev/dev-sandbox.pid')
     expect(fs.existsSync(pidfile)).toBe(true)
@@ -252,13 +313,18 @@ describe('Dev app access (3a.4)', () => {
     const r = run(['--wait'], { CORNER_OFFICE_CDP_PUBLISH_PORT: '23456', CO_ROUTE_FILE: routeFile(ROUTE_OK) })
 
     expect(r.status).toBe(0)
-    expect(socatArgs()).toEqual(['TCP-LISTEN:23456,bind=0.0.0.0,fork,reuseaddr,range=192.168.0.1/32', 'TCP:127.0.0.1:9222'])
+    expect(socatArgs()).toEqual([
+      '-T',
+      '600',
+      'TCP-LISTEN:23456,bind=0.0.0.0,fork,reuseaddr,max-children=8,range=192.168.0.1/32',
+      'TCP:127.0.0.1:9222',
+    ])
     expect(r.stdout).toContain('host: 127.0.0.1:23456')
   })
 
   it('uses the debug port the launcher was given', () => {
     run(['--wait'], { CORNER_OFFICE_CDP_PUBLISH_PORT: '23456', DEBUG_PORT: '9333', CO_ROUTE_FILE: routeFile(ROUTE_OK) })
-    expect(socatArgs()[1]).toBe('TCP:127.0.0.1:9333')
+    expect(socatArgs()[3]).toBe('TCP:127.0.0.1:9333')
   })
 
   it.each([
@@ -292,7 +358,7 @@ describe('Dev app access (3a.4)', () => {
   it('without the env var there is no socat and the off host line', () => {
     const r = run(['--wait'], { CO_ROUTE_FILE: routeFile(ROUTE_OK) })
     expect(fs.existsSync(path.join(home, 'socat.args'))).toBe(false)
-    expect(r.stdout).toContain('host: not published (Dev app access is off for this session)')
+    expect(r.stdout).toContain('host: not published. Ask the user to turn on Settings > Sandbox > Dev app access for this workspace in Corner Office (then recreate)')
   })
 
   it.each(['abc', '80', '70000', '9222', '23456;touch x', '2345\n6'])('refuses an invalid port %j and starts nothing', (port) => {

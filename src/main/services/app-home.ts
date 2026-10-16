@@ -196,7 +196,7 @@ export function fatalProfileError(msg: string, code = 1): never {
   process.exit(code)
 }
 
-/** Create a non-default profile's home (0700) and refuse a symlink or a directory owned by someone else. */
+/** Create a non-default profile's home (0700), tighten an existing looser one, and refuse a symlink or a directory owned by someone else. */
 export function ensureProfileHome(p: Profile): void {
   if (p.name === null) return
   fs.mkdirSync(p.home, { recursive: true, mode: 0o700 })
@@ -208,4 +208,6 @@ export function ensureProfileHome(p: Profile): void {
   if (uid !== null && st.uid !== uid) {
     fatalProfileError(`profile home ${p.home} is owned by uid ${st.uid}, not you (uid ${uid}). Remove it, or pick another CORNER_OFFICE_PROFILE.`)
   }
+  // mkdirSync leaves an existing directory (for example one electron-log created) at its old mode.
+  if ((st.mode & 0o077) !== 0) fs.chmodSync(p.home, 0o700)
 }

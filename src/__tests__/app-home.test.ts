@@ -210,6 +210,15 @@ describe('ensureProfileHome', () => {
     expect(exitMock).not.toHaveBeenCalled()
   })
 
+  it('tightens an existing home with a looser mode to 0700', () => {
+    const p = profileIn(tmp)
+    fs.mkdirSync(p.home, { recursive: true })
+    fs.chmodSync(p.home, 0o755)
+    ensureProfileHome(p)
+    expect(fs.statSync(p.home).mode & 0o777).toBe(0o700)
+    expect(exitMock).not.toHaveBeenCalled()
+  })
+
   it('is idempotent', () => {
     const p = profileIn(tmp)
     ensureProfileHome(p)

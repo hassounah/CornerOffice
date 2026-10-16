@@ -35,6 +35,7 @@ import {
   agentReadinessCommandLead,
   imageUpdatedForAgentCopy,
   isDockerReason,
+  DEBUG_PORT_CONFLICT_COPY,
   PORT_CONFLICT_NO_RECREATE_COPY,
 } from '../../utils/sandbox-copy'
 
@@ -837,7 +838,7 @@ function StartSessionChooserInner({
 
       {spawnError && (
         <div role="alert" className="space-y-1 text-xs">
-          <p>{spawnFailure === 'PORT_CONFLICT' && !canRecreateForPort ? PORT_CONFLICT_NO_RECREATE_COPY : spawnError}</p>
+          <p>{spawnFailure === 'PORT_CONFLICT' && !canRecreateForPort && spawnError !== DEBUG_PORT_CONFLICT_COPY ? PORT_CONFLICT_NO_RECREATE_COPY : spawnError}</p>
           {canRecreateForPort && (
             <button type="button" className={buttonClass} style={buttonStyle} onClick={() => setPortRecreate(true)}>
               Recreate with a new port

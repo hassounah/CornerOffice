@@ -84,9 +84,23 @@ function ProfileBadge({ name, home }: { name: string; home: string }): React.Rea
       className="ml-3 px-2 py-0.5 rounded text-[11px] font-semibold tracking-wide"
       style={{ backgroundColor: '#fde68a', color: '#422006', WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       title={home}
-      aria-label={`Profile ${name}, home ${home}`}
+      aria-label={`Profile ${name}`}
     >
       {name}
+    </span>
+  )
+}
+
+// An unpackaged build on the default profile runs on the user's real data: say so.
+function DevRealDataBadge(): React.ReactElement {
+  return (
+    <span
+      className="ml-3 px-2 py-0.5 rounded text-[11px] font-semibold tracking-wide"
+      style={{ backgroundColor: '#fde68a', color: '#422006', WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      title="This is a development build running on your real Corner Office data (~/.corner-office)"
+      aria-label="Development build, real data"
+    >
+      dev build, real data
     </span>
   )
 }
@@ -128,6 +142,7 @@ export function WindowTitleBar(): React.ReactElement {
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       {profile && <ProfileBadge name={profile.name} home={profile.home} />}
+      {!profile && window.cornerOffice?.devRealData && <DevRealDataBadge />}
 
       {/* Title with logo — centered absolutely across the full width */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none gap-1.5">

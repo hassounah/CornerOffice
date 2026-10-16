@@ -126,12 +126,7 @@ export function buildSandboxHandlers(manager: SandboxManagerService, deps: Build
     const known = workspaceSlugs()
     if (patch.workspaceAllowlist && !known.includes(patch.workspaceAllowlist.workspaceSlug)) throw unknownWorkspaceError()
 
-    if (patch.workspaceDevAccess) {
-      if (!known.includes(patch.workspaceDevAccess.workspaceSlug)) throw unknownWorkspaceError()
-      // main picks and persists the port (or clears it); a port number never travels over IPC.
-      const ok = await manager.setDevAccess(patch.workspaceDevAccess.workspaceSlug, patch.workspaceDevAccess.enabled)
-      if (!ok) throw new Error('no free port for dev app access')
-    }
+    if (patch.workspaceDevAccess && !known.includes(patch.workspaceDevAccess.workspaceSlug)) throw unknownWorkspaceError()
 
     const next = await config.update((current) => {
       const merged: SandboxConfig = {
@@ -149,6 +144,14 @@ export function buildSandboxHandlers(manager: SandboxManagerService, deps: Build
     // A global change affects every workspace; a workspace change only that one.
     const affected = patch.globalAllowlist ? known : patch.workspaceAllowlist ? [patch.workspaceAllowlist.workspaceSlug] : []
     if (affected.length > 0) manager.onSettingsChanged(affected)
+
+    if (patch.workspaceDevAccess) {
+      // After the other fields are saved, so a failure above never leaves a persisted port behind.
+      // main picks and persists the port (or clears it); a port number never travels over IPC.
+      const ok = await manager.setDevAccess(patch.workspaceDevAccess.workspaceSlug, patch.workspaceDevAccess.enabled)
+      if (!ok) throw new Error('no free port for dev app access')
+      return settingsView(config.get()) // setDevAccess wrote the port: `next` predates it
+    }
     return settingsView(next)
   }
 

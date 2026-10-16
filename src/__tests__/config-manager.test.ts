@@ -468,18 +468,41 @@ describe('ConfigManager', () => {
       expect(result!.sandbox).toEqual(DEFAULT_SANDBOX)
     })
 
-    it.each([22, 65000, 1.5])('rejects devCdpPort %s on load, falling back to defaults (#0038 3a)', (devCdpPort) => {
+    it.each([22, 65000, 1.5, 'x'])('resets only a bad devCdpPort %s to null on load, keeping the rest (#0038 3a)', (devCdpPort) => {
       mockFs.existsSync = vi.fn().mockReturnValue(true)
       const cfg = {
         ...manager.getDefaultConfig(),
         sandbox: {
-          toolchains: { node: true, go: true, buildBase: true },
-          globalAllowlist: [],
-          workspaces: { 'my-ws': { channelPort: 20001, devCdpPort, allowlist: [] } },
+          toolchains: { node: false, go: true, buildBase: true },
+          globalAllowlist: ['keep.me'],
+          workspaces: { 'my-ws': { channelPort: 20001, devCdpPort, allowlist: ['a.dev'] } },
         },
       }
       mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
-      expect(manager.loadConfig()!.sandbox).toEqual(DEFAULT_SANDBOX)
+      const sandbox = manager.loadConfig()!.sandbox!
+      expect(sandbox.workspaces['my-ws']).toEqual({ channelPort: 20001, devCdpPort: null, allowlist: ['a.dev'] })
+      expect(sandbox.globalAllowlist).toEqual(['keep.me'])
+      expect(sandbox.toolchains.node).toBe(false)
+    })
+
+    it('one workspace with a bad port does not reset the other workspaces allowlists or the toolchains', () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      const cfg = {
+        ...manager.getDefaultConfig(),
+        sandbox: {
+          toolchains: { node: false, go: true, buildBase: true },
+          globalAllowlist: ['keep.me'],
+          workspaces: {
+            bad: { channelPort: 99, devCdpPort: 70000, allowlist: ['bad.dev'] },
+            good: { channelPort: 20002, devCdpPort: 29000, allowlist: ['good.dev'] },
+          },
+        },
+      }
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
+      const sandbox = manager.loadConfig()!.sandbox!
+      expect(sandbox.workspaces.bad).toEqual({ channelPort: null, devCdpPort: null, allowlist: ['bad.dev'] })
+      expect(sandbox.workspaces.good).toEqual({ channelPort: 20002, devCdpPort: 29000, allowlist: ['good.dev'] })
+      expect(sandbox.toolchains.node).toBe(false)
     })
 
     it('keeps a valid devCdpPort on load (#0038 3a)', () => {
@@ -496,20 +519,20 @@ describe('ConfigManager', () => {
       expect(manager.loadConfig()!.sandbox?.workspaces['my-ws']).toEqual({ channelPort: 20001, devCdpPort: 29000, allowlist: [] })
     })
 
-    it('rejects a channelPort outside CHANNEL_PORT_RANGE, falling back to defaults', () => {
+    it('resets a channelPort outside CHANNEL_PORT_RANGE to null (re-allocated at the next start), keeping the allowlist', () => {
       mockFs.existsSync = vi.fn().mockReturnValue(true)
       const cfg = {
         ...manager.getDefaultConfig(),
         sandbox: {
           toolchains: { node: true, go: true, buildBase: true },
           globalAllowlist: [],
-          workspaces: { 'my-ws': { channelPort: 99, allowlist: [] } },
+          workspaces: { 'my-ws': { channelPort: 99, allowlist: ['a.dev'] } },
         },
       }
       mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(cfg))
       const result = manager.loadConfig()
       expect(result).not.toBeNull()
-      expect(result!.sandbox).toEqual(DEFAULT_SANDBOX)
+      expect(result!.sandbox!.workspaces['my-ws']).toEqual({ channelPort: null, devCdpPort: null, allowlist: ['a.dev'] })
     })
   })
 

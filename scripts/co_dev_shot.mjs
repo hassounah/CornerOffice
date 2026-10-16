@@ -120,6 +120,17 @@ export function exitCodeFor(error) {
   return EXIT.NO_CONNECTION
 }
 
+/** Drop C0 (except \n and \t), DEL and C1 control characters: page text must not drive the user's terminal. */
+export function stripControl(text) {
+  let out = ''
+  for (const ch of String(text)) {
+    const c = ch.codePointAt(0)
+    const control = c < 0x20 ? c !== 0x0a && c !== 0x09 : c >= 0x7f && c <= 0x9f
+    if (!control) out += ch
+  }
+  return out
+}
+
 function fail(exitCode, message) {
   return Object.assign(new Error(message), { exitCode })
 }
@@ -139,9 +150,9 @@ async function run(opts) {
     const page = pages[index]
 
     page.on('console', (msg) => {
-      if (msg.type() === 'error') process.stderr.write(`[console.error] ${msg.text()}\n`)
+      if (msg.type() === 'error') process.stderr.write(`[console.error] ${stripControl(msg.text())}\n`)
     })
-    page.on('pageerror', (err) => process.stderr.write(`[pageerror] ${err.message}\n`))
+    page.on('pageerror', (err) => process.stderr.write(`[pageerror] ${stripControl(err.message)}\n`))
 
     await page.waitForLoadState('load', { timeout: opts.timeout })
     await page.waitForLoadState('networkidle', { timeout: NETWORK_IDLE_MS }).catch(() => undefined)
@@ -153,9 +164,9 @@ async function run(opts) {
       } catch (err) {
         throw fail(EXIT.EVAL_THREW, `--eval threw: ${err?.message ?? err}`)
       }
-      process.stdout.write(`${JSON.stringify(result) ?? 'null'}\n`)
+      process.stdout.write(`${stripControl(JSON.stringify(result) ?? 'null')}\n`)
     } else if (opts.text) {
-      process.stdout.write(`${await page.evaluate('document.body.innerText')}\n`)
+      process.stdout.write(`${stripControl(await page.evaluate('document.body.innerText'))}\n`)
     } else {
       const out = opts.out ?? defaultOutPath(opts.profile, new Date())
       fs.mkdirSync(path.dirname(out), { recursive: true })

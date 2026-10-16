@@ -22,6 +22,7 @@ import type { DockerRunner } from '../main/services/docker-runner'
 import { CLAUDE_JSON_SEED_CAP, SANDBOX_DENY_RULES } from '../main/services/sandbox-claude-config'
 import { claudeConfigDetail } from '../main/types/claude-config'
 import { HANDLERS, getHandler } from '../main/agents/registry'
+import { AGENT_IDS } from '../main/agents/descriptors'
 import { FakeDockerRunner } from './helpers/fake-docker-runner'
 import { makeTmpDir, makeSimpleRepo, serviceEnvOverrides, initRepo, writeFile, commitAll } from './helpers/git-fixtures'
 import dockerVersionFixture from './fixtures/docker-version.json'
@@ -1655,6 +1656,45 @@ describe('devCdpPort', () => {
     expect(result.ok === false && result.code === 'RECREATE_REQUIRED' && 'devCdpChange' in result.plan).toBe(false)
   })
 
+  describe('devCdpChange does not depend on port order or on the channel port staying put', () => {
+    const planFor = async (chan: number, cdp: number | null, ports: number[], specLabel = 'stale') => {
+      const h = await ready(chan, cdp)
+      const docker = new FakeDockerRunner()
+      docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+      docker.script(['inspect'], { result: { stdout: inspectJson({ specLabel, ports }), stderr: '', exitCode: 0 } })
+      const result = await createSandboxManager(h.makeDeps({ docker })).ensureContainer('myslug')
+      return { h, result }
+    }
+    const planOf = (r: Awaited<ReturnType<typeof planFor>>['result']) => (r.ok === false && r.code === 'RECREATE_REQUIRED' ? r.plan : null)
+
+    it('channel port above the CDP port, both unchanged: no devCdpChange', async () => {
+      const { result } = await planFor(29000, 21000, [21000, 29000])
+      expect(planOf(result)).not.toHaveProperty('devCdpChange')
+    })
+
+    it('channel port above the CDP port, dev access turned on: enabled', async () => {
+      expect(planOf((await planFor(29000, 21000, [29000])).result)).toMatchObject({ devCdpChange: 'enabled' })
+    })
+
+    it('channel port above the CDP port, dev access turned off: disabled', async () => {
+      expect(planOf((await planFor(29000, null, [21000, 29000])).result)).toMatchObject({ devCdpChange: 'disabled' })
+    })
+
+    it('channel port moved above the old CDP port, CDP unchanged: no devCdpChange', async () => {
+      // The container still binds the old channel port 29500 (numerically above the CDP port 21000).
+      const { result } = await planFor(27500, 21000, [21000, 29500])
+      expect(planOf(result)).not.toHaveProperty('devCdpChange')
+    })
+
+    it('channel port moved above the old CDP port, CDP moved too: enabled', async () => {
+      expect(planOf((await planFor(27500, 21000, [20000, 29500])).result)).toMatchObject({ devCdpChange: 'enabled' })
+    })
+
+    it('channel port moved, dev access turned off: disabled', async () => {
+      expect(planOf((await planFor(27500, null, [21000, 29500])).result)).toMatchObject({ devCdpChange: 'disabled' })
+    })
+  })
+
   describe('setDevAccess and the port pickers', () => {
     it('allocates a CDP port avoiding every channel and CDP port, persists it, and keeps an existing one', async () => {
       const h = await ready(27500, null)
@@ -1716,5 +1756,22 @@ describe('devCdpPort', () => {
 
     expect((await statusWith([27500, 29000])).publishedCdpPort).toBe(29000)
     expect((await statusWith([27500])).publishedCdpPort).toBeNull()
+    expect((await statusWith([21000, 27500])).publishedCdpPort).toBe(21000)
+  })
+
+  it('getStatus reads the published port from the same inspect as the container state (one inspect per agent)', async () => {
+    // With dev access toggled off in config the container may still publish the port: it stays visible.
+    const h = await ready(27500, null)
+    const docker = new FakeDockerRunner()
+    docker.script(['version'], { result: { stdout: DOCKER_VERSION_JSON, stderr: '', exitCode: 0 } })
+    docker.script(['inspect'], { result: { stdout: inspectJson({ ports: [27500, 29000] }), stderr: '', exitCode: 0 } })
+    const manager = createSandboxManager(h.makeDeps({ docker }))
+    await manager.getEnvironment({ refresh: true })
+    const before = docker.calls.filter((c) => c.args[0] === 'inspect').length
+
+    const status = await manager.getStatus('myslug')
+
+    expect(docker.calls.filter((c) => c.args[0] === 'inspect').length - before).toBe(AGENT_IDS.length)
+    expect(status.publishedCdpPort).toBe(29000)
   })
 })

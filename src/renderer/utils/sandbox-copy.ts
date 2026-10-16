@@ -173,6 +173,9 @@ export const LIVE_UPDATE_FAILURE_COPY = 'Firewall update failed — the previous
 /** Shown when main isn't reachable or not ready (the store's "not available" error). */
 export const SANDBOX_UNAVAILABLE_COPY = "The sandbox isn't available right now. Try again in a moment."
 
+/** The dev app's debug port (Dev app access) is taken. A new channel port would not help, so no recreate is offered. */
+export const DEBUG_PORT_CONFLICT_COPY = 'Another program is using the dev app debug port. Close it, or turn off Dev app access in Settings > Sandbox, and try again.'
+
 /** The channel port is taken and there is no plan to recreate with: say what to do instead of asking a question with no button. */
 export const PORT_CONFLICT_NO_RECREATE_COPY = "Another program is using the sandbox's channel port. Close it and try again."
 
@@ -187,6 +190,7 @@ export function startFailureMessage(
   if (code === 'AGENT_NOT_READY') {
     return (agent?.readiness && agentReadinessMessage(agent.agentId ?? LEGACY_AGENT_ID, agent.readiness)) || "This agent isn't ready to run in the sandbox yet."
   }
+  if (code === 'PORT_CONFLICT' && detail === 'debug-port') return DEBUG_PORT_CONFLICT_COPY
   // The wording that names the agent follows the session's own agent, not a fixed one.
   const message = code === 'SPAWN_FAILED' ? spawnFailedCopy(agent?.agentId) : code === 'AGENT_CONFIG_INVALID' ? configCopy(agent?.agentId) : START_FAILURE_COPY[code]
   return code === 'AGENT_CONFIG_INVALID' && message !== null && detail ? `${detail} ${message}` : message
@@ -338,23 +342,28 @@ export function unmergedLine(branches: readonly string[]): string {
 // ── Dev app access (#0038 3a) ───────────────────────────────────────────────
 
 export const DEV_ACCESS_TITLE = 'Dev app access'
-export const DEV_ACCESS_TOGGLE = 'Let this computer open the dev app in DevTools'
+export const DEV_ACCESS_TOGGLE = 'Publish the dev app debug port on 127.0.0.1'
 export const DEV_ACCESS_APPLIES = 'Applies to Claude sessions in this workspace.'
 export const DEV_ACCESS_HELP =
-  `${DEV_ACCESS_APPLIES} Publishes the dev app's debug port on 127.0.0.1. Anything running on this computer, including other user accounts, can then control the dev app and run commands in this sandbox. That includes using your Claude sign-in in ~/.claude. The port is served from inside the sandbox, so treat what it shows as coming from the agent.`
+  `Anything on this computer can then run commands in this sandbox and use your Claude sign-in. That includes other user accounts. ${DEV_ACCESS_APPLIES} The port is served from inside the sandbox, so treat what it shows as coming from the agent.`
 export const DEV_ACCESS_NEXT_START = 'Takes effect when your Claude session next starts.'
-export const DEV_ACCESS_STILL_PUBLISHED = 'Off. The port stays open until your Claude session next starts.'
 export const DEV_ACCESS_SAVE_FAILED = 'Your setting was not changed. Try again.'
-export const DEV_ACCESS_ROUTINE_USE = 'For routine use, run agent-browser connect or Playwright against that port. Open full DevTools only when you need it.'
+export const DEV_ACCESS_ROUTINE_USE =
+  'For routine agent use, run make dev-sandbox and co_dev_shot.mjs inside the session. Use this port only from DevTools you drive yourself.'
 
 /** The enabled state: where the host port goes. */
 export function devAccessRouteCopy(port: number): string {
   return `This computer 127.0.0.1:${port} → dev app port 9222 in the sandbox. ${DEV_ACCESS_APPLIES}`
 }
 
-/** The off-but-still-open state: which port is still published. */
-export function devAccessStillOpenCopy(published: number): string {
-  return `Still open on 127.0.0.1:${published}.`
+/** The off-but-still-open state: which port is still published, and until when. */
+export function devAccessStillPublishedCopy(published: number): string {
+  return `Off. 127.0.0.1:${published} stays open until your Claude session next starts.`
+}
+
+/** The persistent indicator in the sandbox header while the container publishes a debug port. */
+export function debugPortOpenCopy(published: number): string {
+  return `Debug port open: 127.0.0.1:${published}`
 }
 
 export function devAccessInspectCopy(port: number): string {

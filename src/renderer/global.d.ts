@@ -33,6 +33,8 @@ import type {
 interface CornerOfficeAPI {
   /** The named profile this window runs under, or null for the default profile. */
   profile: { readonly name: string; readonly home: string } | null
+  /** True for an unpackaged build running on the default profile (real data). */
+  devRealData: boolean
   windowControls: {
     minimize: () => Promise<void>
     maximize: () => Promise<void>

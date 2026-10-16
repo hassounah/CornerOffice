@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 // ---------------------------------------------------------------------------
@@ -40,6 +42,47 @@ describe('make dev (dry run)', () => {
     const { stdout } = make(['-n', 'dev', 'PROFILE=x', 'DEBUG_PORT=9223'])
     expect(stdout).toContain('echo "==> profile: x (~/.corner-office/profiles/x)  [PROFILE= for your real data]"')
     expect(stdout).toContain('CORNER_OFFICE_PROFILE=x CORNER_OFFICE_DEBUG_PORT=9223 node_modules/.bin/electron-vite dev')
+  })
+})
+
+describe('make dev-hints', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'co-make-'))
+  afterAll(() => rmSync(home, { recursive: true, force: true }))
+
+  it('hints how to seed a profile that does not exist yet', () => {
+    const { status, stdout } = make(['dev-hints', 'PROFILE=fresh'], { HOME: home })
+    expect(status).toBe(0)
+    expect(stdout).toContain(
+      "New empty profile 'fresh'. To start from your real settings: cp ~/.corner-office/config.json ~/.corner-office/profiles/fresh/config.json",
+    )
+  })
+
+  it('stays quiet for an existing profile', () => {
+    mkdirSync(path.join(home, '.corner-office', 'profiles', 'there'), { recursive: true })
+    const { status, stdout } = make(['dev-hints', 'PROFILE=there'], { HOME: home })
+    expect(status).toBe(0)
+    expect(stdout).not.toContain('New empty profile')
+  })
+
+  it('warns loudly, without refusing, for real data plus a debug port', () => {
+    const { status, stderr, stdout } = make(['dev-hints', 'PROFILE=', 'DEBUG_PORT=9223'], { HOME: home })
+    expect(status).toBe(0)
+    expect(stderr).toContain('WARNING: DEBUG_PORT=9223 with your REAL data')
+    expect(stderr).toContain('no authentication')
+    expect(stderr).toContain('any local account')
+    expect(stderr).toContain('Prefer a named profile')
+    expect(stdout).not.toContain('New empty profile')
+  })
+
+  it('does not warn for a named profile or for real data without a port', () => {
+    expect(make(['dev-hints', 'PROFILE=dev', 'DEBUG_PORT=9223'], { HOME: home }).stderr).not.toContain('WARNING')
+    expect(make(['dev-hints', 'PROFILE='], { HOME: home }).stderr).toBe('')
+  })
+
+  it('runs after the guard and before the slow prerequisites', () => {
+    const { stdout } = make(['-n', 'dev'])
+    expect(stdout.indexOf('Inside a sandbox session')).toBeLessThan(stdout.indexOf('New empty profile'))
+    expect(stdout.indexOf('New empty profile')).toBeLessThan(stdout.indexOf('process.versions.node'))
   })
 })
 
