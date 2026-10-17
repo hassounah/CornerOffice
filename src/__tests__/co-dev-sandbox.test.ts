@@ -74,9 +74,9 @@ function run(args: string[], env: Record<string, string> = {}): { status: number
 }
 
 const PACKAGES = [
-  'xvfb', 'glib', 'nss', 'nspr', 'atk', 'at-spi2-core', 'cups-libs', 'dbus-libs', 'libdrm', 'libxkbcommon',
+  'xvfb', 'glib', 'libnss', 'libnspr', 'libatk-1.0', 'libatk-bridge-2.0', 'at-spi2-core', 'cups-libs', 'dbus-libs', 'libdrm', 'libxkbcommon',
   'libxcomposite', 'libxdamage', 'libxfixes', 'libxrandr', 'mesa-gbm', 'pango', 'cairo', 'alsa-lib', 'gtk-3',
-  'fontconfig', 'font-dejavu',
+  'fontconfig', 'ttf-dejavu',
 ]
 const HEADER = "make dev can't start the headless app yet. On the host:"
 const TOOLCHAIN_LINES = [

@@ -29,8 +29,8 @@ HOST_ATTRIBUTION_ENV=(
 
 # System packages the Electron dev runtime needs (Wolfi names), for sandbox.extraPackages in config.json.
 ELECTRON_PACKAGES=(
-  xvfb glib nss nspr atk at-spi2-core cups-libs dbus-libs libdrm libxkbcommon libxcomposite
-  libxdamage libxfixes libxrandr mesa-gbm pango cairo alsa-lib gtk-3 fontconfig font-dejavu
+  xvfb glib libnss libnspr libatk-1.0 libatk-bridge-2.0 at-spi2-core cups-libs dbus-libs libdrm libxkbcommon libxcomposite
+  libxdamage libxfixes libxrandr mesa-gbm pango cairo alsa-lib gtk-3 fontconfig ttf-dejavu
 )
 
 PROFILE=dev
