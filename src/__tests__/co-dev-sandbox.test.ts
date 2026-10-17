@@ -21,13 +21,26 @@ let bin: string
 let home: string
 let repo: string
 
+// The first executable file named `tool` on PATH. `command -v` would also return a non-executable
+// file (e.g. uv's sourceable ~/.local/bin/env), which then fails with "Permission denied".
 function which(tool: string): string | null {
-  const r = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' })
-  return r.status === 0 ? r.stdout.trim() : null
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    const p = path.join(dir, tool)
+    try {
+      fs.accessSync(p, fs.constants.X_OK)
+      if (fs.statSync(p).isFile()) return p
+    } catch {
+      // not here
+    }
+  }
+  return null
 }
 
+// Replaces any symlink to a real tool first, so the stub never writes through it.
 function stub(name: string, body: string): void {
-  fs.writeFileSync(path.join(bin, name), `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 })
+  const p = path.join(bin, name)
+  fs.rmSync(p, { force: true })
+  fs.writeFileSync(p, `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 })
 }
 
 function installRepo(opts: { electron: boolean }): void {

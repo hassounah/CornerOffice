@@ -29,3 +29,8 @@ Range.prototype.getClientRects = () =>
 delete process.env.CORNER_OFFICE_SANDBOX
 delete process.env.CORNER_OFFICE_PROFILE
 delete process.env.CORNER_OFFICE_DEBUG_PORT
+// ...and to electron-vite's dev env, inherited when the suite runs from a terminal inside `make dev`;
+// it would switch main/index.ts to the dev CSP and renderer URL.
+delete process.env.ELECTRON_RENDERER_URL
+delete process.env.NODE_ENV_ELECTRON_VITE
+process.env.NODE_ENV = 'test'
