@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import log from 'electron-log/main'
 import { z } from 'zod'
-import { hiddenHomeSegments, sandboxPaths } from './sandbox-paths'
+import { hiddenHomeSegments, profilesRoot, sandboxPaths } from './sandbox-paths'
 import type { SandboxPaths } from './sandbox-paths'
 import { LEGACY_AGENT_ID, getDescriptor } from '../agents/descriptors'
 import { AgentIdSchema } from '../agents/agent-id-schema'
@@ -141,6 +141,10 @@ export function assertMountSafe(p: string, opts: { home: string }): boolean {
   if (p === path.parse(p).root) return false
   if (p === home) return false
   if (home.startsWith(p + path.sep)) return false
+
+  // Rule 3a (#0038 D3a): a dev profile's home is never a mount source or target.
+  const profiles = profilesRoot(home)
+  if (p === profiles || p.startsWith(profiles + path.sep)) return false
 
   // Rule 4 (v2, H1): a hidden path under $HOME is refused unless its first
   // path component below $HOME is one of the allowed hidden locations —
@@ -637,9 +641,12 @@ export function imageInspectArgv(image: string = SANDBOX_IMAGE): string[] {
   return ['image', 'inspect', '--format', '{{json .}}', image]
 }
 
+/** A Wolfi package name accepted in `sandbox.extraPackages`; checked again in `buildArgv` before it reaches the Dockerfile. */
+export const EXTRA_PACKAGE_RE = /^[a-z0-9][a-z0-9+._-]{0,63}$/
+
 export interface BuildArgvOptions {
   rebuild: boolean
-  toolchains: { node: boolean; go: boolean; buildBase: boolean }
+  toolchains: { node: boolean; go: boolean; buildBase: boolean; extraPackages?: readonly string[] }
   uid: number
   gid: number
   /** AGENT_HOME — the one realHome. */
@@ -670,6 +677,9 @@ export function buildArgv(opts: BuildArgvOptions): string[] {
     toolchains.buildBase ? 'build-base' : null,
   ].filter((name): name is string => name !== null)
 
+  const extra = toolchains.extraPackages ?? []
+  if (!extra.every((p) => EXTRA_PACKAGE_RE.test(p))) throw new Error('sandbox-spec: invalid extra package for buildArgv')
+
   return [
     'build',
     '--pull',
@@ -678,6 +688,7 @@ export function buildArgv(opts: BuildArgvOptions): string[] {
     '--build-arg', `WITH_NODE=${toolchains.node ? 1 : 0}`,
     '--build-arg', `WITH_GO=${toolchains.go ? 1 : 0}`,
     '--build-arg', `WITH_BUILD=${toolchains.buildBase ? 1 : 0}`,
+    ...(extra.length > 0 ? ['--build-arg', `EXTRA_PACKAGES=${extra.join(' ')}`] : []),
     '--build-arg', `AGENT_UID=${uid}`,
     '--build-arg', `AGENT_GID=${gid}`,
     '--build-arg', `AGENT_HOME=${home}`,

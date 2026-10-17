@@ -364,4 +364,16 @@ describe('listSandboxWorktreeRoots', () => {
       fs.rmSync(home, { recursive: true, force: true })
     }
   })
+
+  it('still lists the real worktrees when the paths belong to a dev profile (#0038 R4)', () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'co-list-worktrees-dev-')))
+    try {
+      const devPaths = sandboxPaths(home, path.join(home, '.corner-office', 'profiles', 'dev'))
+      fs.mkdirSync(path.join(home, '.corner-office', 'sandboxes', 'a'), { recursive: true })
+
+      expect(listSandboxWorktreeRoots(devPaths)).toEqual([path.join(home, '.corner-office', 'sandboxes', 'a')])
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
 })

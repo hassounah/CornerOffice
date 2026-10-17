@@ -9,7 +9,13 @@ NODE_CHECK = const [a,b,c]=process.versions.node.split(".").map(Number); \
   const ok=(a===22&&(b>22||(b===22&&c>=2)))||(a===24&&b>=15)||a>=26; \
   if(!ok){console.error("Error: Node.js ^22.22.2, ^24.15.0 or >=26 required (found v"+process.versions.node+"). Run: nvm install && nvm use");process.exit(1)}
 
-.PHONY: setup check-node rebuild-native dev build package-deb package-rpm package-appimage dist clean install test test-watch lint help
+# Dev profile (#0038): `make dev` runs against ~/.corner-office/profiles/$(PROFILE); PROFILE= (empty) uses your real data.
+# The app validates CORNER_OFFICE_PROFILE and CORNER_OFFICE_DEBUG_PORT itself and fails naming the variable.
+PROFILE ?= dev
+DEBUG_PORT ?=
+, := ,
+
+.PHONY: setup check-node rebuild-native dev dev-stop build package-deb package-rpm package-appimage dist clean install test test-watch lint help
 .DEFAULT_GOAL := help
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -41,8 +47,20 @@ rebuild-native:
 # ──────────────────────────────────────────────────────────────────────────────
 # dev: start Electron in development mode with hot reload
 # ──────────────────────────────────────────────────────────────────────────────
+ifeq ($(CORNER_OFFICE_SANDBOX),1)
+# Inside a sandbox session: the headless dev app (Xvfb, CDP on 127.0.0.1:9222), in the background.
+dev:
+	@scripts/co_dev_sandbox.sh --wait
+else
 dev: check-node rebuild-native
-	$(NODE_BIN)/electron-vite dev
+	@echo "==> profile: $(if $(filter-out default,$(PROFILE)),$(PROFILE) (~/.corner-office/profiles/$(PROFILE))  [PROFILE= for your real data],default (REAL DATA, ~/.corner-office))"
+	@$(if $(and $(filter default,$(or $(PROFILE),default)),$(DEBUG_PORT)),printf '%s\n' "" "WARNING: DEBUG_PORT=$(DEBUG_PORT) with your REAL data (no profile)." "The debug port has no authentication: any local account can drive this dev build$(,)" "with your real data and credentials." "Prefer a named profile: make dev PROFILE=dev DEBUG_PORT=$(DEBUG_PORT)" "" >&2,:)
+	CORNER_OFFICE_PROFILE=$(PROFILE) CORNER_OFFICE_DEBUG_PORT=$(DEBUG_PORT) $(NODE_BIN)/electron-vite dev
+endif
+
+# dev-stop: stop the headless dev app started by `make dev` inside a sandbox session.
+dev-stop:
+	@scripts/co_dev_sandbox.sh --stop
 
 # ──────────────────────────────────────────────────────────────────────────────
 # build: compile all three processes for production
@@ -106,7 +124,10 @@ help:
 	@echo ""
 	@echo "  make setup            Verify Node.js, install deps, download Electron, build native modules"
 	@echo "  make rebuild-native   Rebuild node-pty for the installed Electron"
-	@echo "  make dev              Start Electron in dev mode with hot reload"
+	@echo "  make dev              On the host: dev mode with hot reload, as profile 'dev'"
+	@echo "                        (PROFILE=name for another profile, PROFILE= for your real data, DEBUG_PORT=n for CDP)"
+	@echo "                        Inside a sandbox session: the headless dev app, CDP on :9222"
+	@echo "  make dev-stop         Stop the headless dev app (inside a sandbox session)"
 	@echo "  make build            Compile all processes for production"
 	@echo "  make dist             Build deb + AppImage (+ rpm if rpmbuild available)"
 	@echo "  make package-deb      Build .deb package"

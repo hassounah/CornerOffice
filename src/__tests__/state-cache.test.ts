@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { useProfile } from './helpers/profile'
 import { StateCacheService } from '../main/services/state-cache'
 
 vi.mock('fs')
@@ -19,6 +20,7 @@ describe('StateCacheService', () => {
   let svc: StateCacheService
 
   beforeEach(() => {
+    useProfile('/home/test')
     vi.clearAllMocks()
     svc = new StateCacheService()
     mockFs.existsSync = vi.fn().mockReturnValue(false)
@@ -133,6 +135,17 @@ describe('StateCacheService', () => {
   })
 
   describe('flush', () => {
+    it('writes under the active profile home (#0038)', () => {
+      useProfile('/home/test', 'dev')
+      svc.load()
+      svc.flush()
+      expect(mockFs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringMatching(/^\/home\/test\/\.corner-office\/profiles\/dev\/.*\.tmp$/),
+        expect.any(String),
+        expect.anything()
+      )
+    })
+
     it('writes to disk immediately', () => {
       mockFs.existsSync = vi.fn().mockReturnValue(false)
       svc.load()

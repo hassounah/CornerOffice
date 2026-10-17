@@ -132,6 +132,13 @@ describe('request schemas', () => {
     expect(SandboxRecreateSchema.safeParse({ ...base, agentId: 'nope' }).success).toBe(false)
   })
 
+
+  it('updateSettings toolchains are the three booleans only: extraPackages is config-only', () => {
+    expect(SandboxUpdateSettingsSchema.safeParse({ toolchains: { node: true, go: true, buildBase: true } }).success).toBe(true)
+    expect(SandboxUpdateSettingsSchema.safeParse({ toolchains: { node: true, go: true, buildBase: true, electron: true } }).success).toBe(false)
+    expect(SandboxUpdateSettingsSchema.safeParse({ extraPackages: ['xvfb'] }).success).toBe(false)
+  })
+
   it('updateSettings validates allowlist entries and caps both lists at 200', () => {
     expect(SandboxUpdateSettingsSchema.safeParse({ globalAllowlist: ['not a host!'] }).success).toBe(false)
     const many = (n: number) => Array.from({ length: n }, (_, i) => `d${i}.example.com`)

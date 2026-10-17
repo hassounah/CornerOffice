@@ -10,6 +10,9 @@ import { MINIMUM_PLUGIN_VERSION } from '../../types/plugin-version'
 /** Shown in sandbox mode: the first session in a new sandbox stops at Claude Code's folder-trust prompt (README, First-run prompts). */
 export const TRUST_PROMPT_COPY = 'The first session in a new sandbox asks you to trust the folder once, in the terminal.'
 
+/** What the user sees for Claude's home. This is the real mount source, so it never follows a profile. */
+export const CLAUDE_HOME_DISPLAY = '~/.claude'
+
 export const CLAUDE_DESCRIPTOR = {
   id: 'claude',
   displayName: 'Claude Code',

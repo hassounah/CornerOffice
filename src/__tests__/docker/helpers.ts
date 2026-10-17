@@ -88,7 +88,14 @@ export function buildContext(): string {
   return resolveBuildContext({ isPackaged: false, resourcesPath: '', appPath: path.resolve(__dirname, '..', '..', '..') })
 }
 
-const TEST_TOOLCHAINS = { node: false, go: false, buildBase: false }
+const TEST_TOOLCHAINS: { node: boolean; go: boolean; buildBase: boolean; extraPackages?: readonly string[] } = { node: false, go: false, buildBase: false }
+
+export const ELECTRON_TEST_IMAGE = 'claude-sandbox:test-electron'
+
+export interface BuildTestImageOpts {
+  image?: string
+  toolchains?: typeof TEST_TOOLCHAINS
+}
 
 /**
  * Every toolchain off — fast, and none of this suite's tests need
@@ -104,9 +111,9 @@ const TEST_TOOLCHAINS = { node: false, go: false, buildBase: false }
  * packages) in one block never starves the rest of the suite of an image
  * that was already there and already correct.
  */
-export async function buildTestImage(d: DockerRunner, identity: TestIdentity): Promise<void> {
+export async function buildTestImage(d: DockerRunner, identity: TestIdentity, opts: BuildTestImageOpts = {}): Promise<void> {
   const svc = createSandboxImageService(
-    { docker: d, buildContext, identity: () => identity, toolchains: () => TEST_TOOLCHAINS, image: TEST_IMAGE },
+    { docker: d, buildContext, identity: () => identity, toolchains: () => opts.toolchains ?? TEST_TOOLCHAINS, image: opts.image ?? TEST_IMAGE },
     { onBuildDone: () => {} },
   )
   const state = await svc.getImageState()
@@ -140,6 +147,8 @@ export interface CreateTestContainerOpts {
   /** The container's `--workdir` (defaults to the temp HOME). */
   workTree?: string
   port?: number
+  /** Defaults to `TEST_IMAGE`. */
+  image?: string
   /** Defaults to Claude. Codex has no channel, so it gets no port. */
   agentId?: AgentId
 }
@@ -163,7 +172,7 @@ export async function createTestContainer(d: DockerRunner, identity: TestIdentit
     specHash: 'docker-suite-test',
     mounts: opts.mounts ?? [],
     workTree: opts.workTree ?? identity.home,
-    image: TEST_IMAGE,
+    image: opts.image ?? TEST_IMAGE,
   })
   if (opts.extraCreateFlags?.length) {
     const idx = argv.indexOf('create') + 1
@@ -194,9 +203,9 @@ export async function removeTestContainer(d: DockerRunner, name: string): Promis
   }
 }
 
-export async function removeTestImage(d: DockerRunner): Promise<void> {
+export async function removeTestImage(d: DockerRunner, image: string = TEST_IMAGE): Promise<void> {
   try {
-    await d.run(['rmi', TEST_IMAGE], { timeoutMs: 30_000 })
+    await d.run(['rmi', image], { timeoutMs: 30_000 })
   } catch {
     // not built, or still in use by a container removal race — best-effort cleanup only
   }

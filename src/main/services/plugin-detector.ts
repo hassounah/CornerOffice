@@ -4,13 +4,14 @@ import path from 'path'
 import os from 'os'
 import { z } from 'zod'
 import { readRegularFileCappedSync } from './safe-fs'
+import { coHome, claudeHome } from './app-home'
 import { MINIMUM_PLUGIN_VERSION } from '../types/channels'
 import type { PluginStatus } from '../types/channels'
 
-const EVENTS_ENABLED_FILE = path.join(os.homedir(), '.corner-office', 'events', 'enabled')
+const eventsEnabledFile = (): string => path.join(coHome(), 'events', 'enabled')
 
 // Plugin cache layout: ~/.claude/plugins/cache/<publisher>/<plugin>/<version>/
-const PLUGIN_CACHE_DIR = path.join(os.homedir(), '.claude', 'plugins', 'cache')
+const pluginCacheDir = (): string => path.join(claudeHome(), 'plugins', 'cache')
 const CORNER_OFFICE_PLUGIN = 'corner-office'
 export const EMIT_ACTIVITY_FILE = path.join('scripts', 'hooks', 'emit_activity.py')
 
@@ -185,8 +186,8 @@ export async function detectPlugin(opts: DetectPluginOptions): Promise<PluginMat
 }
 
 /** Claude Code's layout: `<cache>/<publisher>/corner-office/<version>/`. */
-const CLAUDE_CANDIDATES: readonly PluginCandidate[] = [
-  { root: PLUGIN_CACHE_DIR, segments: [ANY_DIR, CORNER_OFFICE_PLUGIN, VERSION_DIR] },
+const claudeCandidates = (): readonly PluginCandidate[] => [
+  { root: pluginCacheDir(), segments: [ANY_DIR, CORNER_OFFICE_PLUGIN, VERSION_DIR] },
 ]
 
 /** Where Codex may keep the plugin (TRD §4.12), tried in this order; all at most four levels deep. */
@@ -213,7 +214,7 @@ export const CODEX_MANIFESTS = [path.join('.codex-plugin', 'plugin.json'), path.
 export class PluginDetectorService {
   private async checkEventsEnabled(): Promise<boolean> {
     try {
-      const stat = await fs.promises.lstat(EVENTS_ENABLED_FILE)
+      const stat = await fs.promises.lstat(eventsEnabledFile())
       return stat.isFile() && !stat.isSymbolicLink()
     } catch {
       return false
@@ -222,7 +223,7 @@ export class PluginDetectorService {
 
   async getStatus(): Promise<PluginStatus> {
     const match = await detectPlugin({
-      candidates: CLAUDE_CANDIDATES,
+      candidates: claudeCandidates(),
       marker: EMIT_ACTIVITY_FILE,
       minimumVersion: MINIMUM_PLUGIN_VERSION,
     })
@@ -249,20 +250,20 @@ export class PluginDetectorService {
   }
 
   async installHooks(): Promise<void> {
-    const dir = path.dirname(EVENTS_ENABLED_FILE)
+    const dir = path.dirname(eventsEnabledFile())
     await fs.promises.mkdir(dir, { recursive: true })
     // Verify parent directory is not a symlink before writing
     const dirStat = await fs.promises.lstat(dir)
     if (dirStat.isSymbolicLink()) throw new Error('Events directory is a symlink — refusing to write')
-    await fs.promises.writeFile(EVENTS_ENABLED_FILE, '')
+    await fs.promises.writeFile(eventsEnabledFile(), '')
   }
 
   async uninstallHooks(): Promise<void> {
     try {
       // Verify target is not a symlink before unlinking
-      const stat = await fs.promises.lstat(EVENTS_ENABLED_FILE)
+      const stat = await fs.promises.lstat(eventsEnabledFile())
       if (stat.isSymbolicLink()) throw new Error('Events enabled file is a symlink — refusing to delete')
-      await fs.promises.unlink(EVENTS_ENABLED_FILE)
+      await fs.promises.unlink(eventsEnabledFile())
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
     }

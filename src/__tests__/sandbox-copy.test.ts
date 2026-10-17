@@ -35,6 +35,8 @@ import {
 import type { StartFailureCode, HandOffFailureCode, DeleteFailureCode, RecreateFailureCode } from '../renderer/utils/sandbox-copy'
 import type { EligibilityReason, EligibilityWarning, RecreatePlan, SandboxStatus } from '../main/types/sandbox'
 import { CLAUDE_CONFIG_LABELS, CLAUDE_CONFIG_PROBLEMS, claudeConfigDetail } from '../main/types/claude-config'
+import { resetActiveProfileForTests } from '../main/services/app-home'
+import { useProfile } from './helpers/profile'
 
 // ---------------------------------------------------------------------------
 // sandbox-copy.ts — the failure-copy tables (TRD §3.15.3, UX-H2, §14.5). Each
@@ -402,6 +404,16 @@ describe('Claude config failure copy (#0030)', () => {
     for (const d of details) {
       expect(d.length).toBeGreaterThan(0)
       expect(d).not.toContain('/home')
+    }
+  })
+
+  it('names the profile home for the sandbox state folder, and the real Claude home for the rest', () => {
+    useProfile('/home/test', 'dev')
+    try {
+      expect(claudeConfigDetail('sandbox-state', 'write-failed')).toContain('in ~/.corner-office/profiles/dev/sandbox couldn')
+      expect(claudeConfigDetail('settings.json', 'unreadable')).toContain('~/.claude/settings.json')
+    } finally {
+      resetActiveProfileForTests()
     }
   })
 

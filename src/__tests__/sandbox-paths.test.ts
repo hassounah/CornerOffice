@@ -3,6 +3,8 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 
+vi.mock('electron', () => ({ app: {} }))
+
 // ---------------------------------------------------------------------------
 // sandbox-paths.test.ts (TRD §3.2, SEC-M2)
 // ---------------------------------------------------------------------------
@@ -92,6 +94,23 @@ describe('sandbox-paths', () => {
       expect(paths.rwMountRoots).toEqual([paths.claudeDir, paths.codexDir, paths.sandboxesRoot, paths.sandboxStateRoot, paths.eventsRoot])
       // claudeJson is a single-file bind mount, not a directory root — must not be a refusal root.
       expect(paths.rwMountRoots).not.toContain(paths.claudeJson)
+    })
+
+    it('a dev coHomeDir moves only sandboxStateRoot and eventsRoot; sandboxesRoot and rwMountRoots stay real in every profile (#0038 R4)', async () => {
+      const { sandboxPaths, profilesRoot } = await import('../main/services/sandbox-paths')
+      const realHome = path.join(path.sep, 'home', 'test')
+      const devHome = path.join(realHome, '.corner-office', 'profiles', 'dev')
+      const base = sandboxPaths(realHome)
+      const dev = sandboxPaths(realHome, devHome)
+
+      expect(dev.sandboxStateRoot).toBe(path.join(devHome, 'sandbox'))
+      expect(dev.eventsRoot).toBe(path.join(devHome, 'events'))
+      expect({ ...dev, sandboxStateRoot: base.sandboxStateRoot, eventsRoot: base.eventsRoot }).toEqual(base)
+      expect(dev.sandboxesRoot).toBe(path.join(realHome, '.corner-office', 'sandboxes'))
+      expect(dev.rwMountRoots).toEqual(base.rwMountRoots)
+      expect(dev.rwMountRoots).toContain(path.join(realHome, '.corner-office', 'sandbox'))
+      expect(dev.rwMountRoots).toContain(path.join(realHome, '.corner-office', 'events'))
+      expect(profilesRoot(realHome)).toBe(path.join(realHome, '.corner-office', 'profiles'))
     })
 
     it('hiddenHomeSegments is .corner-office plus every agent home entry (security-reviewed snapshot)', async () => {

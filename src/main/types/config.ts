@@ -47,6 +47,7 @@ export interface SandboxWorkspaceConfig {
 
 export interface SandboxConfig {
   toolchains: { node: boolean; go: boolean; buildBase: boolean }; // defaults: all true
+  extraPackages?: string[];                                       // extra Wolfi system packages installed at image build time; config-only, default []
   globalAllowlist: string[];                                      // user additions only
   workspaces: Record<string, SandboxWorkspaceConfig>;              // key: sandbox slug
   eventsSplitAt?: string | null;                                  // ISO time containers started writing events to their own root (D23); null/absent = not recorded yet

@@ -54,6 +54,7 @@ import type { PermMode } from '../agents/claude/handler'
 import { effectiveAllowlist } from './sandbox-allowlist'
 import { createSandboxNetwork } from './sandbox-network'
 import type { LiveUpdateStatus } from './sandbox-network'
+import { coHomeDisplay } from './app-home'
 import { readMemoryDocsRoot, readPipelineBranches } from './workspace-parser'
 import type { SandboxConfig } from '../types/config'
 import type {
@@ -96,7 +97,9 @@ import type {
  * default to `false`; set it back to `true` to ship a build with Sandbox
  * Sessions off. Unit tests flip it directly.
  */
-export const sandboxSettings = { disabled: false }
+export const sandboxSettings = { disabled: false, offInProfile: false }
+// `offInProfile` (#0038 D6): set by `index.ts` for a dev profile. Eligibility reports `sandbox-disabled`, `getEnvironment`
+// answers without probing, so no `docker.run` ever happens and nothing is reconciled.
 
 // ── Dependencies ─────────────────────────────────────────────────────────
 
@@ -349,6 +352,9 @@ function mapDockerErrorToState(err: unknown): DockerState {
         return 'daemon-down'
       case 'no-permission':
         return 'no-permission'
+      case 'off-in-profile':
+        // Unreachable: a profile short-circuits before any probe (`sandboxSettings.offInProfile`). Never "not installed".
+        break
       case 'timeout':
       case 'failed':
         // Not a distinct DockerState (§3.9.1 has no "unknown failure" bucket)
@@ -687,7 +693,7 @@ function precreateMountTargets(paths: SandboxPaths, repo: string, wt: string, sl
   fs.mkdirSync(path.join(repo, '.git', 'hooks'), { recursive: true })
   fs.mkdirSync(path.join(repo, '.git', 'modules'), { recursive: true }) // M2: always
   fs.mkdirSync(path.join(paths.eventsRoot, slug), { recursive: true })
-  const events = ensurePrivateDir(sandboxEventsDir(paths, slug), `~/.corner-office/sandbox/${slug}/events`) // D23: the container's events mount source
+  const events = ensurePrivateDir(sandboxEventsDir(paths, slug), `${coHomeDisplay()}/sandbox/${slug}/events`) // D23: the container's events mount source
   if (!events.ok) return events
   // The agent's own sources and nested mount targets (for Claude: `~/.claude/channels`, the read-only config
   // sources, the settings copy and the first `claude.json` seed).
@@ -1010,6 +1016,9 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
   }
 
   async function getEnvironment(opts: { refresh: boolean }): Promise<SandboxEnvironment> {
+    if (sandboxSettings.offInProfile) {
+      return { docker: 'not-installed', dockerVersion: null, image: { state: 'absent', builtAt: null, sizeBytes: null } }
+    }
     if (opts.refresh || !cachedDockerState) {
       // An explicit refresh ("Check again") must also re-read the agents' readiness, not the answer cached for the last 2 s.
       if (opts.refresh) statusEligibility.clear()
@@ -1025,7 +1034,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
   async function getEligibility(slug: string): Promise<EligibilityResult> {
     // 1. Kill switch — ahead of everything else (SEC-M1).
-    if (sandboxSettings.disabled) return { ok: false, reason: 'sandbox-disabled' }
+    if (sandboxSettings.disabled || sandboxSettings.offInProfile) return { ok: false, reason: 'sandbox-disabled' }
 
     // 2. Docker availability.
     const { docker: dockerState } = await ensureDockerState()
@@ -2188,7 +2197,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
 
   /** Eligibility and per-agent readiness, cached together for the status TTL: one lstat pass per window, one answer for the chooser. */
   function getStatusEligibility(slug: string): Promise<StatusEligibility> {
-    if (sandboxSettings.disabled) return getEligibility(slug).then((eligibility) => ({ eligibility, agentReadiness: computeAgentReadiness() })) // the kill switch is never served from a cache
+    if (sandboxSettings.disabled || sandboxSettings.offInProfile) return getEligibility(slug).then((eligibility) => ({ eligibility, agentReadiness: computeAgentReadiness() })) // the kill switch is never served from a cache
     const cached = statusEligibility.get(slug)
     if (cached && cached.generation === summariesGeneration && deps.now() - cached.at < STATUS_ELIGIBILITY_TTL_MS) return cached.result
     const result = getEligibility(slug).then((eligibility) => ({ eligibility, agentReadiness: computeAgentReadiness() }))

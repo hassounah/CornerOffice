@@ -8,6 +8,8 @@ import { CODE_CHANNELS } from '../main/ipc/channels'
 import { sandboxPaths } from '../main/services/sandbox-paths'
 import type { SandboxManagerService } from '../main/services/sandbox-manager'
 import { IPC_ERROR_CODES } from '../main/types/ipc'
+import { resetActiveProfileForTests } from '../main/services/app-home'
+import { useProfile } from './helpers/profile'
 import {
   makeEvent,
   makeWrapDeps,
@@ -547,6 +549,32 @@ describe("root: 'sandbox'", () => {
     expect(repoService.readBlob).toHaveBeenCalledWith(expect.objectContaining({ root: wt, pin: expect.any(Object) }), expect.any(Array), 'head', 'agent.txt', undefined)
   })
 
+  it('denies every sandbox-root read in a named profile, with no git call, and still serves the workspace root (#0038 D6)', async () => {
+    useProfile(home, 'dev')
+    try {
+      const { handlers, repoService } = buildSandbox({ isBusy: () => true })
+      const ev = makeEvent(mainFrame)
+      const base = { workspaceSlug: 'ws', root: 'sandbox' }
+
+      const results = [
+        await handlers[CODE_CHANNELS.GET_STATUS](ev, { ...base, baseline: 'head' }),
+        await handlers[CODE_CHANNELS.LIST_DIR](ev, { ...base, relDir: '', includeIgnored: false }),
+        await handlers[CODE_CHANNELS.READ_FILE](ev, { ...base, relPath: 'agent.txt', reveal: false }),
+        await handlers[CODE_CHANNELS.READ_BASELINE](ev, { ...base, relPath: 'agent.txt', baseline: 'head', reveal: false }),
+        await handlers[CODE_CHANNELS.GET_FILE_INDEX](ev, { ...base, includeIgnored: false }),
+      ]
+
+      for (const res of results) expect(res).toEqual(PERMISSION_DENIED_RESPONSE)
+      expect(repoService.getStatus).not.toHaveBeenCalled()
+      expect(repoService.getFileIndex).not.toHaveBeenCalled()
+      expect(repoService.readBlob).not.toHaveBeenCalled()
+      const ws = await handlers[CODE_CHANNELS.GET_STATUS](ev, { workspaceSlug: 'ws', root: 'workspace', baseline: 'head' })
+      expect(ws.error).toBeNull()
+    } finally {
+      resetActiveProfileForTests()
+    }
+  })
+
   it('denies a sandbox root for an unknown workspace, and is not found when there is no worktree', async () => {
     const { handlers } = buildSandbox({ isBusy: () => false })
 
@@ -590,6 +618,18 @@ describe("root: 'sandbox'", () => {
 
       expect(res).toEqual(PERMISSION_DENIED_RESPONSE)
       expect(fs.readFileSync(path.join(wt, 'agent.txt'), 'utf8')).toBe('from the sandbox\n')
+    })
+
+    it('is PERMISSION_DENIED in a named profile even while idle, and the file is untouched (#0038 D6)', async () => {
+      useProfile(home, 'dev')
+      try {
+        const { handlers } = buildSandbox({ isBusy: () => false })
+
+        expect(await write(handlers, 'sandbox')).toEqual(PERMISSION_DENIED_RESPONSE)
+        expect(fs.readFileSync(path.join(wt, 'agent.txt'), 'utf8')).toBe('from the sandbox\n')
+      } finally {
+        resetActiveProfileForTests()
+      }
     })
 
     it('fails closed when the sandbox manager is not up yet', async () => {

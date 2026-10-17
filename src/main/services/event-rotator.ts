@@ -1,7 +1,7 @@
 import log from 'electron-log/main'
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
+import { coHome } from './app-home'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -68,7 +68,7 @@ export class EventRotatorService {
   }
 
   private _rotateHostRoot(): void {
-    const eventsDir = path.join(os.homedir(), '.corner-office', 'events')
+    const eventsDir = path.join(coHome(), 'events')
     if (!fs.existsSync(eventsDir)) return
 
     let entries: string[]

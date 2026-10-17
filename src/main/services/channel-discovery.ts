@@ -1,7 +1,6 @@
 import log from 'electron-log/main'
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
 import chokidar, { FSWatcher } from 'chokidar'
 import { SHORTID_REGEX, ChannelRegistrationSchema } from '../types'
 import type { ChannelSession, IsAlive, ChannelSandboxResolver } from '../types'
@@ -9,12 +8,13 @@ import { CHOKIDAR_OPTIONS } from './file-watcher'
 import { readRegularFileCapped } from './safe-fs'
 import { sandboxPaths, resolveRealHome } from './sandbox-paths'
 import { cardDir } from './sandbox-spec'
+import { claudeHome } from './app-home'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const CHANNELS_DIR = path.join(os.homedir(), '.claude', 'channels')
+const channelsDir = (): string => path.join(claudeHome(), 'channels')
 const SWEEP_INTERVAL_MS = 60_000
 const STALE_FILE_AGE_MS = 5 * 60_000 // 5 minutes
 /** v2 (H2): every card read is capped, whichever source it comes from (TRD §10.8, §3.7.1). */
@@ -78,15 +78,15 @@ export class ChannelDiscoveryService {
   // ---------------------------------------------------------------------------
 
   async start(): Promise<void> {
-    log.info(`[ChannelDiscovery] Starting — watching ${CHANNELS_DIR}`)
-    await fs.promises.mkdir(CHANNELS_DIR, { recursive: true })
-    this._sources.set(CHANNELS_DIR, { dir: CHANNELS_DIR, sandboxSlug: null })
+    log.info(`[ChannelDiscovery] Starting — watching ${channelsDir()}`)
+    await fs.promises.mkdir(channelsDir(), { recursive: true })
+    this._sources.set(channelsDir(), { dir: channelsDir(), sandboxSlug: null })
 
     // Explicit initial scan (watcher uses ignoreInitial:true)
-    await this._scanSource(CHANNELS_DIR)
+    await this._scanSource(channelsDir())
     log.info(`[ChannelDiscovery] Initial scan complete — ${this._sessions.size} sessions found`)
 
-    this._watcher = chokidar.watch(CHANNELS_DIR, { ...CHOKIDAR_OPTIONS, depth: 0 })
+    this._watcher = chokidar.watch(channelsDir(), { ...CHOKIDAR_OPTIONS, depth: 0 })
 
     this._watcher
       .on('add', (filePath: string) => { void this._handleFileAddChange(filePath) })

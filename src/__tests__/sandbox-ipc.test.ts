@@ -43,7 +43,7 @@ const VALID_INPUT: Record<string, unknown> = {
 const REQUEST_CHANNELS = Object.keys(VALID_INPUT)
 
 function baseConfig(): SandboxConfig {
-  return { toolchains: { node: true, go: true, buildBase: true }, globalAllowlist: ['example.org'], workspaces: { other: { channelPort: 4242, allowlist: ['a.dev'] } } }
+  return { toolchains: { node: true, go: true, buildBase: true }, extraPackages: ['xvfb'], eventsSplitAt: '2026-01-01T00:00:00.000Z', globalAllowlist: ['example.org'], workspaces: { other: { channelPort: 4242, allowlist: ['a.dev'] } } }
 }
 
 function makeManager(fail = false): SandboxManagerService {
@@ -280,6 +280,17 @@ describe('buildSandboxHandlers', () => {
       expect(saved[0]).toEqual({ ...baseConfig(), toolchains: { node: false, go: true, buildBase: true } })
       expect((res.data as { toolchains: unknown }).toolchains).toEqual({ node: false, go: true, buildBase: true })
       expect(manager.onSettingsChanged).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['toolchains', { toolchains: { node: false, go: true, buildBase: true } }],
+      ['globalAllowlist', { globalAllowlist: ['new.example.com'] }],
+      ['workspaceAllowlist', { workspaceAllowlist: { workspaceSlug: 'other', entries: ['b.dev'] } }],
+    ])('a %s save keeps extraPackages and eventsSplitAt', async (_name, patch) => {
+      const { handlers, saved } = makeRig()
+      await handlers[SANDBOX_CHANNELS.UPDATE_SETTINGS](makeEvent(), patch)
+      expect(saved[0].extraPackages).toEqual(['xvfb'])
+      expect(saved[0].eventsSplitAt).toBe('2026-01-01T00:00:00.000Z')
     })
 
     it('a global allowlist change notifies every known workspace', async () => {

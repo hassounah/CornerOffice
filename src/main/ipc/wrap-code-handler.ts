@@ -34,6 +34,7 @@ const FIXED_MESSAGE: Readonly<Record<string, string>> = {
   [IPC_ERROR_CODES.NOT_FOUND]: 'Path not found',
   [IPC_ERROR_CODES.STALE_WRITE]: 'File changed on disk',
   [IPC_ERROR_CODES.TIMEOUT]: 'Request timed out',
+  [IPC_ERROR_CODES.SANDBOX_OFF_IN_PROFILE]: 'Sandbox sessions are off in this profile',
 }
 
 // Matches a POSIX or Windows absolute path (or a drive-relative Windows path)

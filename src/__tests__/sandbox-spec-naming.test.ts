@@ -169,6 +169,20 @@ describe('assertMountSafe', () => {
     expect(assertMountSafe(path.parse(home).root, { home })).toBe(false)
   })
 
+  it('rejects the profiles root and anything under it, but not its siblings (#0038 D3a)', () => {
+    const home = makeTmpDir('co-sandbox-spec-home-')
+    const profiles = path.join(home, '.corner-office', 'profiles')
+    fs.mkdirSync(path.join(profiles, 'dev', 'claude'), { recursive: true })
+    fs.mkdirSync(path.join(home, '.corner-office', 'profiles-not'), { recursive: true })
+    fs.mkdirSync(path.join(home, '.corner-office', 'events'), { recursive: true })
+
+    expect(assertMountSafe(profiles, { home })).toBe(false)
+    expect(assertMountSafe(path.join(profiles, 'dev'), { home })).toBe(false)
+    expect(assertMountSafe(path.join(profiles, 'dev', 'claude'), { home })).toBe(false)
+    expect(assertMountSafe(path.join(home, '.corner-office', 'profiles-not'), { home })).toBe(true)
+    expect(assertMountSafe(path.join(home, '.corner-office', 'events'), { home })).toBe(true)
+  })
+
   it('rejects $HOME itself', () => {
     const home = makeTmpDir('co-sandbox-spec-home-')
     expect(assertMountSafe(home, { home })).toBe(false)

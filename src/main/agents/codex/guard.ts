@@ -4,6 +4,7 @@ import log from 'electron-log/main'
 import type { AgentConfigResult, QuarantineOutcome } from '../handler'
 import type { SandboxPaths } from '../../services/sandbox-paths'
 import { readRegularFileCappedSync } from '../../services/safe-fs'
+import { coHomeDisplay } from '../../services/app-home'
 import { GUARD_ACTIVE_FILE, GUARD_BASELINE_FILE, SOCKET_WALK_SKIP, clearCodexState, codexStatePaths, inGuardNameSet, prepareCodexConfig, writeOwnedFile } from './sandbox-config'
 
 // ---------------------------------------------------------------------------
@@ -233,7 +234,7 @@ function sweep(paths: SandboxPaths, slug: string, baseline: Baseline, now: numbe
     let destination: string
     try {
       fs.renameSync(source, path.join(quarantineDir, destName))
-      destination = `~/.corner-office/sandbox/${slug}/codex-quarantine/${destName}`
+      destination = `${coHomeDisplay()}/sandbox/${slug}/codex-quarantine/${destName}`
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err
       const inPlace = freeName(path.dirname(source), `.${SAFE_NAME_RE.test(name) ? name : 'file'}.co-quarantined-${now}`)
@@ -283,7 +284,7 @@ function sweep(paths: SandboxPaths, slug: string, baseline: Baseline, now: numbe
   if (moved.length === 0) return { ...NO_QUARANTINE, ...flag }
   if (moved.length === 1) return { quarantined: 1, shown: moved[0].shown, destination: moved[0].destination, ...flag }
   // Several files: the folder, when every one of them went there (none was renamed in place across a filesystem).
-  const folder = `~/.corner-office/sandbox/${slug}/${path.basename(quarantineDir)}/`
+  const folder = `${coHomeDisplay()}/sandbox/${slug}/${path.basename(quarantineDir)}/`
   const allInFolder = moved.every((m) => m.destination.startsWith(folder))
   return { quarantined: moved.length, shown: null, destination: allInFolder ? folder : null, ...flag }
 }

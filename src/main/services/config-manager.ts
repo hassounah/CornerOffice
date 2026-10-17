@@ -1,13 +1,13 @@
 import log from 'electron-log/main'
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
+import { coHome } from './app-home'
 import lockfile from 'proper-lockfile'
 import { z } from 'zod'
 import type { AppConfig, RealmLocation } from '../types'
 import type { SandboxConfig } from '../types/config'
 import { AllowlistSchema } from './sandbox-allowlist'
-import { SANDBOX_SLUG_RE, CHANNEL_PORT_RANGE } from './sandbox-spec'
+import { SANDBOX_SLUG_RE, CHANNEL_PORT_RANGE, EXTRA_PACKAGE_RE } from './sandbox-spec'
 import { terminalSlug } from '../types/slugs'
 
 // ---------------------------------------------------------------------------
@@ -97,13 +97,44 @@ const WorkspaceConfigSchema = z.object({
 // Sandbox config schema (TRD §3.14, plan step 1.8)
 // ---------------------------------------------------------------------------
 
+// A bad port is dropped on its own (null: the channel port is re-allocated at the next start)
+// instead of failing the whole file, which would reset every workspace's allowlist and the toolchains.
+function portField(field: string) {
+  return z
+    .number()
+    .int()
+    .min(CHANNEL_PORT_RANGE[0])
+    .max(CHANNEL_PORT_RANGE[1])
+    .nullable()
+    .catch(() => {
+      log.warn(`[ConfigManager] ignoring an invalid sandbox ${field} in config.json; it is reset to null`)
+      return null
+    })
+}
+
+const MAX_EXTRA_PACKAGES = 64
+
+// Invalid entries are dropped one by one (never the whole file); the log names the count, never a value.
+function normalizeExtraPackages(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    log.warn('[ConfigManager] ignoring a non-array sandbox extraPackages in config.json; it is reset to []')
+    return []
+  }
+  const valid = [...new Set(value.filter((p): p is string => typeof p === 'string' && EXTRA_PACKAGE_RE.test(p)))].sort()
+  const kept = valid.slice(0, MAX_EXTRA_PACKAGES)
+  const dropped = value.length - kept.length
+  if (dropped > 0) log.warn(`[ConfigManager] dropped ${dropped} invalid or surplus sandbox extraPackages entries from config.json`)
+  return kept
+}
+
 const SandboxWorkspaceConfigSchema = z.object({
-  channelPort: z.number().int().min(CHANNEL_PORT_RANGE[0]).max(CHANNEL_PORT_RANGE[1]).nullable(),
+  channelPort: portField('channelPort'),
   allowlist: AllowlistSchema,
 })
 
 const SandboxConfigSchema = z.object({
   toolchains: z.object({ node: z.boolean(), go: z.boolean(), buildBase: z.boolean() }),
+  extraPackages: z.unknown().transform(normalizeExtraPackages).default([]),
   globalAllowlist: AllowlistSchema,
   workspaces: z.record(z.string().regex(SANDBOX_SLUG_RE), SandboxWorkspaceConfigSchema),
   // D23 cutover: when container events moved to their own root. Host-root files at or before it keep the legacy attribution.
@@ -226,7 +257,7 @@ const CURRENT_VERSION = 4
 // ---------------------------------------------------------------------------
 
 function dataDir(): string {
-  return path.join(os.homedir(), '.corner-office')
+  return coHome()
 }
 
 function configPath(): string {
@@ -594,6 +625,7 @@ export class ConfigManager {
   private _defaultSandbox(): SandboxConfig {
     return {
       toolchains: { node: true, go: true, buildBase: true },
+      extraPackages: [],
       globalAllowlist: [],
       workspaces: {},
       eventsSplitAt: null,

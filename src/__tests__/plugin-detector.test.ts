@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // ---------------------------------------------------------------------------
 // Provide a factory mock for 'fs' so fs.promises is a plain object.
@@ -27,6 +27,8 @@ vi.mock('os', () => ({
 }))
 
 import { PluginDetectorService, detectPlugin, ANY_DIR, VERSION_DIR } from '../main/services/plugin-detector'
+import { resetActiveProfileForTests, resolveProfile, setActiveProfile } from '../main/services/app-home'
+import { useProfile } from './helpers/profile'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,6 +61,7 @@ describe('PluginDetectorService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    useProfile('/home/test')
     svc = new PluginDetectorService()
   })
 
@@ -244,6 +247,27 @@ describe('PluginDetectorService', () => {
     })
   })
 
+  describe('in a named profile', () => {
+    afterEach(() => resetActiveProfileForTests())
+
+    it('writes the events sentinel under the profile home', async () => {
+      setActiveProfile(resolveProfile({ CORNER_OFFICE_PROFILE: 'dev' }, { isPackaged: false, realHome: '/home/test', appPath: '/app' }))
+      mockPromises.mkdir.mockResolvedValue(undefined)
+      mockPromises.writeFile.mockResolvedValue(undefined)
+      await svc.installHooks()
+      expect(mockPromises.writeFile).toHaveBeenCalledWith('/home/test/.corner-office/profiles/dev/events/enabled', '')
+    })
+
+    it('scans the profile\'s Claude home for the plugin cache (sandbox mode)', async () => {
+      setActiveProfile(
+        resolveProfile({ CORNER_OFFICE_PROFILE: 'dev', CORNER_OFFICE_SANDBOX: '1' }, { isPackaged: false, realHome: '/home/test', appPath: '/app' }),
+      )
+      mockPromises.readdir.mockRejectedValue(new Error('ENOENT'))
+      await svc.getStatus()
+      expect(mockPromises.readdir.mock.calls[0][0]).toBe('/home/test/.corner-office/profiles/dev/claude/plugins/cache')
+    })
+  })
+
   describe('installHooks()', () => {
     it('creates the sentinel directory and writes an empty file', async () => {
       mockPromises.mkdir.mockResolvedValue(undefined)
@@ -291,6 +315,7 @@ describe('detectPlugin()', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    useProfile('/home/test')
   })
 
   it('never throws: an unexpected failure is "not installed"', async () => {

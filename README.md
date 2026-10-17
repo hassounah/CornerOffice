@@ -68,6 +68,8 @@ make dev
 
 Unit tests (`pnpm test`) never download Electron.
 
+`make dev` runs as the **profile** `dev`: its own data under `~/.corner-office/profiles/dev`, so it can run next to the installed app without touching it. It starts empty. Use `make dev PROFILE=` to run against your real data (`~/.corner-office`), see [Dev profiles](#dev-profiles).
+
 ### Setup troubleshooting
 
 - `ERR_PNPM_BAD_PM_VERSION`, a verify-deps failure, or "Multiple versions of pnpm specified": run `corepack enable`, then rerun.
@@ -75,6 +77,27 @@ Unit tests (`pnpm test`) never download Electron.
 - `Failed to load native module: pty.node`: run `make rebuild-native`.
 - `make rebuild-native` fails while downloading the Electron headers: check your connection to electronjs.org and run it again.
 - Dependency versions follow a manual guideline of preferring releases at least ~7 days old. An urgent security fix (for example Electron) may take the newest release directly.
+
+### Dev profiles
+
+A profile is a separate home for one running instance: its own config, state, window state, events, logs, Electron `userData` and single-instance lock. `make dev` uses the profile `dev` by default (`~/.corner-office/profiles/dev`); `make dev PROFILE=name` picks another; `make dev PROFILE=` (empty) runs the dev build against your real data and prints a loud banner. Profiles only work in unpackaged builds. Sandbox sessions are switched off in a profile, so it never touches the real app's containers or worktrees.
+
+| Knob | Read by | Set by | Default |
+| --- | --- | --- | --- |
+| `PROFILE` | Makefile (host only; the launcher is fixed to `dev`) | you | `dev` |
+| `DEBUG_PORT` | Makefile (host only; the launcher is fixed to 9222) | you | none |
+| `CORNER_OFFICE_PROFILE` | app | Makefile, launcher | unset = default profile |
+| `CORNER_OFFICE_DEBUG_PORT` | app | Makefile, launcher | unset (Chromium remote debugging stays off) |
+| `CORNER_OFFICE_SANDBOX` | app, launcher | host app, when it creates a sandbox container | unset |
+| `CORNER_OFFICE_CHANNEL_PORT` | launcher (stripped) | host app, when it creates a sandbox container | unset |
+
+Both `CORNER_OFFICE_*` profile variables are ignored (with a warning on stderr) in packaged builds. An invalid value is fatal and the message names the variable.
+
+- **First run:** an empty profile shows the first-launch flow and has no workspaces until discovery runs. To start with your settings, copy them in: `cp ~/.corner-office/config.json ~/.corner-office/profiles/dev/`.
+- **Logs:** the default profile logs to `~/.config/corner-office/logs/main.log`; a named profile logs to `<profile home>/logs/main.log`.
+- **Reset:** `rm -rf ~/.corner-office/profiles/dev`.
+- **Events:** to exercise the activity feed, append one JSON line to a file under `<profile home>/events/<workspace-slug>/`, for example `echo '{"event":"SessionStart","sessionId":"s1","timestamp":"2026-01-01T00:00:00.000Z","workspace":"my-workspace"}' >> ~/.corner-office/profiles/dev/events/my-workspace/test.jsonl` (create the folder first). The accepted fields are defined in `src/main/services/event-parser.ts`.
+- **Warning:** never run `make dev` or `pnpm` on the host inside `~/.corner-office/sandboxes/*`. That runs code written by the agent on your computer, outside the sandbox.
 
 ## Building
 
@@ -148,6 +171,33 @@ You can build the image in two places: in Settings, then Sandbox (in the Realm s
 ### First-run prompts
 
 The first sandbox session in a workspace asks you to trust the folder once, in the terminal. The answer is stored in the shared `~/.claude.json`, so it is a one-time step per workspace. It blocks an unattended first start.
+
+### Dev app in a sandbox
+
+To work on Corner Office itself inside a sandbox session, the agent can run the app headless and look at it over CDP on `127.0.0.1:9222` (inside the container only; nothing is published to the host).
+
+One-time setup on the host. `make dev` prints the exact lines when something is missing:
+
+1. Quit Corner Office and add the Electron runtime packages to `"sandbox"` in `~/.corner-office/config.json`: `"extraPackages": ["xvfb", "glib", ...]` (the full list is printed by `make dev`). Restart the app, then **Settings > Sandbox > Image: Rebuild** (this rebuilds the shared image for all workspaces).
+2. Add `electronjs.org` and `release-assets.githubusercontent.com` to the workspace's sandbox allowlist.
+3. Restart the session.
+
+`sandbox.extraPackages` is a generic, currently config-only setting: any system packages from the Wolfi repo, installed as root at image build time and shared by all workspaces. Names must be lowercase package names (`a-z`, `0-9`, `+._-`); invalid entries are dropped with a warning, and the list is capped at 64.
+
+Then, inside the sandbox session:
+
+```bash
+make dev                              # installs Electron on first use, starts Xvfb :99 and the dev app, waits for CDP on :9222
+node scripts/co_dev_shot.mjs          # screenshot, path printed on stdout
+node scripts/co_dev_shot.mjs --text   # the page text instead
+make dev-stop
+```
+
+- **If it can't start**, `make dev` prints one checklist of host-side steps (the packages, the allowlist, a restart). Do only the lines it lists and relay it to the host verbatim.
+- **Banner:** it shows the CDP address, the log paths and the screenshot and stop commands.
+- **Profile:** the dev app runs as profile `dev`, with its data under `~/.corner-office/profiles/dev` inside the container. It is lost when the sandbox container is recreated.
+- **Chromium's own sandbox is off, inside the container only** (`--noSandbox`, required because Docker's seccomp blocks user namespaces and setuid bits are stripped). The container itself is never relaxed.
+- **Release note:** the Dockerfile changed, so every existing sandbox image shows as out of date and is rebuilt once.
 
 ### Troubleshooting
 

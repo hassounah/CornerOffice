@@ -1,8 +1,8 @@
 import log from 'electron-log/main'
 import path from 'path'
-import os from 'os'
 import { glob, escapePath } from 'tinyglobby'
 import type { WorkspaceDiscoveryResult } from '../types/workspace'
+import { discoveryRoots, isInSandbox } from './app-home'
 import { resolveRealHome, sandboxPaths } from './sandbox-paths'
 
 const DEFAULT_EXCLUSIONS = [
@@ -50,7 +50,7 @@ export interface DiscoveryResult {
 export class WorkspaceDiscoveryService {
   async discover(options: DiscoveryOptions = {}): Promise<DiscoveryResult> {
     const { userExclusions = [], timeoutMs = 5000 } = options
-    const home = os.homedir()
+    const roots = discoveryRoots()
 
     // Validate and merge user exclusions
     const safeUserExclusions = userExclusions.filter((e) => {
@@ -70,21 +70,29 @@ export class WorkspaceDiscoveryService {
     // than a bare-name pattern like the ones above — a `**/sandboxes/**`
     // pattern could also hide an unrelated, legitimately named workspace.
     // tinyglobby matches ignore patterns relative to its cwd, so the pattern
-    // is the sandboxes root relative to the real home. Defense in depth on top
-    // of the dot:false default (SANDBOXES_ROOT sits under the dot directory
-    // ~/.corner-office, so it's already skipped today) — this exclusion still
-    // applies if `dot` is ever forced true.
-    try {
-      const realHome = resolveRealHome()
-      const { sandboxesRoot } = sandboxPaths(realHome)
-      const rel = path.relative(realHome, sandboxesRoot)
-      if (path.isAbsolute(rel) || rel.startsWith('..')) {
-        log.warn(`[WorkspaceDiscovery] Sandboxes root is outside the home directory; not adding an exclusion: ${sandboxesRoot}`)
-      } else {
-        ignorePatterns.push(`${escapePath(rel)}/**`)
+    // is the (always real) sandboxes root relative to each discovery root.
+    // Defense in depth on top of the dot:false default (SANDBOXES_ROOT sits
+    // under the dot directory ~/.corner-office, so it's already skipped
+    // today) — this exclusion still applies if `dot` is ever forced true.
+    // Sandbox mode alone skips it (#0038): the discovery root is the worktree,
+    // which itself lives under that root.
+    const patternsByRoot = new Map<string, string[]>()
+    for (const root of roots) {
+      const rootPatterns = [...ignorePatterns]
+      if (!isInSandbox()) {
+        try {
+          const { sandboxesRoot } = sandboxPaths(resolveRealHome())
+          const rel = path.relative(root, sandboxesRoot)
+          if (path.isAbsolute(rel) || rel.startsWith('..')) {
+            log.warn(`[WorkspaceDiscovery] Sandboxes root is outside the home directory; not adding an exclusion: ${sandboxesRoot}`)
+          } else {
+            rootPatterns.push(`${escapePath(rel)}/**`)
+          }
+        } catch (err) {
+          log.warn('[WorkspaceDiscovery] Could not resolve the sandboxes root for exclusion:', err)
+        }
       }
-    } catch (err) {
-      log.warn('[WorkspaceDiscovery] Could not resolve the sandboxes root for exclusion:', err)
+      patternsByRoot.set(root, rootPatterns)
     }
 
     let timedOut = false
@@ -92,7 +100,9 @@ export class WorkspaceDiscoveryService {
 
     try {
       // Run discovery with abort timeout
-      const discoveryPromise = this._runGlob(home, ignorePatterns)
+      const discoveryPromise = Promise.all(roots.map((root) => this._runGlob(root, patternsByRoot.get(root) ?? ignorePatterns, false, isInSandbox()))).then(
+        (perRoot) => [...new Set(perRoot.flat())],
+      )
       const timeoutPromise = new Promise<null>((resolve) =>
         setTimeout(() => {
           timedOut = true
@@ -123,11 +133,12 @@ export class WorkspaceDiscoveryService {
   /**
    * `dot` is false in production; a test can force it true to prove the
    * SANDBOXES_ROOT ignore pattern above excludes it on its own, independent
-   * of the dot:false default (§3.11). Results are absolute paths.
+   * of the dot:false default (§3.11). Results are absolute paths. `includeRoot` (sandbox mode) also
+   * matches a `.rix` directly in the root, which the recursive pattern alone never does.
    */
-  private async _runGlob(home: string, ignorePatterns: string[], dot = false): Promise<string[]> {
+  private async _runGlob(home: string, ignorePatterns: string[], dot = false, includeRoot = false): Promise<string[]> {
     // Search for .rix directories; followSymbolicLinks: false per spec
-    return glob('**/.rix', {
+    return glob(includeRoot ? ['.rix', '**/.rix'] : '**/.rix', {
       cwd: home,
       onlyDirectories: true,
       followSymbolicLinks: false,

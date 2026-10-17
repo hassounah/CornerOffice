@@ -21,7 +21,8 @@ export interface DockerResult {
   exitCode: number
 }
 
-export type DockerErrorKind = 'not-installed' | 'daemon-down' | 'no-permission' | 'timeout' | 'failed'
+/** `off-in-profile`: the refusing runner of a dev profile (#0038 D6). Never mapped to "Docker isn't installed". */
+export type DockerErrorKind = 'not-installed' | 'daemon-down' | 'no-permission' | 'timeout' | 'failed' | 'off-in-profile'
 
 /** A `failed`-kind error the manager reads for a more specific reason (Appendix C item 20). */
 export type DockerErrorSubkind = 'port-conflict' | 'no-such-container'
@@ -264,5 +265,19 @@ export function createDockerRunner(deps: CreateDockerRunnerDeps): DockerRunner {
         })
       })
     },
+  }
+}
+
+/**
+ * The runner of a dev profile (#0038 D6): every call rejects with kind `off-in-profile` and nothing
+ * is ever spawned, so a profile can't adopt, stop or delete the real app's `co-sandbox-*` containers.
+ * A backstop under the off IPC handlers: the image service and the manager share it.
+ */
+export function createRefusingDockerRunner(): DockerRunner {
+  const refuse = (): Promise<never> => Promise.reject(new DockerError('off-in-profile', { exitCode: null, stderrTail: '' }))
+  return {
+    binary: () => ({ available: false, reason: 'not-found' }),
+    run: refuse,
+    stream: refuse,
   }
 }

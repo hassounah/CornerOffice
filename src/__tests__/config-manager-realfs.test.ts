@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { useProfile } from './helpers/profile'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -23,6 +24,7 @@ vi.mock('electron-log/main', () => ({
   default: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
 
+import log from 'electron-log/main'
 import { ConfigManager } from '../main/services/config-manager'
 
 describe('ConfigManager durability (real filesystem)', () => {
@@ -49,6 +51,7 @@ describe('ConfigManager durability (real filesystem)', () => {
     dataDir = path.join(mockHomeDir, '.corner-office')
     cfgFile = path.join(dataDir, 'config.json')
     bakFile = `${cfgFile}.bak`
+    useProfile(mockHomeDir)
     manager = new ConfigManager()
   })
 
@@ -84,6 +87,52 @@ describe('ConfigManager durability (real filesystem)', () => {
 
       expect(fs.existsSync(bakFile)).toBe(true)
       expect(JSON.parse(fs.readFileSync(bakFile, 'utf-8')).workspaces).toHaveLength(1)
+    })
+  })
+
+  describe('sandbox port recovery', () => {
+    it('a bad port on disk is reset on its own with a warning, and the allowlists and workspaces survive', () => {
+      const cfg = withWorkspace(manager)
+      manager.saveConfig(cfg)
+      const raw = JSON.parse(fs.readFileSync(cfgFile, 'utf-8'))
+      raw.sandbox = {
+        toolchains: { node: false, go: true, buildBase: true },
+        globalAllowlist: ['keep.me'],
+        workspaces: {
+          bad: { channelPort: 99, allowlist: ['bad.dev'] },
+          good: { channelPort: 20002, allowlist: ['good.dev'] },
+        },
+      }
+      fs.writeFileSync(cfgFile, JSON.stringify(raw))
+
+      const loaded = manager.loadConfig()!
+
+      expect(loaded.workspaces).toHaveLength(1)
+      expect(loaded.sandbox!.workspaces.bad).toEqual({ channelPort: null, allowlist: ['bad.dev'] })
+      expect(loaded.sandbox!.workspaces.good.allowlist).toEqual(['good.dev'])
+      expect(loaded.sandbox!.globalAllowlist).toEqual(['keep.me'])
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('invalid sandbox channelPort'))
+    })
+  })
+
+  describe('sandbox extraPackages on disk', () => {
+    it('drops bad entries one by one, keeps the valid ones sorted, and leaves the rest of the sandbox section alone', () => {
+      manager.saveConfig(withWorkspace(manager))
+      const raw = JSON.parse(fs.readFileSync(cfgFile, 'utf-8'))
+      raw.sandbox = {
+        toolchains: { node: false, go: true, buildBase: true },
+        extraPackages: ['xvfb', 'NOT VALID', 'glib', 'xvfb'],
+        globalAllowlist: ['keep.me'],
+        workspaces: {},
+      }
+      fs.writeFileSync(cfgFile, JSON.stringify(raw))
+
+      const loaded = manager.loadConfig()!
+
+      expect(loaded.workspaces).toHaveLength(1)
+      expect(loaded.sandbox!.extraPackages).toEqual(['glib', 'xvfb'])
+      expect(loaded.sandbox!.globalAllowlist).toEqual(['keep.me'])
+      expect(loaded.sandbox!.toolchains.node).toBe(false)
     })
   })
 

@@ -18,6 +18,8 @@ import { CLAUDE_DESCRIPTOR } from '../../main/agents/claude/descriptor'
 import { sandboxPaths } from '../../main/services/sandbox-paths'
 import { assertMountSafe } from '../../main/services/sandbox-spec'
 import { IMAGE_AGENTS } from '../../main/services/sandbox-image'
+import { resetActiveProfileForTests } from '../../main/services/app-home'
+import { useProfile } from '../helpers/profile'
 
 const hostOnlyDescriptor = (over: Partial<AgentDescriptor> = {}): AgentDescriptor => ({
   ...CLAUDE_DESCRIPTOR,
@@ -132,10 +134,12 @@ describe.each(AGENT_IDS)('agent contract: %s', (id: AgentId) => {
     if (!handler.plugin) return
     const home = process.env.HOME
     process.env.HOME = '/nonexistent-co-home'
+    useProfile('/nonexistent-co-home')
     try {
       await expect(handler.plugin.detect()).resolves.toBeTruthy()
     } finally {
       process.env.HOME = home
+      resetActiveProfileForTests()
     }
   })
 })

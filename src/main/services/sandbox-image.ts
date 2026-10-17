@@ -95,6 +95,8 @@ export interface SandboxImageToolchains {
   node: boolean
   go: boolean
   buildBase: boolean
+  /** Extra Wolfi system packages (config.json `sandbox.extraPackages`). Absent or empty leaves the build args, hash and signature as they were. */
+  extraPackages?: readonly string[]
 }
 
 export interface SandboxImageDeps {
@@ -177,6 +179,10 @@ function parseImageInspect(json: string): ParsedImageInspect | null {
 
 // ── Build hash (D15) ─────────────────────────────────────────────────────
 
+function sortedExtraPackages(toolchains: SandboxImageToolchains): string[] {
+  return [...(toolchains.extraPackages ?? [])].sort()
+}
+
 /** Cheap cache key for `computeBuildHash`: each asset's mtime and size plus the same build args and version. A change to any of them changes the key; the service also drops the cached hash when a build finishes, so correctness never rests on mtimes alone. */
 export async function buildHashSignature(ctx: string, identity: SandboxImageIdentity, toolchains: SandboxImageToolchains): Promise<string> {
   const parts: string[] = []
@@ -185,6 +191,8 @@ export async function buildHashSignature(ctx: string, identity: SandboxImageIden
     parts.push(`${filename}:${stat.mtimeMs}:${stat.size}`)
   }
   parts.push(`${toolchains.node}:${toolchains.go}:${toolchains.buildBase}:${identity.uid}:${identity.gid}:${identity.home}:${ASSET_VERSION}`)
+  const extra = sortedExtraPackages(toolchains)
+  if (extra.length > 0) parts.push(`extra:${extra.join(',')}`)
   return parts.join('|')
 }
 
@@ -199,6 +207,7 @@ export async function computeBuildHash(ctx: string, identity: SandboxImageIdenti
   for (const filename of ASSET_FILENAMES) {
     hash.update(await fs.promises.readFile(path.join(ctx, filename)))
   }
+  const extra = sortedExtraPackages(toolchains)
   const args = [
     `WITH_NODE=${toolchains.node ? 1 : 0}`,
     `WITH_GO=${toolchains.go ? 1 : 0}`,
@@ -206,6 +215,7 @@ export async function computeBuildHash(ctx: string, identity: SandboxImageIdenti
     `AGENT_UID=${identity.uid}`,
     `AGENT_GID=${identity.gid}`,
     `AGENT_HOME=${identity.home}`,
+    ...(extra.length > 0 ? [`EXTRA_PACKAGES=${extra.join(' ')}`] : []),
   ].sort()
   hash.update(args.join('\n'))
   hash.update(String(ASSET_VERSION))

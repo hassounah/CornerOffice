@@ -5,6 +5,7 @@ import { parse, stringify } from 'smol-toml'
 import type { AgentConfigResult, AgentReadiness } from '../handler'
 import type { SandboxPaths } from '../../services/sandbox-paths'
 import { MAX_FILE_SIZE, readRegularFileCappedSync } from '../../services/safe-fs'
+import { coHomeDisplay } from '../../services/app-home'
 import { CODEX_DESCRIPTOR } from './descriptor'
 
 // ---------------------------------------------------------------------------
@@ -173,7 +174,7 @@ export function codexQuarantineFolder(paths: SandboxPaths, slug: string): string
   } catch {
     return null
   }
-  return `~/.corner-office/sandbox/${slug}/${path.basename(dir)}`
+  return `${coHomeDisplay()}/sandbox/${slug}/${path.basename(dir)}`
 }
 
 /** `H` exists and is a real directory (a symlink is not): the only case in which anything under it is touched. */
@@ -198,7 +199,7 @@ export function precreateCodexHome(paths: SandboxPaths): AgentConfigResult {
 /** The per-workspace state `S`: overlay and env sources, the push-guard rules, and the shadow/sqlite/quarantine dirs. */
 export function precreateCodexState(paths: SandboxPaths, slug: string): AgentConfigResult {
   const s = codexStatePaths(paths, slug)
-  const stateWhere = `~/.corner-office/sandbox/${slug}`
+  const stateWhere = `${coHomeDisplay()}/sandbox/${slug}`
   const where = (name: string): string => `${stateWhere}/${name}`
   try {
     fs.mkdirSync(s.state, { recursive: true, mode: 0o700 })
@@ -270,7 +271,7 @@ export function writeOverlay(paths: SandboxPaths, slug: string, workTree: string
   const host = readHostConfig(paths)
   if (!host.ok) return host
   const overlay = stringify(buildOverlay(host.value, workTree))
-  return writeOwnedFile(codexStatePaths(paths, slug).configOverlay, overlay, 0o600, `~/.corner-office/sandbox/${slug}/codex-config.toml`)
+  return writeOwnedFile(codexStatePaths(paths, slug).configOverlay, overlay, 0o600, `${coHomeDisplay()}/sandbox/${slug}/codex-config.toml`)
 }
 
 /**

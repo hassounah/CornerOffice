@@ -2,8 +2,12 @@
 // claude-config.ts — shared vocabulary for #0030 Claude config preparation
 // failures (TRD §4.2, §4.7). Pure, so the main process builds the fixed
 // `detail` copy and the renderer tests cover the same table. No fs, no
-// electron: both sides can import it.
+// electron: both sides can import it. The one exception is `coHomeDisplay()` (#0038),
+// which only the main process calls.
 // ---------------------------------------------------------------------------
+
+import { coHomeDisplay } from '../services/app-home'
+import { CLAUDE_HOME_DISPLAY } from '../agents/claude/descriptor'
 
 export type ClaudeConfigLabel =
   | 'settings.json'
@@ -54,9 +58,9 @@ export const CLAUDE_CONFIG_PROBLEMS: readonly ClaudeConfigProblem[] = [
 const FILE_LABELS: readonly ClaudeConfigLabel[] = ['settings.json', 'CLAUDE.md', 'settings.local.json', '.claude.json']
 
 function displayName(label: ClaudeConfigLabel): string {
-  if (label === 'sandbox-state') return "The sandbox's state folder in ~/.corner-office/sandbox"
+  if (label === 'sandbox-state') return `The sandbox's state folder in ${coHomeDisplay()}/sandbox`
   if (label === '.claude.json') return '~/.claude.json'
-  return `~/.claude/${label}`
+  return `${CLAUDE_HOME_DISPLAY}/${label}`
 }
 
 /** Fixed copy for one (label, problem) pair, ending in what to do: never a raw path or file content (SEC). */

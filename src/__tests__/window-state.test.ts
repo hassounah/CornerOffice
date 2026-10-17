@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { useProfile } from './helpers/profile'
 import { WindowStateService } from '../main/services/window-state'
 import type { WindowStateData } from '../main/services/window-state'
 
@@ -32,6 +33,7 @@ const PRIMARY_DISPLAY = { bounds: { x: 0, y: 0, width: 1920, height: 1080 } }
 
 describe('WindowStateService', () => {
   beforeEach(() => {
+    useProfile('/home/test')
     vi.clearAllMocks()
     mockFs.existsSync = vi.fn().mockReturnValue(false)
     mockFs.readFileSync = vi.fn()
@@ -132,6 +134,15 @@ describe('WindowStateService', () => {
         expect.objectContaining({ mode: 0o600 })
       )
       expect(mockFs.renameSync).toHaveBeenCalledWith(`${STATE_PATH}.tmp`, STATE_PATH)
+    })
+
+    it('saves under the active profile home (#0038)', () => {
+      useProfile('/home/test', 'dev')
+      new WindowStateService(null).save(makeMockWindow({}) as never)
+      expect(mockFs.renameSync).toHaveBeenCalledWith(
+        '/home/test/.corner-office/profiles/dev/window-state.json.tmp',
+        '/home/test/.corner-office/profiles/dev/window-state.json'
+      )
     })
 
     it('saves maximized: true when window is maximized', () => {

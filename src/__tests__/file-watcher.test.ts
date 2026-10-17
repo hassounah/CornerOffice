@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useProfile } from './helpers/profile'
 import { FileWatcherService, isSandboxEventPathCandidate } from '../main/services/file-watcher'
 
 // ---------------------------------------------------------------------------
@@ -75,6 +76,7 @@ function makeCallbacks() {
 
 describe('FileWatcherService', () => {
   beforeEach(() => {
+    useProfile('/home/test')
     mockWatcherInstances.length = 0
     vi.clearAllMocks()
     mockFs.existsSync = vi.fn().mockReturnValue(true)
@@ -133,6 +135,14 @@ describe('FileWatcherService', () => {
       const svc = new FileWatcherService(callbacks)
       svc.startGlobal()
       expect(mockWatcherInstances.length).toBe(2)
+    })
+
+    it('watches the profile events dir and, in sandbox mode, the profile claude home (#0038)', () => {
+      useProfile('/home/test', 'dev', true)
+      new FileWatcherService(makeCallbacks()).startGlobal()
+      const watched = vi.mocked(chokidar.watch).mock.calls.map((c) => c[0])
+      expect(watched).toContain('/home/test/.corner-office/profiles/dev/claude/homunculus')
+      expect(watched).toContain('/home/test/.corner-office/profiles/dev/events')
     })
 
     it('is idempotent — second startGlobal does not create extra watchers', () => {

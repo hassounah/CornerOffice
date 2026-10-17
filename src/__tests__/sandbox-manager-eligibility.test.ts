@@ -58,6 +58,7 @@ const COMMITTED_DISABLED_DEFAULT = sandboxSettings.disabled
 afterEach(() => {
   if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true })
   sandboxSettings.disabled = COMMITTED_DISABLED_DEFAULT
+  sandboxSettings.offInProfile = false
 })
 
 function fakeSandboxPaths(realHome: string): SandboxPaths {
@@ -277,6 +278,23 @@ describe('getEligibility — kill switch', () => {
     const manager = createSandboxManager(makeDeps({ docker }))
     const result = await manager.getEligibility('myslug')
     expect(result).toEqual({ ok: false, reason: 'sandbox-disabled' })
+    expect(docker.calls.length).toBe(0)
+  })
+
+  it('in a profile (offInProfile=true), every workspace gets sandbox-disabled, ahead of Docker, with zero docker calls (#0038 D6)', async () => {
+    const { makeDeps } = setup()
+    sandboxSettings.offInProfile = true
+    sandboxSettings.disabled = true
+    const docker = new FakeDockerRunner()
+    const manager = createSandboxManager(makeDeps({ docker }))
+
+    expect(await manager.getEligibility('myslug')).toEqual({ ok: false, reason: 'sandbox-disabled' })
+    expect(await manager.getEnvironment({ refresh: true })).toEqual({
+      docker: 'not-installed',
+      dockerVersion: null,
+      image: { state: 'absent', builtAt: null, sizeBytes: null },
+    })
+    expect((await manager.getStatus('myslug')).eligibility).toEqual({ ok: false, reason: 'sandbox-disabled' })
     expect(docker.calls.length).toBe(0)
   })
 })

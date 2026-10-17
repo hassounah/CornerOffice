@@ -90,6 +90,27 @@ describe('buildArgv', () => {
     }
   }
 
+  it('passes EXTRA_PACKAGES only when the list is non-empty, and leaves the toolchain label alone', () => {
+    const home = mkTmp('co-argv-home-')
+    const ctx = mkTmp('co-argv-ctx-')
+    const plain = baseOpts(home, ctx)
+    const empty = buildArgv({ ...plain, toolchains: { ...plain.toolchains, extraPackages: [] } })
+    expect(empty).toEqual(buildArgv(plain))
+    expect(empty.join(' ')).not.toContain('EXTRA_PACKAGES')
+
+    const on = buildArgv({ ...plain, toolchains: { ...plain.toolchains, extraPackages: ['xvfb', 'gtk-3'] } })
+    expect(on).toContain('EXTRA_PACKAGES=xvfb gtk-3')
+    expect(on.filter((a) => a.startsWith('EXTRA_PACKAGES'))).toHaveLength(1)
+    expect(on.find((a) => a.startsWith(`${LABEL.toolchains}=`))).toBe(buildArgv(plain).find((a) => a.startsWith(`${LABEL.toolchains}=`)))
+  })
+
+  it.each(['', 'Xvfb', '-x', 'a b', 'a;b', '$(id)', 'a'.repeat(65)])('refuses the extra package %j', (name) => {
+    const home = mkTmp('co-argv-home-')
+    const ctx = mkTmp('co-argv-ctx-')
+    const plain = baseOpts(home, ctx)
+    expect(() => buildArgv({ ...plain, toolchains: { ...plain.toolchains, extraPackages: ['xvfb', name] } })).toThrow(/extra package/)
+  })
+
   it('builds the golden argv: --pull always, no --no-cache when not rebuilding, toolchain build-args and labels', () => {
     const home = mkTmp('co-argv-home-')
     const ctx = mkTmp('co-argv-ctx-')
@@ -230,6 +251,8 @@ describe('createArgv', () => {
       workTree: '/home/agent/.corner-office/sandboxes/my-ws',
     }
   }
+
+
 
   it('builds the golden argv per TRD §3.5', () => {
     const opts = makeBaseOpts()
