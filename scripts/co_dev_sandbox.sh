@@ -30,7 +30,7 @@ HOST_ATTRIBUTION_ENV=(
 # System packages the Electron dev runtime needs (Wolfi names), for sandbox.extraPackages in config.json.
 ELECTRON_PACKAGES=(
   xvfb glib libnss libnspr libatk-1.0 libatk-bridge-2.0 at-spi2-core cups-libs dbus-libs libdrm libxkbcommon libxcomposite
-  libxdamage libxfixes libxrandr mesa-gbm pango cairo alsa-lib gtk-3 fontconfig ttf-dejavu
+  libxdamage libxfixes libxrandr mesa-gbm pango cairo alsa-lib gtk-3 fontconfig ttf-dejavu libudev
 )
 
 PROFILE=dev
@@ -39,6 +39,8 @@ DISPLAY_NUM=99
 X_LOCK="${CO_X_LOCK:-/tmp/.X$DISPLAY_NUM-lock}"
 X_SOCKET="${CO_X_SOCKET:-/tmp/.X11-unix/X$DISPLAY_NUM}"
 X_NAME="${CO_X_NAME:-Xvfb}"
+# The glibc loader lists a binary's missing libraries; the image has no ldd.
+LDSO="${CO_LDSO:-/lib/ld-linux-x86-64.so.2}"
 WAIT_SECONDS=90
 
 HOME_DIR="$HOME/.corner-office/profiles/$PROFILE"
@@ -118,7 +120,7 @@ ELECTRON_BIN="$REPO_ROOT/node_modules/electron/dist/electron"
 PTY_NODE="$REPO_ROOT/node_modules/node-pty/build/Release/pty.node"
 
 electron_present() { [ -e "$ELECTRON_BIN" ] && [ -e "$PTY_NODE" ]; }
-electron_libs_missing() { [ -e "$ELECTRON_BIN" ] && ldd "$ELECTRON_BIN" 2>/dev/null | grep -q 'not found'; }
+electron_libs_missing() { [ -e "$ELECTRON_BIN" ] && ! "$LDSO" --list "$ELECTRON_BIN" >/dev/null 2>&1; }
 
 # Every mode that starts something refuses outside a sandbox session; --stop is harmless anywhere.
 require_sandbox() {
@@ -156,7 +158,7 @@ preflight() {
   local toolchain=0 allowlist=0
   if ! command -v Xvfb >/dev/null 2>&1 || electron_libs_missing; then toolchain=1; fi
   if ! electron_present; then
-    if ! curl -s -o /dev/null --max-time 5 https://www.electronjs.org/ \
+    if ! curl -s -o /dev/null --max-time 5 https://artifacts.electronjs.org/ \
       || ! curl -s -o /dev/null --max-time 5 https://release-assets.githubusercontent.com/; then
       allowlist=1
     fi

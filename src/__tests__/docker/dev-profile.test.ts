@@ -24,7 +24,7 @@ import { DEFAULT_ALLOWLIST } from '../../main/services/sandbox-allowlist'
 // dev-profile.test.ts (#0038 TRD §7.2 D1-D4) — the in-sandbox dev instance:
 // an image built with sandbox.extraPackages, a profile home created next to the real mounts, and
 // the egress allowlist for the Electron download hosts. Needs Docker and
-// network; run via `CO_DOCKER_TESTS=1 pnpm test:docker`. D1 (ldd) and D2 also
+// network; run via `CO_DOCKER_TESTS=1 pnpm test:docker`. D1 (loader check) and D2 also
 // need an unpacked Electron: set CO_ELECTRON_DIST to its directory (the one
 // holding the `electron` binary), as the host spike (spike-2.1.sh) does.
 // ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ const DEBUG_PORT = 9222
 // The package list `make dev` prints for sandbox.extraPackages (scripts/co_dev_sandbox.sh ELECTRON_PACKAGES).
 const ELECTRON_PACKAGES = [
   'xvfb', 'glib', 'libnss', 'libnspr', 'libatk-1.0', 'libatk-bridge-2.0', 'at-spi2-core', 'cups-libs', 'dbus-libs', 'libdrm', 'libxkbcommon', 'libxcomposite',
-  'libxdamage', 'libxfixes', 'libxrandr', 'mesa-gbm', 'pango', 'cairo', 'alsa-lib', 'gtk-3', 'fontconfig', 'ttf-dejavu',
+  'libxdamage', 'libxfixes', 'libxrandr', 'mesa-gbm', 'pango', 'cairo', 'alsa-lib', 'gtk-3', 'fontconfig', 'ttf-dejavu', 'libudev',
 ]
 
 /** Runs `script` with `sh -c` as the agent in `container`; tolerates a failing exit so the caller can assert it. */
@@ -95,8 +95,8 @@ describe.skipIf(!process.env.CO_DOCKER_TESTS || !dockerOk())('dev profile — #0
       expect(result.stdout.trim()).toBe(String(identity.uid))
     })
 
-    it.skipIf(!HAS_ELECTRON)('ldd reports no missing libraries for the Electron binary', async () => {
-      const result = await shAsAgent(d, electron, identity, 'ldd /opt/electron/electron')
+    it.skipIf(!HAS_ELECTRON)('the glibc loader finds every library the Electron binary needs', async () => {
+      const result = await shAsAgent(d, electron, identity, '/lib/ld-linux-x86-64.so.2 --list /opt/electron/electron')
       expect(result.exitCode).toBe(0)
       expect(result.stdout).not.toContain('not found')
     })
