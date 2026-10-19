@@ -30,7 +30,7 @@ HOST_ATTRIBUTION_ENV=(
 # System packages the Electron dev runtime needs (Wolfi names), for sandbox.extraPackages in config.json.
 ELECTRON_PACKAGES=(
   xvfb glib libnss libnspr libatk-1.0 libatk-bridge-2.0 at-spi2-core cups-libs dbus-libs libdrm libxkbcommon libxcomposite
-  libxdamage libxfixes libxrandr mesa-gbm pango cairo alsa-lib gtk-3 fontconfig ttf-dejavu libudev
+  libxdamage libxfixes libxrandr mesa-gbm pango cairo alsa-lib gtk-3 fontconfig ttf-dejavu libudev xkbcomp
 )
 
 PROFILE=dev
@@ -156,7 +156,10 @@ preflight() {
 
   # Host-side problems, collected into ONE checklist so it can be relayed verbatim.
   local toolchain=0 allowlist=0
-  if ! command -v Xvfb >/dev/null 2>&1 || electron_libs_missing; then toolchain=1; fi
+  # Xvfb runs xkbcomp for its keymap and dies without it, but the xvfb package does not pull it in.
+  if ! command -v Xvfb >/dev/null 2>&1 || ! command -v xkbcomp >/dev/null 2>&1 || electron_libs_missing; then
+    toolchain=1
+  fi
   if ! electron_present; then
     if ! curl -s -o /dev/null --max-time 5 https://artifacts.electronjs.org/ \
       || ! curl -s -o /dev/null --max-time 5 https://release-assets.githubusercontent.com/; then

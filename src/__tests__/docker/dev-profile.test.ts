@@ -35,7 +35,7 @@ const DEBUG_PORT = 9222
 // The package list `make dev` prints for sandbox.extraPackages (scripts/co_dev_sandbox.sh ELECTRON_PACKAGES).
 const ELECTRON_PACKAGES = [
   'xvfb', 'glib', 'libnss', 'libnspr', 'libatk-1.0', 'libatk-bridge-2.0', 'at-spi2-core', 'cups-libs', 'dbus-libs', 'libdrm', 'libxkbcommon', 'libxcomposite',
-  'libxdamage', 'libxfixes', 'libxrandr', 'mesa-gbm', 'pango', 'cairo', 'alsa-lib', 'gtk-3', 'fontconfig', 'ttf-dejavu', 'libudev',
+  'libxdamage', 'libxfixes', 'libxrandr', 'mesa-gbm', 'pango', 'cairo', 'alsa-lib', 'gtk-3', 'fontconfig', 'ttf-dejavu', 'libudev', 'xkbcomp',
 ]
 
 /** Runs `script` with `sh -c` as the agent in `container`; tolerates a failing exit so the caller can assert it. */

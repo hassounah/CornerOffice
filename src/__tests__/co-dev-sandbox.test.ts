@@ -77,7 +77,7 @@ function run(args: string[], env: Record<string, string> = {}): { status: number
 const PACKAGES = [
   'xvfb', 'glib', 'libnss', 'libnspr', 'libatk-1.0', 'libatk-bridge-2.0', 'at-spi2-core', 'cups-libs', 'dbus-libs', 'libdrm', 'libxkbcommon',
   'libxcomposite', 'libxdamage', 'libxfixes', 'libxrandr', 'mesa-gbm', 'pango', 'cairo', 'alsa-lib', 'gtk-3',
-  'fontconfig', 'ttf-dejavu', 'libudev',
+  'fontconfig', 'ttf-dejavu', 'libudev', 'xkbcomp',
 ]
 const HEADER = "make dev can't start the headless app yet. On the host:"
 const TOOLCHAIN_LINES = [
@@ -99,6 +99,7 @@ beforeEach(() => {
     if (found) fs.symlinkSync(found, path.join(bin, tool))
   }
   stub('Xvfb', 'echo $$ > "$HOME/xvfb.pid"; exec sleep 600')
+  stub('xkbcomp', 'exit 0')
   // The glibc loader (CO_LDSO) finds every library unless a test overrides it.
   stub('ld.so', 'exit 0')
   // External URLs answer unless CURL_EXTERNAL_FAIL=1; the local CDP answers once the fake app touched $HOME/up.
@@ -154,6 +155,13 @@ describe('preflight', () => {
 
   it('no Xvfb: the extraPackages JSON and the restart line', () => {
     fs.rmSync(path.join(bin, 'Xvfb'))
+    const r = run(['--wait'])
+    expect(r.status).toBe(3)
+    expect(r.stderr.trim().split('\n')).toEqual([HEADER, ...TOOLCHAIN_LINES, RESTART_LINE])
+  })
+
+  it('no xkbcomp (Xvfb dies without it): the toolchain lines', () => {
+    fs.rmSync(path.join(bin, 'xkbcomp'))
     const r = run(['--wait'])
     expect(r.status).toBe(3)
     expect(r.stderr.trim().split('\n')).toEqual([HEADER, ...TOOLCHAIN_LINES, RESTART_LINE])
