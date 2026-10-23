@@ -6,14 +6,14 @@ import path from 'node:path'
 
 // ---------------------------------------------------------------------------
 // scripts/co_dev_sandbox.sh (#0038, step 2.5), run against a stubbed PATH: fake Xvfb,
-// curl, ldd and electron-vite, a temp HOME and a temp repo root. PATH holds only the stubs and
+// curl, the glibc loader and electron-vite, a temp HOME and a temp repo root. PATH holds only the stubs and
 // symlinks to the few real tools the script needs, so a real Xvfb on the machine never leaks in.
 // ---------------------------------------------------------------------------
 
 const SCRIPT = path.resolve(__dirname, '../../scripts/co_dev_sandbox.sh')
 const REAL_TOOLS = [
   'bash', 'env', 'mkdir', 'cat', 'tail', 'grep', 'sleep', 'rm', 'dirname', 'ln', 'setsid', 'head',
-  'seq', 'touch', 'tr', 'cut', 'sed', 'awk', 'basename', 'ldd',
+  'seq', 'touch', 'tr', 'cut', 'sed', 'awk', 'basename',
 ]
 
 let root: string
@@ -78,6 +78,7 @@ function run(args: string[], env: Record<string, string> = {}): { status: number
       CORNER_OFFICE_SANDBOX: '1',
       CO_X_LOCK: xLock(),
       CO_X_SOCKET: xSocket(),
+      CO_LDSO: path.join(bin, 'ld.so'),
       ...env,
     },
     encoding: 'utf8',
@@ -87,9 +88,9 @@ function run(args: string[], env: Record<string, string> = {}): { status: number
 }
 
 const PACKAGES = [
-  'xvfb', 'glib', 'nss', 'nspr', 'atk', 'at-spi2-core', 'cups-libs', 'dbus-libs', 'libdrm', 'libxkbcommon',
+  'xvfb', 'glib', 'libnss', 'libnspr', 'libatk-1.0', 'libatk-bridge-2.0', 'at-spi2-core', 'cups-libs', 'dbus-libs', 'libdrm', 'libxkbcommon',
   'libxcomposite', 'libxdamage', 'libxfixes', 'libxrandr', 'mesa-gbm', 'pango', 'cairo', 'alsa-lib', 'gtk-3',
-  'fontconfig', 'font-dejavu',
+  'fontconfig', 'ttf-dejavu', 'libudev', 'xkbcomp',
 ]
 const HEADER = "make dev can't start the headless app yet. On the host:"
 const TOOLCHAIN_LINES = [
@@ -111,6 +112,9 @@ beforeEach(() => {
     if (found) fs.symlinkSync(found, path.join(bin, tool))
   }
   stub('Xvfb', 'echo $$ > "$HOME/xvfb.pid"; exec sleep 600')
+  stub('xkbcomp', 'exit 0')
+  // The glibc loader (CO_LDSO) finds every library unless a test overrides it.
+  stub('ld.so', 'exit 0')
   // External URLs answer unless CURL_EXTERNAL_FAIL=1; the local CDP answers once the fake app touched $HOME/up.
   stub(
     'curl',
@@ -169,6 +173,13 @@ describe('preflight', () => {
     expect(r.stderr.trim().split('\n')).toEqual([HEADER, ...TOOLCHAIN_LINES, RESTART_LINE])
   })
 
+  it('no xkbcomp (Xvfb dies without it): the toolchain lines', () => {
+    fs.rmSync(path.join(bin, 'xkbcomp'))
+    const r = run(['--wait'])
+    expect(r.status).toBe(3)
+    expect(r.stderr.trim().split('\n')).toEqual([HEADER, ...TOOLCHAIN_LINES, RESTART_LINE])
+  })
+
   it('shows the allowlist line only when the external probe fails and Electron is missing', () => {
     fs.rmSync(path.join(repo, 'node_modules/electron'), { recursive: true })
     const blocked = run(['--wait'], { CURL_EXTERNAL_FAIL: '1' })
@@ -190,7 +201,7 @@ describe('preflight', () => {
   })
 
   it('missing shared libraries in Electron count as the toolchain problem', () => {
-    stub('ldd', 'echo "\tlibgbm.so.1 => not found"')
+    stub('ld.so', 'echo "electron: error while loading shared libraries: libgbm.so.1" >&2; exit 127')
     const r = run(['--wait'])
     expect(r.status).toBe(3)
     expect(r.stderr).toContain(TOOLCHAIN_LINES[1])

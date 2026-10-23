@@ -52,7 +52,7 @@ import { createSandboxImageService, resolveBuildContext } from './services/sandb
 import { createSandboxManager, sandboxSettings } from './services/sandbox-manager'
 import type { SandboxManagerService } from './services/sandbox-manager'
 import { resolveRealHome, sandboxPaths } from './services/sandbox-paths'
-import { resolveProfile, ensureProfileHome, setActiveProfile, fatalProfileError, coHome, claudeHome } from './services/app-home'
+import { resolveProfile, ensureProfileHome, setActiveProfile, fatalProfileError, coHome, claudeHome, isInSandbox } from './services/app-home'
 import type { Profile } from './services/app-home'
 import { ensure, resolveBase, status, unmerged, remove, identity, verify, autoDetach, handOff } from './services/sandbox-worktree'
 import {
@@ -387,7 +387,9 @@ async function createWindow(): Promise<void> {
   if (process.env.NODE_ENV === 'development' || process.env.ELECTRON_RENDERER_URL) {
     const rendererUrl = process.env.ELECTRON_RENDERER_URL ?? 'http://localhost:5173'
     await mainWindow.loadURL(rendererUrl)
-    mainWindow.webContents.openDevTools()
+    // The headless sandbox launcher has no one to look at a docked DevTools panel (CDP is the
+    // way in), and docking it would shrink the app to about 725 px of the 1280 px window.
+    if (!isInSandbox()) mainWindow.webContents.openDevTools()
   } else {
     await mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
