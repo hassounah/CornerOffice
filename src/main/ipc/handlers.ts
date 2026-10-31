@@ -908,29 +908,39 @@ export function buildRealHandlers(
           const docsRoot = resolveDocsRoot(workspaceSlug, appState)
           const resolvedFile = await validatePathWithinRoot(filePath, docsRoot)
 
-          const stat = await fs.promises.stat(resolvedFile)
-          if (!stat.isFile()) {
-            throw Object.assign(new Error('Path not found'), { code: IPC_ERROR_CODES.NOT_FOUND })
-          }
-
           const ext = path.extname(resolvedFile).slice(1).toLowerCase()
           if (!ALLOWED_EXTENSIONS.has(ext)) {
             throw Object.assign(new Error('Access denied'), { code: IPC_ERROR_CODES.PERMISSION_DENIED })
           }
 
-          if (stat.size > MAX_FILE_SIZE) {
-            throw Object.assign(new Error('Access denied'), { code: IPC_ERROR_CODES.PERMISSION_DENIED })
-          }
+          // Type/size checks and the read all go through one open handle, so a
+          // file swapped after the check can't slip past it. O_NONBLOCK keeps a
+          // FIFO swapped in from hanging the open; the read is bounded by the
+          // checked size, so a file growing after fstat can't exceed the cap.
+          const fh = await fs.promises.open(resolvedFile, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK)
+          try {
+            const stat = await fh.stat()
+            if (!stat.isFile()) {
+              throw Object.assign(new Error('Path not found'), { code: IPC_ERROR_CODES.NOT_FOUND })
+            }
 
-          const content = await fs.promises.readFile(resolvedFile, 'utf-8')
+            if (stat.size > MAX_FILE_SIZE) {
+              throw Object.assign(new Error('Access denied'), { code: IPC_ERROR_CODES.PERMISSION_DENIED })
+            }
 
-          return {
-            filePath: resolvedFile,
-            name: path.basename(resolvedFile),
-            extension: ext,
-            content,
-            size: stat.size,
-            lastModified: stat.mtime.toISOString(),
+            const buf = Buffer.alloc(stat.size)
+            const { bytesRead } = stat.size > 0 ? await fh.read(buf, 0, stat.size, 0) : { bytesRead: 0 }
+
+            return {
+              filePath: resolvedFile,
+              name: path.basename(resolvedFile),
+              extension: ext,
+              content: buf.toString('utf-8', 0, bytesRead),
+              size: stat.size,
+              lastModified: stat.mtime.toISOString(),
+            }
+          } finally {
+            await fh.close().catch(() => {})
           }
         }())
       },
