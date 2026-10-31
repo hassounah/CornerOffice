@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { execFileSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -269,6 +270,13 @@ describe('docs:readFile', () => {
 
   it('rejects directories', async () => {
     const result = await invokeReadFile(path.join(docsRoot, 'subdir'))
+    expect(result.error).not.toBeNull()
+  })
+
+  it.skipIf(process.platform === 'win32')('rejects a FIFO with an allowed extension and returns promptly (no hang)', async () => {
+    const fifoPath = path.join(docsRoot, 'pipe.md')
+    execFileSync('mkfifo', [fifoPath])
+    const result = await invokeReadFile(fifoPath)
     expect(result.error).not.toBeNull()
   })
 })
