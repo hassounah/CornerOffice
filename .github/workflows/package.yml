@@ -25,11 +25,14 @@ jobs:
   build:
     name: Build (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    # Runners are pinned: node-pty is compiled here and links against the runner's
+    # glibc, so a newer runner (ubuntu-latest became 26.04, glibc 2.42) produces a
+    # pty.node that crashes on start on 22.04-era distros.
     strategy:
       matrix:
         include:
           - arch: x64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - arch: arm64
             runner: ubuntu-24.04-arm
     env:
