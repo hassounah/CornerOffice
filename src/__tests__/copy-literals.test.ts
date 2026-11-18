@@ -34,6 +34,11 @@ const ALLOWED: readonly { file: string; text: string; why: string }[] = [
     why: 'A rebuild pulls the latest Claude Code; Codex is pinned to a reviewed release and does not move.',
   },
   {
+    file: 'utils/workspace-errors.ts',
+    text: 'That folder holds Corner Office or Claude data. Pick a project folder.',
+    why: '~/.claude is Claude Code\'s data folder, whatever agent is in use: the sentence names what the refused folder actually is (#0039 I7).',
+  },
+  {
     file: 'components/settings/PluginStatus.tsx',
     text: 'Claude Code',
     why: 'This is the Claude plugin row (install commands, hook status); other agents render through AgentPluginRow.',

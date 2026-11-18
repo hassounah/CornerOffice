@@ -12,7 +12,8 @@ vi.mock('os', () => ({
 import fs from 'fs'
 const mockFs = fs as unknown as Record<string, ReturnType<typeof vi.fn>>
 
-const STATE_PATH = '/home/test/.corner-office/window-state.json'
+// Window geometry lives in the config dir (#0039), not the data dir.
+const STATE_PATH = '/home/test/.config/corner-office/window-state.json'
 
 function makeState(overrides: Partial<WindowStateData> = {}): WindowStateData {
   return {
@@ -76,6 +77,25 @@ describe('WindowStateService', () => {
       expect(state.width).toBe(1280)
     })
 
+    it.each([
+      ['a string width', { ...makeState(), width: '1280' }],
+      ['a non-positive height', makeState({ height: 0 })],
+      ['a negative width', makeState({ width: -5 })],
+      ['a non-boolean maximized', { ...makeState(), maximized: 'yes' }],
+      ['a null body', null],
+      ['an array body', [1, 2, 3]],
+    ])('returns defaults for %s (schema validation)', (_label, body) => {
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(body))
+      const state = new WindowStateService(makeScreen([PRIMARY_DISPLAY])).load()
+      expect(state).toEqual({ x: 0, y: 0, width: 1280, height: 800, maximized: false })
+    })
+
+    it('reads from the config dir path', () => {
+      mockFs.readFileSync = vi.fn().mockReturnValue(JSON.stringify(makeState()))
+      new WindowStateService(null).load()
+      expect(mockFs.readFileSync).toHaveBeenCalledWith(STATE_PATH, 'utf-8')
+    })
+
     it('resets position (but keeps size) when window is off-screen', () => {
       mockFs.existsSync = vi.fn().mockReturnValue(true)
       // Position far off any display
@@ -136,13 +156,19 @@ describe('WindowStateService', () => {
       expect(mockFs.renameSync).toHaveBeenCalledWith(`${STATE_PATH}.tmp`, STATE_PATH)
     })
 
-    it('saves under the active profile home (#0038)', () => {
+    it('saves under the active profile config dir (#0038, #0039)', () => {
       useProfile('/home/test', 'dev')
       new WindowStateService(null).save(makeMockWindow({}) as never)
       expect(mockFs.renameSync).toHaveBeenCalledWith(
-        '/home/test/.corner-office/profiles/dev/window-state.json.tmp',
-        '/home/test/.corner-office/profiles/dev/window-state.json'
+        '/home/test/.corner-office/profiles/dev/electron/window-state.json.tmp',
+        '/home/test/.corner-office/profiles/dev/electron/window-state.json'
       )
+    })
+
+    it('never writes into the data dir', () => {
+      new WindowStateService(null).save(makeMockWindow({}) as never)
+      const written = mockFs.writeFileSync.mock.calls.map((c) => String(c[0]))
+      expect(written.every((p) => !p.startsWith('/home/test/.corner-office/'))).toBe(true)
     })
 
     it('saves maximized: true when window is maximized', () => {

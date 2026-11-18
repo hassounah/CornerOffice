@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useCodeExplorerShortcut } from '../../renderer/hooks/useCodeExplorerShortcut'
 import type { Workspace } from '@main/types/workspace'
+import { workspaceRegistryFields } from '../helpers/workspace-fixture'
 
 // ---------------------------------------------------------------------------
 // useCodeExplorerShortcut — Ctrl/Cmd+Shift+E (TRD §2.4 Q7, §3.8.3 FR-2,
@@ -61,6 +62,7 @@ function okWorkspace(overrides: Partial<Workspace> = {}): Workspace {
   return {
     slug: 'test-ws',
     path: '/tmp/test-ws',
+    ...workspaceRegistryFields('/tmp/test-ws'),
     displayName: 'Test WS',
     docsRoot: '/tmp/test-ws/docs',
     docsRootExists: true,
@@ -75,8 +77,6 @@ function okWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     shippedFeatures: [],
     lastActivityTimestamp: null,
     weekShipCount: 0,
-    pinned: false,
-    archived: false,
     level: { number: 1, name: 'Prototype', xpRequired: 100, xpCurrent: 0 },
     xp: 0,
     readmeContent: null,

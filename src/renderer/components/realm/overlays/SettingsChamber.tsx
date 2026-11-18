@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react'
 import type { SettingsSectionId } from '@main/types/realm'
 import type { RealmLocation } from '@main/types/config'
+import type { Workspace } from '@main/types/workspace'
+import { IpcError } from '../../../utils/ipc'
+import { AVAILABILITY_BADGE, UNKNOWN_ERROR_COPY, workspaceErrorMessage } from '../../../utils/workspace-errors'
+import { classicSettingsChrome, realmTokenOverrides } from '../realm-chrome'
+import { DiscoverDialog } from '../../workspaces/DiscoverDialog'
+import { WorkspaceManager } from '../../workspaces/WorkspaceManager'
 import { useSettingsStore } from '../../../stores/settings-store'
 import { useWorkspaceStore } from '../../../stores/workspace-store'
 import { useSandboxStore } from '../../../stores/sandbox-store'
@@ -78,15 +84,6 @@ const REALM_LOCATION_LABELS: Record<RealmLocation, string> = {
 // ---------------------------------------------------------------------------
 // Debounce hook
 // ---------------------------------------------------------------------------
-
-function useDebounce<T>(value: T, delay: number): T {
-  const [debounced, setDebounced] = useState(value)
-  useEffect(() => {
-    const t = setTimeout(() => setDebounced(value), delay)
-    return () => clearTimeout(t)
-  }, [value, delay])
-  return debounced
-}
 
 // ---------------------------------------------------------------------------
 // Section: Kingdom
@@ -232,33 +229,28 @@ function KingdomSection(): React.ReactElement {
 
 function WorkspacesSection(): React.ReactElement {
   const config = useSettingsStore((s) => s.config)
-  const updateConfig = useSettingsStore((s) => s.updateConfig)
+  const setAssignment = useSettingsStore((s) => s.setAssignment)
+  const fetchConfig = useSettingsStore((s) => s.fetchConfig)
   const workspaces = useWorkspaceStore((s) => s.workspaces)
-
-  const [localMapping, setLocalMapping] = useState(() => config?.realm?.mapping ?? [])
-  const debouncedMapping = useDebounce(localMapping, 300)
-  const isFirstRender = useRef(true)
-
-  // Sync debounced mapping to config (skip initial render)
-  useEffect(() => {
-    if (isFirstRender.current) {
-      isFirstRender.current = false
-      return
-    }
-    if (!config?.realm) return
-    void updateConfig({ realm: { ...config.realm, mapping: debouncedMapping } })
-  }, [debouncedMapping]) // eslint-disable-line -- intentional: updateConfig and config.realm are stable store refs
+  const [assignError, setAssignError] = useState<string | null>(null)
+  const [discover, setDiscover] = useState<'scan' | 'review' | null>(null)
 
   if (!config?.realm) return <div style={sectionLoadingStyle}>Loading…</div>
 
-  const assignedSlugs = new Set(
-    localMapping.filter((m) => m.workspaceSlug !== null).map((m) => m.workspaceSlug as string),
-  )
+  // The config is the one source of truth: each change goes straight to main (`realm:setAssignment`), which also
+  // unassigns the workspace from any other building, and the select shows what main saved.
+  const mapping = config.realm.mapping
+  const assignedSlugs = new Set(mapping.filter((m) => m.workspaceSlug !== null).map((m) => m.workspaceSlug as string))
 
   function handleChange(location: RealmLocation, slug: string | null): void {
-    setLocalMapping((prev) =>
-      prev.map((m) => (m.location === location ? { ...m, workspaceSlug: slug } : m)),
-    )
+    setAssignError(null)
+    setAssignment(location, slug).catch((err: unknown) => {
+      setAssignError(err instanceof IpcError ? workspaceErrorMessage(err.code) : UNKNOWN_ERROR_COPY)
+    })
+  }
+
+  function optionLabel(w: Workspace): string {
+    return w.availability === 'ok' ? w.displayName : `${w.displayName} (${AVAILABILITY_BADGE[w.availability].toLowerCase()})`
   }
 
   return (
@@ -267,8 +259,14 @@ function WorkspacesSection(): React.ReactElement {
       <p style={{ ...settingDescStyle, marginBottom: 12 }}>
         Assign each workspace to a building. Unassigned buildings appear dim on the map.
       </p>
+      {assignError && (
+        <p role="alert" style={{ ...settingDescStyle, color: '#e07a5f', marginBottom: 8 }}>
+          {assignError}
+        </p>
+      )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 600, overflowY: 'auto' }}>
-        {localMapping.map(({ location, workspaceSlug }) => {
+        {mapping.map(({ location, workspaceSlug }) => {
+          // Hidden workspaces are still offered: Hide is an office-sidebar concept and the realm ignores it.
           const available = workspaces.filter(
             (w) => w.slug === workspaceSlug || !assignedSlugs.has(w.slug),
           )
@@ -289,12 +287,25 @@ function WorkspacesSection(): React.ReactElement {
               >
                 <option value="">— Unassigned —</option>
                 {available.map((w) => (
-                  <option key={w.slug} value={w.slug}>{w.displayName}</option>
+                  <option key={w.slug} value={w.slug}>{optionLabel(w)}</option>
                 ))}
               </select>
             </div>
           )
         })}
+      </div>
+
+      {/* The same manager the office Settings page uses, in its realm skin: no Hide, and Esc on an unsaved edit
+          stays inside the field. The wrapper carries the realm tokens, which the dialogs below inherit. */}
+      <div style={{ ...classicSettingsChrome, ...realmTokenOverrides, marginTop: 16 }}>
+        <WorkspaceManager
+          skin="realm"
+          onDiscover={() => setDiscover('scan')}
+          onReviewLastScan={() => setDiscover('review')}
+          // Removing a workspace also frees its building: reload the assignments main saved.
+          onRemoved={() => void fetchConfig()}
+        />
+        <DiscoverDialog open={discover !== null} mode={discover ?? 'scan'} onClose={() => setDiscover(null)} />
       </div>
     </div>
   )
@@ -410,43 +421,6 @@ const sectionLoadingStyle: React.CSSProperties = { color: '#9c8a6a', fontSize: 1
 const sectionHeadingStyle: React.CSSProperties = { color: '#c9a84c', fontSize: 23, margin: '0 0 16px 0', textShadow: realmTextShadow }
 const settingLabelStyle: React.CSSProperties = { fontSize: 19, color: '#f5edd4', marginBottom: 2, fontWeight: 'bold', textShadow: realmTextShadow }
 const settingDescStyle: React.CSSProperties = { fontSize: 16, color: '#c9b88e', margin: 0, textShadow: realmTextShadow }
-const classicSettingsChrome: React.CSSProperties = {
-  background: 'rgba(10,6,2,0.7)',
-  border: '1px solid rgba(201,168,76,0.3)',
-  borderRadius: 6,
-  padding: '12px 16px',
-  color: '#e8d5a3',
-  fontFamily: 'serif',
-  textShadow: realmTextShadow,
-}
-const realmTokenOverrides: Record<string, string> & React.CSSProperties = {
-  // Base tokens (used by inline styles and as var() indirection source)
-  '--co-bg-secondary': 'rgba(20,14,6,0.6)',
-  '--co-bg-tertiary': 'rgba(30,20,8,0.7)',
-  '--co-bg-elevated': 'rgba(25,18,7,0.8)',
-  '--co-text-primary': '#f5edd4',
-  '--co-text-secondary': '#c9b88e',
-  '--co-text-muted': '#9c8a6a',
-  '--co-border': 'rgba(201,168,76,0.25)',
-  '--co-border-glow': 'rgba(201,168,76,0.35)',
-  '--co-accent': '#c9a84c',
-  '--co-accent-dim': '#a8893d',
-  '--co-accent-glow': 'rgba(201,168,76,0.15)',
-  // Tailwind 4 utilities reference --color-co-* directly; set them so
-  // bg-co-accent, text-co-text-primary, etc. resolve to gold theme
-  '--color-co-bg-secondary': 'rgba(20,14,6,0.6)',
-  '--color-co-bg-tertiary': 'rgba(30,20,8,0.7)',
-  '--color-co-bg-elevated': 'rgba(25,18,7,0.8)',
-  '--color-co-text-primary': '#f5edd4',
-  '--color-co-text-secondary': '#c9b88e',
-  '--color-co-text-muted': '#9c8a6a',
-  '--color-co-border': 'rgba(201,168,76,0.25)',
-  '--color-co-border-glow': 'rgba(201,168,76,0.35)',
-  '--color-co-accent': '#c9a84c',
-  '--color-co-accent-dim': '#a8893d',
-  '--color-co-accent-violet': '#c9a84c',
-  '--color-co-accent-violet-dim': '#a8893d',
-} as Record<string, string> & React.CSSProperties
 const selectStyle: React.CSSProperties = {
   flex: 1,
   background: 'rgba(10,6,2,0.7)',

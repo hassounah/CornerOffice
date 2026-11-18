@@ -135,8 +135,19 @@ export class StateCacheService {
   reconcile(currentChecksums: Record<string, string>): string[] {
     const cached = this._cache?.historyChecksums ?? {}
     return Object.entries(currentChecksums)
-      .filter(([slug, checksum]) => cached[slug] !== checksum)
+      .filter(([slug, checksum]) => !Object.hasOwn(cached, slug) || cached[slug] !== checksum)
       .map(([slug]) => slug)
+  }
+
+  /**
+   * Unacknowledged attention events for a workspace id. Ids are user-influenced folder names, so `constructor` and
+   * `__proto__` are valid ids: only an OWN numeric entry counts, anything else is 0 (Sec M5).
+   */
+  unacknowledgedCount(id: string): number {
+    const counts = this.getCache().unacknowledgedAttentionEvents
+    if (!Object.hasOwn(counts, id)) return 0
+    const n = counts[id]
+    return typeof n === 'number' && Number.isFinite(n) ? n : 0
   }
 
   /** Get current in-memory cache (loads from disk if not yet loaded) */

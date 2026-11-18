@@ -125,7 +125,7 @@ export function effectiveAllowlist(cfg: EffectiveAllowlistConfig, slug: string):
   const combined = new Set<string>([
     ...DEFAULT_ALLOWLIST,
     ...(cfg.globalAllowlist ?? []),
-    ...(cfg.workspaces?.[slug]?.allowlist ?? []),
+    ...(cfg.workspaces && Object.hasOwn(cfg.workspaces, slug) ? (cfg.workspaces[slug].allowlist ?? []) : []),
   ])
   return Array.from(combined).sort()
 }

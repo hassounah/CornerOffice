@@ -7,6 +7,9 @@ import type { IpcResponse } from '../main/types/ipc'
 import type { DocTreeResponse, DocFileResponse, DocWriteResponse, DocTreeEntry } from '../main/types/docs'
 import type { AppState } from '../main/ipc/handlers'
 import { buildRealHandlers } from '../main/ipc/handlers'
+import { makeHandlerDeps } from './helpers/handler-deps'
+import { fakeRuntime } from './helpers/workspace-fixture'
+import { makeRuntimeSandbox, type RuntimeSandbox } from './helpers/runtime-fixture'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -71,22 +74,22 @@ beforeEach(() => {
   fs.mkdirSync(path.join(docsRoot, 'handoffs'))
   fs.writeFileSync(path.join(docsRoot, 'handoffs', 'h1.md'), '# Handoff')
 
+  const workspaces = new Map([['test-ws', { docsRoot } as unknown as import('../main/types').Workspace]])
   appState = {
-    workspaces: new Map([
-      ['test-ws', { docsRoot } as unknown as import('../main/types').Workspace],
-    ]),
+    workspaces,
     activityFeed: [],
     notifications: [],
     gamificationState: {} as unknown as import('../main/types').GamificationState,
     homunculusState: null,
-    discoveryService: {} as unknown as import('../main/services/workspace-discovery').WorkspaceDiscoveryService,
+    registry: {} as unknown as import('../main/ipc/handlers').AppState['registry'],
+    runtime: fakeRuntime(workspaces),
     channelDiscovery: null,
     channelConnection: null,
     terminalManager: null,
     sandboxManager: null,
   }
 
-  handlers = buildRealHandlers(appState, () => null)
+  handlers = buildRealHandlers(appState, () => null, makeHandlerDeps().deps)
 })
 
 afterEach(() => {
@@ -96,6 +99,105 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 // docs:listTree
 // ---------------------------------------------------------------------------
+
+describe('a refused docs root (Sec M1)', () => {
+  beforeEach(() => {
+    const ws = appState.workspaces.get('test-ws')
+    if (ws) ws.docsRootRefused = true
+  })
+
+  it('docs:listTree, docs:readFile and docs:writeFile never serve it', async () => {
+    const tree = await invokeListTree(docsRoot)
+    const read = await invokeReadFile(path.join(docsRoot, 'readme.md'))
+    const write = await invokeWriteFile(path.join(docsRoot, 'readme.md'), 'changed', new Date().toISOString())
+    for (const res of [tree, read, write]) {
+      expect(res.data).toBeNull()
+      expect(res.error).not.toBeNull()
+    }
+    expect(fs.readFileSync(path.join(docsRoot, 'readme.md'), 'utf-8')).toBe('# Hello')
+  })
+})
+
+// The repo controls the docs path after it was approved, so every docs call verifies it again (Sec M1).
+describe('the docs root is verified again at use (Sec M1)', () => {
+  let sandbox: RuntimeSandbox
+
+  beforeEach(() => {
+    sandbox = makeRuntimeSandbox() // registers `sandbox.configDir` as an app folder
+    fs.mkdirSync(sandbox.configDir, { recursive: true })
+    fs.writeFileSync(path.join(sandbox.configDir, 'secret.md'), '# app state')
+  })
+
+  afterEach(() => {
+    sandbox.cleanup()
+  })
+
+  function serve(root: string, extra: Partial<import('../main/types').Workspace> = {}): void {
+    appState.workspaces.set('test-ws', { docsRoot: root, ...extra } as unknown as import('../main/types').Workspace)
+  }
+
+  it('serves an approved root that is still the same real directory', async () => {
+    const root = path.join(sandbox.base, 'notes')
+    fs.mkdirSync(root)
+    fs.writeFileSync(path.join(root, 'a.md'), '# A')
+    serve(fs.realpathSync(root))
+    const res = await invokeReadFile(path.join(fs.realpathSync(root), 'a.md'))
+    expect(res.error).toBeNull()
+  })
+
+  it('an approved docs root re-pointed at an app folder is refused', async () => {
+    const root = path.join(sandbox.base, 'notes')
+    fs.mkdirSync(root)
+    const approved = fs.realpathSync(root)
+    serve(approved)
+    fs.rmSync(root, { recursive: true })
+    fs.symlinkSync(sandbox.configDir, root)
+    for (const res of [await invokeListTree(approved), await invokeReadFile(path.join(approved, 'secret.md'))]) {
+      expect(res.data).toBeNull()
+      expect(res.error).not.toBeNull()
+    }
+  })
+
+  it('an approved docs root re-pointed at another folder is refused (it is no longer the approved root)', async () => {
+    const root = path.join(sandbox.base, 'notes')
+    const other = path.join(sandbox.base, 'other')
+    fs.mkdirSync(root)
+    fs.mkdirSync(other)
+    fs.writeFileSync(path.join(other, 'b.md'), '# B')
+    const approved = fs.realpathSync(root)
+    serve(approved)
+    fs.rmSync(root, { recursive: true })
+    fs.symlinkSync(other, root)
+    expect((await invokeListTree(approved)).error).not.toBeNull()
+  })
+
+  it('a missing candidate that later appears as a symlink to an app folder is refused; as a plain directory it is served', async () => {
+    const root = path.join(sandbox.base, 'later')
+    serve(root, { docsRootUnverified: true })
+    expect((await invokeListTree(root)).error).not.toBeNull() // still missing: nothing to serve
+
+    fs.symlinkSync(sandbox.configDir, root)
+    expect((await invokeListTree(root)).error).not.toBeNull()
+    expect((await invokeReadFile(path.join(root, 'secret.md'))).error).not.toBeNull()
+    expect((await invokeWriteFile(path.join(root, 'secret.md'), 'overwritten', new Date().toISOString())).error).not.toBeNull()
+    expect(fs.readFileSync(path.join(sandbox.configDir, 'secret.md'), 'utf-8')).toBe('# app state')
+
+    fs.unlinkSync(root)
+    fs.mkdirSync(root)
+    fs.writeFileSync(path.join(root, 'ok.md'), '# fine')
+    expect((await invokeListTree(fs.realpathSync(root))).error).toBeNull()
+  })
+
+  it('a missing candidate that later appears as a symlink to a SAFE folder is served from that folder (first use, unverified)', async () => {
+    const root = path.join(sandbox.base, 'later-safe')
+    const safe = path.join(sandbox.base, 'safe-docs')
+    fs.mkdirSync(safe)
+    fs.writeFileSync(path.join(safe, 'ok.md'), '# fine')
+    serve(root, { docsRootUnverified: true })
+    fs.symlinkSync(safe, root)
+    expect((await invokeListTree(root)).error).toBeNull()
+  })
+})
 
 describe('docs:listTree', () => {
   it('returns correct entries for docsRoot', async () => {

@@ -94,7 +94,8 @@ const PACKAGES = [
 ]
 const HEADER = "make dev can't start the headless app yet. On the host:"
 const TOOLCHAIN_LINES = [
-  '  [ ] Add these to "sandbox" in ~/.corner-office/config.json (quit Corner Office first), then Settings > Sandbox > Image: Rebuild:',
+  '  [ ] Add these to the top level of sandbox.json in the config folder (quit Corner Office first), then Settings > Sandbox > Image: Rebuild:',
+  '      (~/.config/corner-office/sandbox.json, or <profile home>/electron/sandbox.json for a dev profile)',
   `      "extraPackages": [${PACKAGES.map((p) => `"${p}"`).join(', ')}]`,
 ]
 const ALLOWLIST_LINE =

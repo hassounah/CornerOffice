@@ -87,6 +87,14 @@ export function resolveRealHome(): string {
   return _realHome
 }
 
+/**
+ * `<realHome>/.corner-office` — the whole data dir (sandboxes, worktrees, profiles, events), whatever
+ * profile is active. A workspace may never be or contain it (#0039). Pure: no filesystem access.
+ */
+export function realDataRoot(realHome: string): string {
+  return path.join(realHome, '.corner-office')
+}
+
 /** `<realHome>/.corner-office/profiles` — named dev profile homes (#0038 D3a). Never a mount source or target. */
 export function profilesRoot(realHome: string): string {
   return path.join(realHome, '.corner-office', 'profiles')

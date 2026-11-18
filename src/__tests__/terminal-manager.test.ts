@@ -29,8 +29,10 @@ vi.mock('electron-log/main', () => ({
   default: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }))
 
+const mockRealpath = vi.hoisted(() => vi.fn(async (p: string) => p))
+
 vi.mock('fs', () => ({
-  default: { existsSync: vi.fn(() => true) },
+  default: { existsSync: vi.fn(() => true), promises: { realpath: mockRealpath } },
   existsSync: vi.fn(() => true),
 }))
 
@@ -40,11 +42,11 @@ vi.mock('os', () => ({
 }))
 
 import * as nodePty from 'node-pty'
-import fs from 'fs'
 import { TerminalManagerService } from '../main/services/terminal-manager'
 import type { AppState } from '../main/ipc/handlers'
 import type { Workspace } from '../main/types/workspace'
 import type { SandboxSessionDelegate } from '../main/types/sandbox'
+import { fakeRuntime } from './helpers/workspace-fixture'
 
 /** A second, independent mock pty — the shared `mockPtyInstance` fixture only
  *  supports one live session at a time (a single onData/onExit callback
@@ -84,8 +86,6 @@ function makeWorkspace(slug: string, path = `/home/user/${slug}`): Workspace {
     slug,
     path,
     displayName: null,
-    pinned: false,
-    archived: false,
     status: 'idle',
     docsRoot: null,
     docsRootExists: false,
@@ -94,8 +94,6 @@ function makeWorkspace(slug: string, path = `/home/user/${slug}`): Workspace {
       slug,
       path,
       displayName: null,
-      pinned: false,
-      archived: false,
       docsRoot: null,
     },
   } as unknown as Workspace
@@ -110,7 +108,8 @@ function makeAppState(workspaces: Workspace[] = []): AppState {
     notifications: [],
     gamificationState: {} as never,
     homunculusState: null,
-    discoveryService: {} as never,
+    registry: {} as never,
+    runtime: fakeRuntime(map),
     channelDiscovery: null,
     channelConnection: null,
     terminalManager: null,
@@ -152,6 +151,38 @@ describe('TerminalManagerService', () => {
   })
 
   // ── spawn ──────────────────────────────────────────────────────────────────
+
+  describe('assertWorkspaceNotMoved()', () => {
+    it('passes when the registered path still resolves to itself', async () => {
+      mockRealpath.mockResolvedValueOnce('/home/user/my-project')
+      await expect(svc.assertWorkspaceNotMoved('my-project')).resolves.toBeUndefined()
+    })
+
+    it('refuses with the fixed moved error when the path now resolves elsewhere (symlink swap)', async () => {
+      mockRealpath.mockResolvedValueOnce('/etc')
+      const err = await svc.assertWorkspaceNotMoved('my-project').catch((e: unknown) => e)
+      expect(err).toMatchObject({ code: 'NOT_FOUND', message: 'Path not found' })
+      expect((err as Error).message).not.toContain('/etc')
+    })
+
+    it('refuses when the realpath fails', async () => {
+      mockRealpath.mockRejectedValueOnce(Object.assign(new Error('ENOENT: /home/user/my-project'), { code: 'ENOENT' }))
+      await expect(svc.assertWorkspaceNotMoved('my-project')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    })
+
+    it('refuses when the realpath hangs past the deadline', async () => {
+      vi.useFakeTimers()
+      mockRealpath.mockImplementationOnce(() => new Promise<string>(() => undefined))
+      const pending = svc.assertWorkspaceNotMoved('my-project').catch((e: unknown) => e)
+      await vi.advanceTimersByTimeAsync(2500)
+      expect(await pending).toMatchObject({ code: 'NOT_FOUND' })
+    })
+
+    it('refuses an unknown or unavailable workspace without touching the filesystem', async () => {
+      await expect(svc.assertWorkspaceNotMoved('nope')).rejects.toBeInstanceOf(Error)
+      expect(mockRealpath).not.toHaveBeenCalled()
+    })
+  })
 
   describe('spawn()', () => {
     it('spawns a PTY and returns workspaceSlug', () => {
@@ -236,20 +267,23 @@ describe('TerminalManagerService', () => {
       )
     })
 
-    it('throws when workspace not found', () => {
-      expect(() => svc.spawn({ workspaceSlug: 'unknown', cols: 80, rows: 24 })).toThrow(
-        /Workspace not found/,
-      )
+    it('refuses an unknown workspace', () => {
+      expect(() => svc.spawn({ workspaceSlug: 'unknown', cols: 80, rows: 24 })).toThrow(/Access denied/)
+      expect(nodePty.spawn).not.toHaveBeenCalled()
     })
 
-    it('falls back to homedir when workspace path does not exist', () => {
-      vi.mocked(fs.existsSync).mockReturnValueOnce(false)
-      svc.spawn({ workspaceSlug: 'my-project', cols: 80, rows: 24 })
+    it('never falls back to $HOME for a registry workspace: a missing folder is refused and no pty is spawned (Sec H1)', () => {
+      appState.workspaces.set('gone', { ...makeWorkspace('gone', '/does/not/exist'), availability: 'missing' })
+      expect(() => svc.spawn({ workspaceSlug: 'gone', cols: 80, rows: 24 })).toThrow(/Workspace path not found/)
+      expect(nodePty.spawn).not.toHaveBeenCalled()
+    })
 
+    it('spawns in the registered workspace path (no existsSync fallback)', () => {
+      svc.spawn({ workspaceSlug: 'my-project', cols: 80, rows: 24 })
       expect(nodePty.spawn).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(Array),
-        expect.objectContaining({ cwd: '/home/testuser' }),
+        expect.objectContaining({ cwd: appState.workspaces.get('my-project')?.path }),
       )
     })
 

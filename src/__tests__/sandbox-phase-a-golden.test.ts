@@ -37,6 +37,7 @@ import { sandboxPaths } from '../main/services/sandbox-paths'
 import { TerminalManagerService } from '../main/services/terminal-manager'
 import type { AppState } from '../main/ipc/handlers'
 import type { Workspace } from '../main/types/workspace'
+import { fakeRuntime } from './helpers/workspace-fixture'
 
 // ---------------------------------------------------------------------------
 // sandbox-phase-a-golden.test.ts (#0037 A0, TRD §10.1, BE-H2)
@@ -304,8 +305,10 @@ describe('golden: host spawn args', () => {
     const repo = mkTmp('co-golden-host-')
     cleanups.push(repo)
     const ws = { slug: 'p', path: repo } as unknown as Workspace
+    const workspaces = new Map([['p', ws]])
     const appState = {
-      workspaces: new Map([['p', ws]]),
+      workspaces,
+      runtime: fakeRuntime(workspaces),
       sandboxManager: null,
     } as unknown as AppState
     const svc = new TerminalManagerService(() => null, appState)

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, within, fireEvent, act } from '@testing-library/react'
 import { useSettingsStore } from '../../../renderer/stores/settings-store'
-import type { AppConfig } from '@main/types/config'
+import type { Settings } from '@main/services/stores'
 import { CodeExplorer } from '../../../renderer/components/code/CodeExplorer'
 import { useCodeExplorerStore } from '../../../renderer/stores/code-explorer-store'
 import { REPO_STATE_FIXTURES } from '../../helpers/repo-state-fixtures'
@@ -224,7 +224,7 @@ describe('CodeExplorer — resizable tree/viewer split (#0031)', () => {
   }
 
   function setPersisted(treeWidth?: number): void {
-    const config = (treeWidth === undefined ? {} : { codeExplorer: { treeWidth } }) as AppConfig
+    const config = (treeWidth === undefined ? {} : { codeExplorer: { treeWidth } }) as Settings
     useSettingsStore.setState({ config })
   }
 

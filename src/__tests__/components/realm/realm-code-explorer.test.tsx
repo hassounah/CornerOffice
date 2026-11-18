@@ -5,6 +5,7 @@ import { useCodeExplorerStore } from '../../../renderer/stores/code-explorer-sto
 import { useWorkspaceStore } from '../../../renderer/stores/workspace-store'
 import type { Workspace } from '@main/types/workspace'
 import { REPO_STATE_FIXTURES } from '../../helpers/repo-state-fixtures'
+import { workspaceRegistryFields } from '../../helpers/workspace-fixture'
 
 // ---------------------------------------------------------------------------
 // RealmCodeExplorer — Fix #142: every other Realm overlay owns a ref on its
@@ -47,6 +48,7 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
   return {
     slug: 'test-ws',
     path: '/test',
+    ...workspaceRegistryFields('/test'),
     displayName: 'Test WS',
     docsRoot: '/test/docs',
     docsRootExists: true,
@@ -61,8 +63,6 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     shippedFeatures: [],
     lastActivityTimestamp: null,
     weekShipCount: 0,
-    pinned: false,
-    archived: false,
     level: { number: 1, name: 'Prototype', xpRequired: 0, xpCurrent: 0 },
     xp: 0,
     readmeContent: null,

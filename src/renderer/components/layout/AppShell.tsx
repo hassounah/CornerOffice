@@ -4,6 +4,8 @@ import { OrgSidebar } from './OrgSidebar'
 import { TopBar } from './TopBar'
 import { WindowTitleBar } from './WindowTitleBar'
 import { ShipMomentOverlay } from '../gamification/ShipMoment'
+import { WorkspaceLiveRegion } from '../shared/LiveRegion'
+import { LegacyNotice } from '../workspaces/LegacyNotice'
 
 export function AppShell(): React.ReactElement {
   return (
@@ -26,6 +28,7 @@ export function AppShell(): React.ReactElement {
         {/* Main content column */}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
           <TopBar />
+          <LegacyNotice skin="office" />
 
           {/* Page content with atmospheric background */}
           <main
@@ -46,6 +49,8 @@ export function AppShell(): React.ReactElement {
         </div>
 
         <ShipMomentOverlay />
+        {/* Announces add, create, hide and show (the workspace UI has no toasts). */}
+        <WorkspaceLiveRegion />
       </div>
     </div>
   )

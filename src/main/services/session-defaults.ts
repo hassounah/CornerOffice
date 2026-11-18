@@ -1,7 +1,8 @@
 import log from 'electron-log/main'
 import { AGENT_DESCRIPTORS, LEGACY_AGENT_ID } from '../agents/descriptors'
-import type { AppConfig, SessionChoice, SessionDefaults } from '../types/config'
-import type { ConfigManager } from './config-manager'
+import type { SessionChoice } from '../types/config'
+import type { JsonStore } from './json-store'
+import type { SessionDefaultsFile } from './stores'
 
 // ---------------------------------------------------------------------------
 // session-defaults.ts — the remembered Start Session options (#0037 TRD §5.5,
@@ -42,11 +43,10 @@ function builtinBase(): SessionChoice {
   }
 }
 
-export function getSessionDefaults(config: Pick<AppConfig, 'sessionDefaults'>, workspaceSlug: string): SessionDefaultsView {
-  const defaults = config.sessionDefaults
-  const workspace = defaults?.workspaces[workspaceSlug]
-  if (workspace) return { choice: workspace, source: 'workspace' }
-  if (defaults?.last) return { choice: defaults.last, source: 'last' }
+/** The remembered choice for `workspaceSlug` (a registry id), else the last start, else nothing. Id lookups use `Object.hasOwn`. */
+export function getSessionDefaults(file: SessionDefaultsFile, workspaceSlug: string): SessionDefaultsView {
+  if (Object.hasOwn(file.workspaces, workspaceSlug)) return { choice: file.workspaces[workspaceSlug], source: 'workspace' }
+  if (file.last) return { choice: file.last, source: 'last' }
   return { choice: null, source: 'builtin' }
 }
 
@@ -79,33 +79,32 @@ function mergeStart(base: SessionChoice, start: SessionStart): SessionChoice {
  * `last`, and drops entries for slugs that aren't known workspaces.
  */
 export function applySessionStart(
-  current: SessionDefaults | undefined,
+  current: SessionDefaultsFile,
   start: SessionStart,
-  knownSlugs: ReadonlySet<string>,
-): SessionDefaults {
-  const base = current ?? { last: null, workspaces: {} }
+  knownIds: ReadonlySet<string>,
+): SessionDefaultsFile {
   const workspaces: Record<string, SessionChoice> = {}
-  for (const [slug, choice] of Object.entries(base.workspaces)) {
-    if (knownSlugs.has(slug)) workspaces[slug] = choice
+  for (const [id, choice] of Object.entries(current.workspaces)) {
+    if (knownIds.has(id)) workspaces[id] = choice
   }
-  if (knownSlugs.has(start.workspaceSlug)) {
-    workspaces[start.workspaceSlug] = mergeStart(workspaces[start.workspaceSlug] ?? base.last ?? builtinBase(), start)
+  if (knownIds.has(start.workspaceSlug)) {
+    const base = Object.hasOwn(workspaces, start.workspaceSlug) ? workspaces[start.workspaceSlug] : (current.last ?? builtinBase())
+    workspaces[start.workspaceSlug] = mergeStart(base, start)
   }
-  return { last: mergeStart(base.last ?? builtinBase(), start), workspaces }
+  return { version: 1, last: mergeStart(current.last ?? builtinBase(), start), workspaces }
 }
 
 /**
- * Fire-and-forget: records `start` through the serialized `mutateConfig`. A
- * failure (for example exhausted lock retries) is logged and never affects the
- * session that already started.
+ * Fire-and-forget: records `start` through the session-defaults store's serialized `mutate`.
+ * `getKnownIds` is the registry's ids. A failure is logged and never affects the session that already started.
  */
 export function recordSessionStart(
-  store: Pick<ConfigManager, 'mutateConfig'>,
-  getKnownSlugs: () => ReadonlySet<string>,
+  store: Pick<JsonStore<SessionDefaultsFile>, 'mutate'>,
+  getKnownIds: () => ReadonlySet<string>,
   start: SessionStart,
 ): void {
   store
-    .mutateConfig((cfg) => ({ ...cfg, sessionDefaults: applySessionStart(cfg.sessionDefaults, start, getKnownSlugs()) }))
+    .mutate((file) => applySessionStart(file, start, getKnownIds()))
     .catch((err: unknown) => {
       log.warn(`[session-defaults] Could not record the session start: ${err instanceof Error ? err.message : String(err)}`)
     })

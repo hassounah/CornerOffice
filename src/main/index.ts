@@ -1,3 +1,5 @@
+// Must stay the first import: it sizes libuv's threadpool before any other module evaluates (#0039, C-2).
+import './threadpool'
 import log from 'electron-log/main'
 import { app, BrowserWindow, session, Tray, Menu, nativeImage, screen, Notification as ElectronNotification, ipcMain } from 'electron'
 import path from 'path'
@@ -5,28 +7,30 @@ import fs from 'fs'
 import os from 'os'
 import { WindowStateService } from './services/window-state'
 import type { ScreenLike } from './services/window-state'
-import { WorkspaceDiscoveryService } from './services/workspace-discovery'
 import { WorkspaceParserService } from './services/workspace-parser'
 import { DocsParserService } from './services/docs-parser'
 import { HistoryDifferService } from './services/history-differ'
 import { FileWatcherService } from './services/file-watcher'
-import { configManager } from './services/config-manager'
 import { recordSessionStart } from './services/session-defaults'
 import type { SessionStart } from './services/session-defaults'
+import { registryStore, sandboxStore, sessionDefaultsStore, settingsStore } from './services/stores'
+import { createWorkspaceRegistry, buildEventIndex, createStatePruner } from './services/workspace-registry'
+import { createWorkspaceRuntime, recomputeGamification } from './services/workspace-runtime'
+import { createEventIngestor, readOwnNumber, UNATTRIBUTED_PREFIX } from './services/event-ingest'
+import { getStartupFlags, prepareConfig, startRegistry } from './services/startup-registry'
 import { stateCacheService } from './services/state-cache'
 import { homunculusParserService } from './services/homunculus-parser'
-import { calculateXP, calculateLevel, buildVelocityData, buildStreakData } from './services/gamification'
 import { EventRotatorService } from './services/event-rotator'
 import { eventParserService } from './services/event-parser'
 import { NotificationService } from './services/notification-service'
 import { registerHandlers, swapHandlers, buildRealHandlers } from './ipc/handlers'
 import type { AppState } from './ipc/handlers'
-import { WORKSPACE_CHANNELS, HOMUNCULUS_CHANNELS, ACTIVITY_CHANNELS, GAMIFICATION_CHANNELS, MAIN_CHANNELS, CHANNEL_IPC, NOTIFICATION_CHANNELS, CODE_CHANNELS } from './ipc/channels'
+import { WORKSPACE_CHANNELS, HOMUNCULUS_CHANNELS, MAIN_CHANNELS, CHANNEL_IPC, NOTIFICATION_CHANNELS, CODE_CHANNELS } from './ipc/channels'
 import { ChannelDiscoveryService } from './services/channel-discovery'
 import { ChannelConnectionService, defaultIsAlive } from './services/channel-connection'
 import { TerminalManagerService } from './services/terminal-manager'
 import { createActivityTrackingObserver } from './agents/activity-tracking'
-import { computeRepoRootStatus, resolveCodeRoot } from './services/repo-path'
+import { getAvailableWorkspace, resolveCodeRoot } from './services/repo-path'
 import { createGitService } from './services/git-runner'
 import { createRepoService } from './services/git-service'
 import type { RepoService } from './services/git-service'
@@ -37,16 +41,7 @@ import { buildOffSandboxHandlers, buildSandboxHandlers, createSandboxPushSenders
 import { makeIsAppOrigin, installNavigationLockdown, onCrossDocumentMainFrameNavigation } from './ipc/app-origin'
 import { createQuitGuard } from './services/quit-guard'
 import { runQuitSequence } from './services/quit-sequence'
-import {
-  attributeEventWorkspace,
-  attributeSandboxEventWorkspace,
-  classifySource,
-  hostSessionIdsForWorkspace,
-  listSandboxEventFiles,
-  sandboxEventSlug,
-  sourceByLocation,
-} from './services/event-attribution'
-import type { EventSource } from './services/event-attribution'
+import { listSandboxEventFiles } from './services/event-attribution'
 import { createDockerRunner, createRefusingDockerRunner } from './services/docker-runner'
 import { createSandboxImageService, resolveBuildContext } from './services/sandbox-image'
 import { createSandboxManager, sandboxSettings } from './services/sandbox-manager'
@@ -61,16 +56,16 @@ import {
   createSandboxIsAlive,
   createSandboxConfigDeps,
   currentSandboxConfig,
+  ensureEventsSplitAt,
   updateSandboxConfig,
   createBuildRequesterTracker,
   isLoopbackPortFree,
   onImageBuildDone,
+  probeSandboxWhenSettled,
 } from './services/sandbox-bootstrap'
 import type {
   Workspace,
-  WorkspaceConfig,
   WorkspaceStatus,
-  ShippedFeature,
   StateCache,
   NotificationItem,
 } from './types'
@@ -135,26 +130,6 @@ const isAppOrigin = makeIsAppOrigin({
 // Helpers
 // ---------------------------------------------------------------------------
 
-function slugToTitle(slug: string): string {
-  return slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-}
-
-function computeLastActivityTimestamp(shippedFeatures: ShippedFeature[]): string | null {
-  if (shippedFeatures.length === 0) return null
-  return [...shippedFeatures]
-    .sort((a, b) => b.shippedDate.localeCompare(a.shippedDate))[0]
-    .shippedDate
-}
-
-function computeWeekShipCount(shippedFeatures: ShippedFeature[]): number {
-  const now = new Date()
-  const startOfWeek = new Date(now)
-  startOfWeek.setDate(now.getDate() - now.getDay())
-  startOfWeek.setHours(0, 0, 0, 0)
-  const startStr = startOfWeek.toISOString().slice(0, 10)
-  return shippedFeatures.filter((f) => f.shippedDate >= startStr).length
-}
-
 export function toNotificationItem(n: AppNotification): NotificationItem {
   return {
     id: n.id,
@@ -174,74 +149,7 @@ export function toNotificationItem(n: AppNotification): NotificationItem {
 function computeWorkspaceStatus(ws: Workspace, stateCache: StateCache): WorkspaceStatus {
   if (ws.activePipelines.length > 0) return 'active'
   if (ws.parkedPipelines.length > 0) return 'parked'
-  const unackCount = stateCache.unacknowledgedAttentionEvents[ws.slug] ?? 0
-  if (unackCount > 0) return 'attention'
-  return 'idle'
-}
-
-/** Build a Workspace object from the filesystem. Pure sync. */
-function parseWorkspace(
-  wsPath: string,
-  slug: string,
-  configEntry: WorkspaceConfig | undefined,
-  stateCache: StateCache,
-  parserService: WorkspaceParserService,
-  docsParser: DocsParserService,
-): Workspace {
-  // Parse memory.md
-  const memData = parserService.parseMemoryMd(path.join(wsPath, '.rix', 'memory.md'))
-
-  // docsRoot priority: config override > memory.md > default
-  const docsRoot = configEntry?.docsRoot ?? memData.docsRoot ?? path.join(wsPath, 'docs')
-  const docsRootExists = fs.existsSync(docsRoot)
-  const repoRootStatus = computeRepoRootStatus(wsPath)
-
-  // Parse workspace docs (features, ideation)
-  const docsResult = docsParser.scanDocsRoot(docsRoot)
-
-  // Parse history (shipped features)
-  const shippedFeatures = parserService.parseHistoryMd(path.join(wsPath, '.rix', 'history.md'))
-
-  // Parse active and parked pipelines
-  const pipelineResult = parserService.scanPipelinesDir(
-    path.join(wsPath, '.rix', 'pipelines'),
-  )
-  const activePipelines = pipelineResult.active
-  const parkedPipelines = pipelineResult.parked
-
-  // Compute XP and level from shipped history
-  const xp = shippedFeatures.reduce((sum, f) => sum + calculateXP(f), 0)
-  const level = calculateLevel(xp)
-
-  // Display name: config override > title-cased slug
-  const displayName = configEntry?.displayName ?? slugToTitle(slug)
-
-  const ws: Workspace = {
-    slug,
-    path: wsPath,
-    displayName,
-    docsRoot,
-    docsRootExists,
-    repoRootStatus,
-    status: 'idle', // computed below after full ws object exists
-    nextFeatureId: memData.nextFeatureId,
-    projectContext: memData.projectContext,
-    activePipelines,
-    parkedPipelines,
-    features: docsResult.features,
-    ideationItems: docsResult.ideationItems,
-    shippedFeatures,
-    lastActivityTimestamp: computeLastActivityTimestamp(shippedFeatures),
-    weekShipCount: computeWeekShipCount(shippedFeatures),
-    pinned: configEntry?.pinned ?? false,
-    archived: configEntry?.archived ?? false,
-    level,
-    xp,
-    readmeContent: parserService.findReadme(wsPath),
-  }
-
-  ws.status = computeWorkspaceStatus(ws, stateCache)
-  return ws
+  return readOwnNumber(stateCache.unacknowledgedAttentionEvents, ws.slug) > 0 ? 'attention' : 'idle'
 }
 
 // ---------------------------------------------------------------------------
@@ -467,10 +375,19 @@ async function initialize(): Promise<void> {
   // ── Phase 2: Create window (shows loading spinner) ────────────────────────
   await createWindow()
 
-  // ── Phase 3: Ensure data directory and load persisted state ───────────────
-  configManager.ensureDataDir()
-  const config = configManager.loadConfig() ?? configManager.getDefaultConfig()
-  const stateCache = stateCacheService.load()
+  // ── Phase 3: Config dir, data dir, stores and state cache (#0039) ───────────────
+  // `prepareConfig` is fatal on a symlinked or foreign-owned config folder; nothing here walks the disk.
+  prepareConfig({
+    userDataPath: app.getPath('userData'),
+    readStores: () => {
+      settingsStore.get()
+      registryStore.get()
+    },
+    loadState: () => {
+      stateCacheService.load()
+    },
+  })
+  const stateCache = stateCacheService.getCache()
 
   // First launch or state reset: initialize OS notification timestamp to now
   // so all existing events are treated as "old" and won't replay OS notifications.
@@ -478,20 +395,46 @@ async function initialize(): Promise<void> {
     stateCacheService.updateField('lastOsNotificationTimestamp', new Date().toISOString())
   }
 
-  // ── Phase 4: Discover workspaces ──────────────────────────────────────────
-  const discoveryService = new WorkspaceDiscoveryService()
-  const { workspaces: discovered } = await discoveryService.discover({
-    userExclusions: config.discoveryExclusions,
-  })
-
-  // Build quick-lookup map for config workspace entries
-  const configWsMap = new Map<string, WorkspaceConfig>(
-    config.workspaces.map((ws) => [ws.slug, ws]),
-  )
-
-  // ── Phase 5: Parse all discovered workspaces ──────────────────────────────
+  // ── Phase 4: (deleted) there is no discovery at startup; the registry is the list ──────────────────────────────────────────
+  // ── Phase 5: Registry and runtime. `runtime.init` returns at once with `checking` stubs, so READY is not held up by a slow mount ──────────────────────────────
   const parserService = new WorkspaceParserService()
   const docsParser = new DocsParserService()
+
+  // The runtime owns the Workspace objects in `appState`; it sees the live fields through this view.
+  const runtimeView = {
+    get workspaces() {
+      return appState.workspaces
+    },
+    get gamificationState() {
+      return appState.gamificationState
+    },
+    set gamificationState(value) {
+      appState.gamificationState = value
+    },
+  }
+
+  const registry = createWorkspaceRegistry({
+    registryStore,
+    sandboxStore,
+    sessionDefaultsStore,
+    settingsStore,
+    statePruner: createStatePruner(stateCacheService),
+    getTerminalManager: () => appState.terminalManager,
+    getSandboxManager: () => appState.sandboxManager,
+  })
+
+  const runtime = createWorkspaceRuntime({
+    appState: runtimeView,
+    parser: parserService,
+    docsParser,
+    push: (channel, payload) => mainWindow?.webContents.send(channel, payload),
+    unacknowledgedAttention: (id) => stateCacheService.unacknowledgedCount(id),
+    onGamification: (state) => {
+      stateCacheService.updateField('velocity', state.velocity)
+      stateCacheService.updateField('streak', state.streak)
+      stateCacheService.updateField('workspaceLevels', state.workspaceLevels)
+    },
+  })
 
   const appState: AppState = {
     workspaces: new Map(),
@@ -503,60 +446,31 @@ async function initialize(): Promise<void> {
       workspaceLevels: stateCache.workspaceLevels,
     },
     homunculusState: null,
-    discoveryService,
+    registry,
+    runtime,
     channelDiscovery: null,
     channelConnection: null,
     terminalManager: null,
     sandboxManager: null,
   }
 
-  const allShipped: ShippedFeature[] = []
+  /** The workspace, but only while it is available (Sec H1): every consumer of its path goes through this or `requireAvailableWorkspace`. */
+  const availableWorkspace = (slug: string): Workspace | undefined => getAvailableWorkspace(slug, appState)
 
-  for (const { path: wsPath, slug } of discovered) {
-    try {
-      const ws = parseWorkspace(
-        wsPath,
-        slug,
-        configWsMap.get(slug),
-        stateCache,
-        parserService,
-        docsParser,
-      )
-      appState.workspaces.set(slug, ws)
-      allShipped.push(...ws.shippedFeatures)
-    } catch (err) {
-      log.warn(`[Init] Failed to parse workspace "${slug}", skipping:`, err)
-    }
-  }
+  await startRegistry({ registry, runtime })
 
   // ── Phase 6: Initialize HistoryDiffer BEFORE starting watchers ────────────
   // Critical: loading existing history without firing ship events prevents
   // false feature:shipped bursts on restart.
+  // `runtime.attach` (below) seeds it before any watcher starts.
   const historyDiffer = new HistoryDifferService()
-  historyDiffer.initialize(
-    Array.from(appState.workspaces.values()).map((ws) => ({
-      slug: ws.slug,
-      shippedFeatures: ws.shippedFeatures,
-    })),
-  )
 
   // ── Phase 7: Parse homunculus ─────────────────────────────────────────────
   const homunculusDir = path.join(claudeHome(), 'homunculus')
   appState.homunculusState = homunculusParserService.parseAll(homunculusDir)
 
   // ── Phase 8: Recompute gamification from live filesystem data ─────────────
-  const velocity = buildVelocityData(allShipped)
-  const streak = buildStreakData(allShipped)
-  const workspaceLevels: Record<string, { xp: number; level: number }> = {}
-  for (const ws of appState.workspaces.values()) {
-    workspaceLevels[ws.slug] = { xp: ws.xp, level: ws.level.number }
-  }
-  appState.gamificationState = { velocity, streak, workspaceLevels }
-
-  // Persist recomputed gamification to state cache
-  stateCacheService.updateField('velocity', velocity)
-  stateCacheService.updateField('streak', streak)
-  stateCacheService.updateField('workspaceLevels', workspaceLevels)
+  // The runtime recomputes it (and persists it through `onGamification`) as each workspace's availability settles.
 
   // ── Phase 9: Start file watchers ──────────────────────────────────────────
   // Forward reference — ingestEvents is defined in Phase 10 but called
@@ -564,53 +478,23 @@ async function initialize(): Promise<void> {
   let _ingestEvents: ((filePath: string) => void) | null = null
 
   // D23: record the cutover BEFORE any watcher starts, so a file written after it is never mistaken for pre-D23 history.
-  const eventsSplitAt = await configManager.ensureEventsSplitAt(new Date())
+  const eventsSplitAt = await ensureEventsSplitAt(new Date())
+
+  // BE H-4: the event index exists BEFORE any watcher starts, so no event is ever resolved against an empty index.
+  let eventIndex = buildEventIndex(registry.list())
+  let registeredIds = new Set(registry.list().map((e) => e.id))
   const sandboxStateRoot = sandboxPaths(resolveRealHome()).sandboxStateRoot
 
   const fileWatcher = new FileWatcherService({
     onRixStateChange: (wsPath, _filePath) => {
       const _tw = _isDev ? Date.now() : 0
-      for (const ws of appState.workspaces.values()) {
-        if (ws.path === wsPath) {
-          const oldStatus = ws.status
-          try {
-            const fresh = parseWorkspace(wsPath, ws.slug, configWsMap.get(ws.slug), stateCache, parserService, docsParser)
-            appState.workspaces.set(ws.slug, fresh)
-            mainWindow?.webContents.send(WORKSPACE_CHANNELS.UPDATED, { slug: ws.slug })
-            if (fresh.status !== oldStatus) {
-              mainWindow?.webContents.send(WORKSPACE_CHANNELS.STATUS_CHANGED, { slug: ws.slug })
-            }
-          } catch (err) {
-            log.warn(`[FileWatcher] Failed to re-parse workspace "${ws.slug}":`, err)
-          }
-          if (_isDev) {
-            log.info(`[Perf] workspace:updated (rix) for "${ws.slug}": ${Date.now() - _tw}ms`)
-          }
-          break
-        }
-      }
+      runtime.reparse(wsPath)
+      if (_isDev) log.info(`[Perf] workspace:updated (rix) for "${wsPath}": ${Date.now() - _tw}ms`)
     },
     onDocsChange: (wsPath, _filePath) => {
       const _tw = _isDev ? Date.now() : 0
-      for (const ws of appState.workspaces.values()) {
-        if (ws.path === wsPath) {
-          const oldStatus = ws.status
-          try {
-            const fresh = parseWorkspace(wsPath, ws.slug, configWsMap.get(ws.slug), stateCache, parserService, docsParser)
-            appState.workspaces.set(ws.slug, fresh)
-            mainWindow?.webContents.send(WORKSPACE_CHANNELS.UPDATED, { slug: ws.slug })
-            if (fresh.status !== oldStatus) {
-              mainWindow?.webContents.send(WORKSPACE_CHANNELS.STATUS_CHANGED, { slug: ws.slug })
-            }
-          } catch (err) {
-            log.warn(`[FileWatcher] Failed to re-parse workspace "${ws.slug}":`, err)
-          }
-          if (_isDev) {
-            log.info(`[Perf] workspace:updated (docs) for "${ws.slug}": ${Date.now() - _tw}ms`)
-          }
-          break
-        }
-      }
+      runtime.reparse(wsPath)
+      if (_isDev) log.info(`[Perf] workspace:updated (docs) for "${wsPath}": ${Date.now() - _tw}ms`)
     },
     onHomunculusChange: (_filePath, _kind) => {
       const _tw = _isDev ? Date.now() : 0
@@ -641,10 +525,27 @@ async function initialize(): Promise<void> {
     },
   }, { sandboxStateRoot })
 
-  for (const ws of appState.workspaces.values()) {
-    fileWatcher.addWorkspace(ws.path, ws.docsRoot)
-  }
+  // Replaces the old addWorkspace loop: seeds the differ, then watches every available workspace.
+  runtime.attach({ fileWatcher, historyDiffer })
   fileWatcher.startGlobal()
+
+  // The registry changed (add, remove, hide, rename, docs root): rebuild the event index, then sync the runtime.
+  let lastRegistryCount = registry.list().length
+  registryStore.onChange((next) => {
+    eventIndex = buildEventIndex(next.workspaces)
+    registeredIds = new Set(next.workspaces.map((e) => e.id))
+    const reason = next.workspaces.length > lastRegistryCount ? 'added' : next.workspaces.length < lastRegistryCount ? 'removed' : 'updated'
+    lastRegistryCount = next.workspaces.length
+    void runtime.sync(next.workspaces, reason).catch((err: unknown) => {
+      log.warn('[Registry] runtime sync failed:', err instanceof Error ? err.name : 'error')
+    })
+  })
+  // Throttled inside the runtime (once per 30 s); "Check again" forces its own recheck.
+  app.on('browser-window-focus', () => {
+    void runtime.recheck().catch((err: unknown) => {
+      log.warn('[Registry] focus recheck failed:', err instanceof Error ? err.name : 'error')
+    })
+  })
 
   // ── Phase 9b: Code Explorer services (git-runner, git-service, code-watcher) ──
   // Step 1.20: constructed once here — "Git is not probed at startup" (both
@@ -710,15 +611,16 @@ async function initialize(): Promise<void> {
       const watermark = new Date(Math.max(Date.parse(eventTimestamp), Date.now())).toISOString()
       stateCacheService.updateField('lastOsNotificationTimestamp', watermark)
     },
-    getConfig: () => {
-      const cfg = configManager.loadConfig() ?? configManager.getDefaultConfig()
-      return cfg.notifications
-    },
+    getConfig: () => settingsStore.get().notifications,
+    // Sec M5: own-property reads (an id such as `constructor` is valid), and an unattributed `?key` workspace never
+    // touches per-workspace state.
     getUnacknowledged: (slug) => {
-      const cache = stateCacheService.load()
-      return cache.unacknowledgedAttentionEvents[slug] ?? 0
+      if (slug.startsWith(UNATTRIBUTED_PREFIX)) return 0
+      stateCacheService.load()
+      return stateCacheService.unacknowledgedCount(slug)
     },
     setUnacknowledged: (slug, count) => {
+      if (slug.startsWith(UNATTRIBUTED_PREFIX)) return
       const cache = stateCacheService.load()
       stateCacheService.updateField('unacknowledgedAttentionEvents', {
         ...cache.unacknowledgedAttentionEvents,
@@ -758,137 +660,35 @@ async function initialize(): Promise<void> {
 
   const eventsDir = path.join(coHome(), 'events')
   const sandboxesRoot = sandboxPaths(resolveRealHome()).sandboxesRoot
-  const inSandboxRoot = (filePath: string): boolean => sandboxEventSlug(sandboxStateRoot, filePath) !== null
 
-  /** Host cards inside one workspace: their short ids and session ids (SEC-H1, SEC-H3). */
-  function hostSessionIds(slug: string): Set<string> {
-    return hostSessionIdsForWorkspace(appState.channelDiscovery?.getSessions() ?? [], appState.workspaces.get(slug)?.path)
-  }
-
-  /** Ingest new events from a JSONL file and push to activity feed + notifications */
-  function ingestEvents(filePath: string): void {
-    const offset = eventOffsets.get(filePath) ?? 0
-    const { events, newOffset } = eventParserService.parseFromOffset(filePath, offset)
-    eventOffsets.set(filePath, newOffset)
-
-    // Provenance is computed once per file and slug: both lookups are cheap but the
-    // initial ingestion replays every historical line.
-    const hasSandboxCache = new Map<string, boolean>()
-    const hostIdsCache = new Map<string, Set<string>>()
-    // D23: the root a file lives under decides its source; the event's own `agent` field plays no part.
-    const root = inSandboxRoot(filePath) ? 'sandbox' : 'host'
-    let fileMtimeMs: number | null = null
-    if (root === 'host') {
-      try {
-        fileMtimeMs = fs.statSync(filePath).mtimeMs
-      } catch {
-        fileMtimeMs = null
-      }
-    }
-    const sourceFor = (slug: string, sessionId: string): EventSource => {
-      let hasSandbox = hasSandboxCache.get(slug)
-      if (hasSandbox === undefined) {
-        hasSandbox = fs.existsSync(path.join(sandboxesRoot, slug))
-        hasSandboxCache.set(slug, hasSandbox)
-      }
-      let hostIds = hostIdsCache.get(slug)
-      if (hostIds === undefined) {
-        hostIds = hostSessionIds(slug)
-        hostIdsCache.set(slug, hostIds)
-      }
-      const workspaceHasSandbox = hasSandbox
-      return sourceByLocation({
-        root,
-        workspaceHasSandbox,
-        eventsSplitAt,
-        fileMtimeMs,
-        legacyClassify: () =>
-          classifySource({
-            workspaceHasSandbox,
-            sessionId,
-            hostSessionIds: hostIds,
-            sandboxSessionIds: appState.sandboxManager?.getSandboxSessionIds() ?? new Set<string>(),
-          }),
-      })
-    }
-
-    for (const event of events) {
-      // SEC-H2: the workspace comes from where the file lives, not from the line itself.
-      const attribution =
-        root === 'sandbox'
-          ? attributeSandboxEventWorkspace(sandboxStateRoot, filePath, event.workspace)
-          : attributeEventWorkspace(eventsDir, filePath, event.workspace)
-      if (!attribution.ok) {
-        log.warn(`[EventPipeline] Dropped an event line (${attribution.reason}) from ${path.basename(path.dirname(filePath))}`)
-        continue
-      }
-      const wsSlug = attribution.workspace
-      const source = sourceFor(wsSlug, event.sessionId)
-      const activityItem = { ...eventParserService.generateActivityItem(event, wsSlug), ...(source === 'sandbox' ? { source } : {}) }
-      appState.activityFeed.push(activityItem)
-      log.info(`[Activity] push type=${activityItem.type} workspace=${wsSlug} event=${event.event} title=${activityItem.title}`)
-      if (!_suppressActivityPush) {
-        mainWindow?.webContents.send(ACTIVITY_CHANNELS.NEW_ITEM, activityItem)
-      }
-
-      // Classify notification tier first — needed to decide whether to clear attention
-      const tier = notificationService.classify(event)
-
-      // Clear attention on follow-up activity, but NOT if this event itself
-      // requires action (e.g. a Notification "permission_prompt" reinforces attention)
-      if (activityItem.type !== 'input_required' && tier !== 'requiresAction') {
-        const cache = stateCacheService.getCache()
-        const unackCount = cache.unacknowledgedAttentionEvents[wsSlug] ?? 0
-        if (unackCount > 0) {
-          stateCacheService.updateField('unacknowledgedAttentionEvents', {
-            ...cache.unacknowledgedAttentionEvents,
-            [wsSlug]: 0,
-          })
-          const ws = appState.workspaces.get(wsSlug)
-          if (ws) {
-            ws.status = computeWorkspaceStatus(ws, stateCacheService.getCache())
-            mainWindow?.webContents.send(WORKSPACE_CHANNELS.STATUS_CHANGED, { slug: wsSlug })
-          }
-        }
-      }
-      notificationService.dispatch({
-        id: activityItem.id,
-        workspace: wsSlug,
-        tier,
-        summary: activityItem.title,
-        detail: activityItem.detail,
-        timestamp: activityItem.timestamp,
-        autoDismissMs: null,
-        ...(source === 'sandbox' ? { source } : {}),
-      })
-
-      // Push ship events for gamification overlay + recompute gamification
-      if (activityItem.type === 'feature_shipped') {
-        mainWindow?.webContents.send('feature:shipped', activityItem)
-
-        // Recompute gamification from all workspaces
-        const allShippedNow = Array.from(appState.workspaces.values()).flatMap((w) => w.shippedFeatures)
-        const velocity = buildVelocityData(allShippedNow)
-        const streak = buildStreakData(allShippedNow)
-        const wkLevels: Record<string, { level: number; xp: number }> = {}
-        for (const [s, w] of appState.workspaces) {
-          wkLevels[s] = { level: w.level.number, xp: w.xp }
-        }
-        appState.gamificationState = { velocity, streak, workspaceLevels: wkLevels }
-        mainWindow?.webContents.send(GAMIFICATION_CHANNELS.UPDATED, appState.gamificationState)
-      }
-    }
-
-    // Cap activity feed at 1000 items
-    if (appState.activityFeed.length > 1000) {
-      appState.activityFeed = appState.activityFeed.slice(-1000)
-    }
-
-    // Persist offsets after live ingestion (skipped during startup batch — flushed once at end)
-    if (!_suppressActivityPush) {
-      flushEventOffsets()
-    }
-  }
+  // Attribution, routing and per-workspace state live in event-ingest.ts (#0039): an event belongs to a
+  // registered workspace or it is unattributed, and an unattributed one never touches workspace state.
+  const ingestEvents = createEventIngestor({
+    appState,
+    parser: eventParserService,
+    notifications: notificationService,
+    stateCache: stateCacheService,
+    getEventIndex: () => eventIndex,
+    isRegisteredId: (id) => registeredIds.has(id),
+    eventsDir,
+    sandboxStateRoot,
+    sandboxesRoot,
+    eventsSplitAt,
+    eventOffsets,
+    flushEventOffsets,
+    isActivityPushSuppressed: () => _suppressActivityPush,
+    send: (channel, payload) => mainWindow?.webContents.send(channel, payload),
+    recomputeStatus: (ws) => {
+      ws.status = computeWorkspaceStatus(ws, stateCacheService.getCache())
+    },
+    recomputeGamification: () => {
+      const state = recomputeGamification(runtimeView)
+      stateCacheService.updateField('velocity', state.velocity)
+      stateCacheService.updateField('streak', state.streak)
+      stateCacheService.updateField('workspaceLevels', state.workspaceLevels)
+      return state
+    },
+  })
 
   const eventRotator = new EventRotatorService(
     {
@@ -907,8 +707,7 @@ async function initialize(): Promise<void> {
 
   // Suppress OS notifications during initial ingestion when showMissedOnStartup
   // is disabled. Prevents historical event replay spam.
-  const notifConfig = (configManager.loadConfig() ?? configManager.getDefaultConfig()).notifications
-  if (!notifConfig.showMissedOnStartup) {
+  if (!settingsStore.get().notifications.showMissedOnStartup) {
     notificationService.suppressOsNotifications = true
   }
 
@@ -1000,7 +799,7 @@ async function initialize(): Promise<void> {
   }, {
     isAlive: sandboxIsAlive,
     sandboxResolver: createChannelSandboxResolver({
-      getWorkspacePath: (slug) => appState.workspaces.get(slug)?.path,
+      getWorkspacePath: (slug) => availableWorkspace(slug)?.path,
       getSandboxConfig: currentSandboxConfig,
       getManager: getSandboxManager,
     }),
@@ -1084,13 +883,15 @@ async function initialize(): Promise<void> {
     image: sandboxImage,
     worktree: { resolveBase, status, unmerged, remove, ensure, identity, verify, autoDetach, handOff },
     git: gitService,
-    config: createSandboxConfigDeps(),
+    config: createSandboxConfigDeps(registry),
     appState: {
+      // Fail closed (Sec H1): an unavailable workspace is unknown to the sandbox manager, so a start refuses.
       getWorkspace: (slug) => {
-        const ws = appState.workspaces.get(slug)
+        const ws = availableWorkspace(slug)
         return ws ? { path: ws.path, repoRootStatus: ws.repoRootStatus } : undefined
       },
       getWorkspaceRoots: () => Array.from(appState.workspaces.values(), (ws) => ws.path),
+      whenWorkspacesSettled: () => runtime.settled(),
     },
     discovery: {
       addSandboxSource: (slug) => channelDiscovery.addSandboxSource(slug),
@@ -1113,8 +914,13 @@ async function initialize(): Promise<void> {
   // ── Phase 11: Swap stubs for real handlers ────────────────────────────────
   // One way to remember a start, handed to both the host and the sandbox handlers.
   const rememberSessionStart = (start: SessionStart): void =>
-    recordSessionStart(configManager, () => new Set(appState.workspaces.keys()), start)
-  const realHandlers = buildRealHandlers(appState, () => mainWindow, { recordSessionStart: rememberSessionStart })
+    recordSessionStart(sessionDefaultsStore, () => registeredIds, start)
+  const realHandlers = buildRealHandlers(appState, () => mainWindow, {
+    recordSessionStart: rememberSessionStart,
+    stores: { settings: settingsStore, registry: registryStore, sandbox: sandboxStore, sessionDefaults: sessionDefaultsStore },
+    isAppOrigin,
+    storeFlags: () => getStartupFlags(),
+  })
   swapHandlers(realHandlers)
 
   const codeHandlers = buildCodeHandlers(appState, {
@@ -1144,10 +950,11 @@ async function initialize(): Promise<void> {
   // ── Phase 12: Signal renderer that app is ready ───────────────────────────
   mainWindow?.webContents.send(MAIN_CHANNELS.READY, { phase: 'ready' })
 
-  // Probe Docker in the background; the first transition into `ok` triggers the reconcile.
+  // Probe Docker in the background; the first transition into `ok` triggers the reconcile, which only sees
+  // workspaces that are already available, so the probe waits for the runtime's probes to settle (not READY).
   // A profile never probes (D6), so `reconcile()` never runs.
   if (!sandboxOffInProfile) {
-    sandboxManager.getEnvironment({ refresh: true }).catch((err: unknown) => {
+    void probeSandboxWhenSettled(runtime, sandboxManager, (err: unknown) => {
       log.warn('[sandbox-manager] Initial Docker probe failed:', err)
     })
   }

@@ -5,15 +5,35 @@
 // Workspace
 // ---------------------------------------------------------------------------
 export const WORKSPACE_CHANNELS = {
-  DISCOVER: 'workspace:discover',
   GET_ALL: 'workspace:getAll',
   GET_DETAIL: 'workspace:getDetail',
-  UPDATE_CONFIG: 'workspace:updateConfig',
   READ_README: 'workspace:readReadme',
+  // Registry (#0039). The old `workspace:discover` and `workspace:updateConfig` are gone.
+  PICK_FOLDER: 'workspace:pickFolder',
+  ADD: 'workspace:add',
+  ADD_MANY: 'workspace:addMany',
+  CREATE: 'workspace:create',
+  REMOVE: 'workspace:remove',
+  SET_HIDDEN: 'workspace:setHidden',
+  RENAME: 'workspace:rename',
+  SET_DOCS_ROOT: 'workspace:setDocsRoot',
+  RECHECK: 'workspace:recheck',
+  DISCOVER_STREAM: 'workspace:discoverStream',
+  DISCOVER_CANCEL: 'workspace:discoverCancel',
   // Push channels
   UPDATED: 'workspace:updated',
   STATUS_CHANGED: 'workspace:statusChanged',
   README_CHANGED: 'workspace:readmeChanged',
+  LIST_CHANGED: 'workspace:listChanged',
+  DISCOVER_PROGRESS: 'workspace:discoverProgress',
+} as const
+
+// ---------------------------------------------------------------------------
+// Realm assignment and discovery exclusions (#0039)
+// ---------------------------------------------------------------------------
+export const REGISTRY_SETTINGS_CHANNELS = {
+  REALM_SET_ASSIGNMENT: 'realm:setAssignment',
+  DISCOVERY_SET_EXCLUSIONS: 'discovery:setExclusions',
 } as const
 
 // ---------------------------------------------------------------------------
@@ -50,6 +70,8 @@ export const ACTIVITY_CHANNELS = {
 export const CONFIG_CHANNELS = {
   GET: 'config:get',
   UPDATE: 'config:update',
+  GET_STORE_HEALTH: 'config:getStoreHealth',
+  REVEAL_STORE_FILE: 'config:revealStoreFile',
 } as const
 
 // ---------------------------------------------------------------------------
@@ -196,6 +218,8 @@ export const PUSH_CHANNELS = [
   WORKSPACE_CHANNELS.UPDATED,
   WORKSPACE_CHANNELS.STATUS_CHANGED,
   WORKSPACE_CHANNELS.README_CHANGED,
+  WORKSPACE_CHANNELS.LIST_CHANGED,
+  WORKSPACE_CHANNELS.DISCOVER_PROGRESS,
   ACTIVITY_CHANNELS.NEW_ITEM,
   NOTIFICATION_CHANNELS.NEW,
   NOTIFICATION_CHANNELS.CLICKED,

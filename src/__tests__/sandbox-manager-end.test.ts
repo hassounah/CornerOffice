@@ -673,6 +673,9 @@ describe('reconcile', () => {
     prepareRepo(h)
     const manager = createSandboxManager(h.makeDeps())
     await manager.getEnvironment({ refresh: true })
+    // The first `ok` transition started a reconcile in the background; concurrent callers share it (#0039), so wait
+    // for it to finish. Each test then scripts its `ps` and runs a fresh, explicit reconcile.
+    await manager.reconcile()
     return { h, manager }
   }
 
@@ -707,6 +710,153 @@ describe('reconcile', () => {
     expect(h.discovery.addCalls).toEqual(['myslug'])
   })
 
+  describe('waits for workspace availability to settle (#0039 3.6)', () => {
+    /** A manager whose workspace is unknown (`checking`) until `settle()` flips it and releases the gate. */
+    async function gatedManager(options: { rejectGate?: boolean } = {}) {
+      sandboxSettings.disabled = false
+      const h = setup()
+      prepareRepo(h)
+      let available = false
+      let open: () => void = () => undefined
+      const gate = new Promise<void>((resolve) => {
+        open = resolve
+      })
+      const base = h.makeDeps()
+      const manager = createSandboxManager(
+        h.makeDeps({
+          appState: {
+            getWorkspace: (slug) => (available ? base.appState.getWorkspace(slug) : undefined),
+            getWorkspaceRoots: base.appState.getWorkspaceRoots,
+            whenWorkspacesSettled: () => (options.rejectGate ? gate.then(() => Promise.reject(new Error('settle failed'))) : gate),
+          },
+        }),
+      )
+      await manager.getEnvironment({ refresh: true })
+      const settle = (): void => {
+        available = true
+        open()
+      }
+      return { h, manager, settle }
+    }
+
+    it('does not look at containers until the runtime settles, and then includes the workspace', async () => {
+      const { h, manager, settle } = await gatedManager()
+      h.docker.script(['ps'], { result: { stdout: 'co-sandbox-myslug\texited\tx\n', stderr: '', exitCode: 0 } })
+
+      const running = manager.reconcile()
+      await new Promise((r) => setTimeout(r, 20))
+      expect(h.docker.calls.some((c) => c.args[0] === 'ps')).toBe(false)
+      expect(h.discovery.addCalls).toEqual([])
+
+      settle()
+      await running
+      expect(h.docker.calls.some((c) => c.args[0] === 'ps')).toBe(true)
+      // The explicit call and the one the first `ok` transition started both ran, after the gate; both saw the workspace.
+      expect(new Set(h.discovery.addCalls)).toEqual(new Set(['myslug']))
+    })
+
+    it('a getEnvironment call made while a workspace is checking does not reconcile early either', async () => {
+      sandboxSettings.disabled = false
+      const h = setup()
+      prepareRepo(h)
+      let available = false
+      let open: () => void = () => undefined
+      const gate = new Promise<void>((resolve) => {
+        open = resolve
+      })
+      const base = h.makeDeps()
+      h.docker.script(['ps'], { result: { stdout: 'co-sandbox-myslug\texited\tx\n', stderr: '', exitCode: 0 } })
+      const manager = createSandboxManager(
+        h.makeDeps({
+          appState: {
+            getWorkspace: (slug) => (available ? base.appState.getWorkspace(slug) : undefined),
+            getWorkspaceRoots: base.appState.getWorkspaceRoots,
+            whenWorkspacesSettled: () => gate,
+          },
+        }),
+      )
+
+      // The first transition into `ok` (here via getEnvironment, as the renderer can trigger it) starts reconcile in the background.
+      await manager.getEnvironment({ refresh: true })
+      await new Promise((r) => setTimeout(r, 20))
+      expect(h.docker.calls.some((c) => c.args[0] === 'ps')).toBe(false)
+
+      available = true
+      open()
+      await vi.waitFor(() => expect(h.discovery.addCalls).toEqual(['myslug']))
+    })
+
+    it('concurrent reconciles are coalesced: as many docker calls and source registrations as ONE reconcile, however many ask', async () => {
+      /** Settle a gated manager with `extra` more concurrent callers joining the one its first `ok` transition started. */
+      async function run(extra: number): Promise<{ ps: number; adds: string[] }> {
+        const { h, manager, settle } = await gatedManager()
+        h.docker.script(['ps'], { result: { stdout: 'co-sandbox-myslug\texited\tx\n', stderr: '', exitCode: 0 } })
+        const calls: Promise<unknown>[] = [manager.reconcile()] // joins the gated one: lets us await it in every run
+        for (let i = 0; i < extra; i++) calls.push(i % 2 === 0 ? manager.reconcile() : manager.getEnvironment({ refresh: true }))
+        settle()
+        await Promise.all(calls)
+        cleanupHarness()
+        return { ps: h.docker.calls.filter((c) => c.args[0] === 'ps').length, adds: h.discovery.addCalls }
+      }
+
+      const single = await run(0)
+      const many = await run(5)
+      expect(single.ps).toBeGreaterThan(0)
+      expect(many.ps).toBe(single.ps)
+      expect(many.adds).toEqual(single.adds)
+    })
+
+    it('a reconcile after the previous one finished runs again (sequential calls are not coalesced)', async () => {
+      const { h, manager } = await dockerOkManager()
+      h.docker.script(['ps'], { result: { stdout: '', stderr: '', exitCode: 0 } })
+      await manager.reconcile()
+      await manager.reconcile()
+      expect(h.docker.calls.filter((c) => c.args[0] === 'ps').length).toBeGreaterThanOrEqual(2)
+    })
+
+    it('a reconcile that rejects frees the in-flight slot, so the next call retries instead of getting the old failure', async () => {
+      const { h, manager } = await dockerOkManager()
+      const realRun = h.docker.run.bind(h.docker)
+      let failPs = true
+      vi.spyOn(h.docker, 'run').mockImplementation(async (args, opts) => {
+        // A non-DockerError escapes psSandboxContainers (a DockerError is handled there), so the whole reconcile rejects.
+        if (failPs && args[0] === 'ps') {
+          failPs = false
+          throw new Error('ps blew up')
+        }
+        return realRun(args, opts)
+      })
+      h.docker.script(['ps'], { result: { stdout: 'co-sandbox-myslug\texited\tx\n', stderr: '', exitCode: 0 } })
+
+      const first = manager.reconcile()
+      const joiner = manager.reconcile()
+      expect(joiner).toBe(first) // concurrent callers share the one in flight, failure included
+      await expect(first).rejects.toThrow('ps blew up')
+
+      const psBefore = h.docker.calls.filter((c) => c.args[0] === 'ps').length
+      await expect(manager.reconcile()).resolves.toBeUndefined() // not the cached rejection: a fresh run
+      expect(h.docker.calls.filter((c) => c.args[0] === 'ps').length).toBeGreaterThan(psBefore)
+      expect(h.discovery.addCalls).toContain('myslug')
+    })
+
+    it('a failing wait does not stop the reconcile', async () => {
+      const { h, manager, settle } = await gatedManager({ rejectGate: true })
+      h.docker.script(['ps'], { result: { stdout: 'co-sandbox-myslug\texited\tx\n', stderr: '', exitCode: 0 } })
+      const running = manager.reconcile()
+      settle()
+      await running
+      expect(h.docker.calls.some((c) => c.args[0] === 'ps')).toBe(true)
+      expect(new Set(h.discovery.addCalls)).toEqual(new Set(['myslug']))
+    })
+
+    it('without the dependency, reconcile runs at once (unchanged)', async () => {
+      const { h, manager } = await dockerOkManager()
+      h.docker.script(['ps'], { result: { stdout: 'co-sandbox-myslug\texited\tx\n', stderr: '', exitCode: 0 } })
+      await manager.reconcile()
+      expect(h.discovery.addCalls).toEqual(['myslug'])
+    })
+  })
+
   it('a failing source registration is logged and does not abort the reconcile', async () => {
     sandboxSettings.disabled = false
     const h = setup()
@@ -722,6 +872,7 @@ describe('reconcile', () => {
       }),
     )
     await manager.getEnvironment({ refresh: true })
+    await manager.reconcile() // the background one from the first `ok` transition; callers share it
     h.docker.script(['ps'], { result: { stdout: 'co-sandbox-myslug\texited\tx\n', stderr: '', exitCode: 0 } })
 
     await manager.reconcile()

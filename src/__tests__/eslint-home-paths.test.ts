@@ -36,6 +36,19 @@ describe('home path guard', () => {
     expect(messages.some((m) => m.includes('coHome()'))).toBe(true)
   })
 
+  it.each([
+    ["'~/.config/corner-office'", "export const a = '~/.config/corner-office'\n"],
+    ['an absolute path', "export const a = '/home/u/.config/corner-office/workspaces.json'\n"],
+    ['a template', 'export const a = `${home}/.config/corner-office`\n'],
+  ])('errors on %s and names configDir()', async (_name, code) => {
+    const messages = await syntaxErrors(code, MAIN)
+    expect(messages.some((m) => m.includes('configDir()'))).toBe(true)
+  })
+
+  it('allows the .config/corner-office literal in app-home.ts', async () => {
+    expect(await syntaxErrors("export const a = '~/.config/corner-office'\n", 'src/main/services/app-home.ts')).toEqual([])
+  })
+
   it('errors in preload too', async () => {
     expect((await syntaxErrors("export const a = '.claude'\n", 'src/preload/foo.ts')).length).toBeGreaterThan(0)
   })

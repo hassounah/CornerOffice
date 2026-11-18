@@ -1,7 +1,8 @@
 import log from 'electron-log/main'
 import fs from 'fs'
 import path from 'path'
-import { coHome } from './app-home'
+import { z } from 'zod'
+import { configDir } from './app-home'
 import type { BrowserWindow } from 'electron'
 
 // ---------------------------------------------------------------------------
@@ -33,9 +34,18 @@ const DEFAULT_STATE: WindowStateData = {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Window geometry is a setting, not app data: it lives in the config dir next to settings.json (#0039). */
 function statePath(): string {
-  return path.join(coHome(), 'window-state.json')
+  return path.join(configDir(), 'window-state.json')
 }
+
+const WindowStateSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  width: z.number().finite().positive(),
+  height: z.number().finite().positive(),
+  maximized: z.boolean(),
+})
 
 // ---------------------------------------------------------------------------
 // WindowStateService
@@ -63,9 +73,10 @@ export class WindowStateService {
       return { ...DEFAULT_STATE }
     }
 
-    if (!this._isValid(raw)) return { ...DEFAULT_STATE }
+    const parsed = WindowStateSchema.safeParse(raw)
+    if (!parsed.success) return { ...DEFAULT_STATE }
 
-    const state = raw as WindowStateData
+    const state: WindowStateData = parsed.data
     if (!this._isOnScreen(state)) {
       // Position is off all displays — reset to default, keep size
       return { ...DEFAULT_STATE, width: state.width, height: state.height }
@@ -127,20 +138,6 @@ export class WindowStateService {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
-
-  private _isValid(raw: unknown): raw is WindowStateData {
-    if (!raw || typeof raw !== 'object') return false
-    const r = raw as Record<string, unknown>
-    return (
-      typeof r.x === 'number' &&
-      typeof r.y === 'number' &&
-      typeof r.width === 'number' &&
-      typeof r.height === 'number' &&
-      typeof r.maximized === 'boolean' &&
-      r.width > 0 &&
-      r.height > 0
-    )
-  }
 
   private _isOnScreen(state: WindowStateData): boolean {
     if (!this._screen) return true // can't check without screen — assume valid

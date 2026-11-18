@@ -1,16 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import fs from 'fs'
 import net from 'net'
-
-const mockConfig = vi.hoisted(() => ({
-  loadConfig: vi.fn(),
-  getDefaultConfig: vi.fn(),
-  getSandboxConfig: vi.fn(),
-  updateConfig: vi.fn(),
-}))
-vi.mock('../main/services/config-manager', () => ({ configManager: mockConfig }))
+import { sandboxStore } from '../main/services/stores'
+import { makeRuntimeSandbox, type RuntimeSandbox } from './helpers/runtime-fixture'
 
 import {
   currentSandboxConfig,
+  ensureEventsSplitAt,
   updateSandboxConfig,
   createBuildRequesterTracker,
   createSandboxConfigDeps,
@@ -19,7 +15,9 @@ import {
   createSandboxIsAlive,
   isLoopbackPortFree,
   onImageBuildDone,
+  probeSandboxWhenSettled,
 } from '../main/services/sandbox-bootstrap'
+import { createWorkspaceRuntime } from '../main/services/workspace-runtime'
 import { sandboxPaths } from '../main/services/sandbox-paths'
 import type { SandboxManagerService } from '../main/services/sandbox-manager'
 import type { ChannelSession } from '../main/types/channels'
@@ -116,6 +114,68 @@ describe('createSandboxIsAlive', () => {
   })
 })
 
+describe('probeSandboxWhenSettled (#0039 3.6: reconcile must see available workspaces)', () => {
+  it('starts the Docker probe only after the runtime has settled, so the first reconcile sees an ok workspace', async () => {
+    // A real runtime whose availability probe is delayed (a slow mount).
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const appState = {
+      workspaces: new Map(),
+      gamificationState: { velocity: [], streak: { currentDays: 0, lastShipDate: null }, workspaceLevels: {} },
+    } as unknown as Parameters<typeof createWorkspaceRuntime>[0]['appState']
+    const runtime = createWorkspaceRuntime({
+      appState,
+      parser: { parseMemoryMd: () => ({ docsRoot: null, nextFeatureId: null, projectContext: '' }), parseHistoryMd: () => [], scanPipelinesDir: () => ({ active: [], parked: [] }), findReadme: () => null } as never,
+      docsParser: { scanDocsRoot: () => ({ features: [], ideationItems: [] }) } as never,
+      push: () => undefined,
+      fs: {
+        realpath: async (p) => {
+          await gate
+          return p
+        },
+        stat: async () => ({ isDirectory: () => true }),
+      },
+    })
+    const entry = { id: 'a', path: '/tmp/a', selectedPath: '/tmp/a', displayName: null, docsRoot: null, hidden: false, source: 'manual' as const, addedAt: '2026-01-01T00:00:00.000Z' }
+    await runtime.init([entry])
+    expect(runtime.isAvailable('a')).toBe(false) // still checking
+
+    // What reconcile asks, through the fail-closed seam, at the moment the probe runs.
+    const seen: boolean[] = []
+    const manager = { getEnvironment: vi.fn(async () => { seen.push(runtime.isAvailable('a')); return {} as never }) }
+    const onError = vi.fn()
+    const done = probeSandboxWhenSettled(runtime, manager, onError)
+
+    await new Promise((r) => setTimeout(r, 20))
+    expect(manager.getEnvironment).not.toHaveBeenCalled() // READY is not blocked, and the probe waits
+
+    release?.()
+    await done
+    expect(manager.getEnvironment).toHaveBeenCalledWith({ refresh: true })
+    expect(seen).toEqual([true])
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('reports a probe failure through onError and never rejects', async () => {
+    const onError = vi.fn()
+    const boom = new Error('docker down')
+    await expect(
+      probeSandboxWhenSettled({ settled: async () => undefined }, { getEnvironment: () => Promise.reject(boom) }, onError),
+    ).resolves.toBeUndefined()
+    expect(onError).toHaveBeenCalledWith(boom)
+  })
+
+  it('reports a settle failure through onError too', async () => {
+    const onError = vi.fn()
+    const manager = { getEnvironment: vi.fn() }
+    await probeSandboxWhenSettled({ settled: () => Promise.reject(new Error('x')) }, manager, onError)
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(manager.getEnvironment).not.toHaveBeenCalled()
+  })
+})
+
 describe('isLoopbackPortFree', () => {
   it('is true for a free port and false for one in use', async () => {
     const server = net.createServer()
@@ -169,77 +229,131 @@ describe('onImageBuildDone', () => {
   })
 })
 
-describe('config-backed manager deps', () => {
-  const base: SandboxConfig = { toolchains: { node: true, go: false, buildBase: true }, globalAllowlist: ['x.dev'], workspaces: { a: { channelPort: 20001, allowlist: ['keep.me'] } } }
+// The sandbox config lives in `sandboxStore` (sandbox.json in the config dir). These tests run the real store
+// against a temp config dir, so the serialization and validation under test are the real ones.
+describe('sandbox config through sandboxStore', () => {
+  let sandbox: RuntimeSandbox
 
   beforeEach(() => {
-    mockConfig.loadConfig.mockReset().mockReturnValue({ workspaces: [{ slug: 'a', docsRoot: '/docs/a' }, { slug: 'b', docsRoot: null }] })
-    mockConfig.getDefaultConfig.mockReset().mockReturnValue({ workspaces: [] })
-    mockConfig.getSandboxConfig.mockReset().mockReturnValue(base)
-    mockConfig.updateConfig.mockReset().mockResolvedValue({})
+    sandbox = makeRuntimeSandbox()
+    fs.mkdirSync(sandbox.configDir, { mode: 0o700 })
+    sandboxStore.resetCacheForTests()
   })
 
-  it('reads the effective sandbox config fresh, falling back to defaults when there is no config file', () => {
-    expect(currentSandboxConfig()).toBe(base)
-    mockConfig.loadConfig.mockReturnValue(null)
-    currentSandboxConfig()
-    expect(mockConfig.getSandboxConfig).toHaveBeenLastCalledWith({ workspaces: [] })
+  afterEach(() => {
+    sandboxStore.resetCacheForTests()
+    sandbox.cleanup()
   })
 
-  it('resolves a workspace docs-root override, or null', () => {
-    const deps = createSandboxConfigDeps()
+  const registryWith = (entries: Array<{ id: string; docsRoot: string | null }>): Parameters<typeof createSandboxConfigDeps>[0] => ({
+    list: () => entries as unknown as ReturnType<Parameters<typeof createSandboxConfigDeps>[0]['list']>,
+  })
+
+  it('reads the defaults when there is no file, and the stored config afterwards', async () => {
+    expect(currentSandboxConfig()).toMatchObject({ toolchains: { node: true, go: true, buildBase: true }, globalAllowlist: [], workspaces: {} })
+    await updateSandboxConfig((c) => ({ ...c, globalAllowlist: ['x.dev'] }))
+    expect(currentSandboxConfig().globalAllowlist).toEqual(['x.dev'])
+  })
+
+  it('resolves a workspace docs-root override from the registry, or null', () => {
+    const deps = createSandboxConfigDeps(registryWith([{ id: 'a', docsRoot: '/docs/a' }, { id: 'b', docsRoot: null }]))
     expect(deps.getWorkspaceDocsRootOverride('a')).toBe('/docs/a')
     expect(deps.getWorkspaceDocsRootOverride('b')).toBeNull()
     expect(deps.getWorkspaceDocsRootOverride('zzz')).toBeNull()
+    expect(deps.getWorkspaceDocsRootOverride('constructor')).toBeNull()
+  })
+
+  it('keeps the rest of an existing sandbox section when one part changes (ported from config-manager)', async () => {
+    await updateSandboxConfig((c) => ({
+      ...c,
+      toolchains: { node: false, go: true, buildBase: false },
+      extraPackages: ['curl'],
+      globalAllowlist: ['keep.dev'],
+      workspaces: { a: { channelPort: 20001, allowlist: ['a.dev'] } },
+    }))
+    const split = await ensureEventsSplitAt(new Date('2026-02-03T04:05:06.000Z'))
+    await updateSandboxConfig((c) => ({ ...c, globalAllowlist: [...c.globalAllowlist, 'more.dev'] }))
+
+    expect(currentSandboxConfig()).toMatchObject({
+      toolchains: { node: false, go: true, buildBase: false },
+      extraPackages: ['curl'],
+      globalAllowlist: ['keep.dev', 'more.dev'],
+      workspaces: { a: { channelPort: 20001, allowlist: ['a.dev'] } },
+      eventsSplitAt: split,
+    })
   })
 
   it('persists a channel port, keeping the workspace allowlist and the other workspaces', async () => {
-    await createSandboxConfigDeps().setWorkspaceChannelPort('a', 20002)
-    await createSandboxConfigDeps().setWorkspaceChannelPort('new', 20003)
+    const deps = createSandboxConfigDeps(registryWith([]))
+    await updateSandboxConfig((c) => ({ ...c, workspaces: { a: { channelPort: 20001, allowlist: ['keep.me'] } } }))
+    await deps.setWorkspaceChannelPort('a', 20002)
+    await deps.setWorkspaceChannelPort('new', 20003)
 
-    expect(mockConfig.updateConfig).toHaveBeenNthCalledWith(1, {
-      sandbox: { ...base, workspaces: { a: { channelPort: 20002, allowlist: ['keep.me'] } } },
-    })
-    expect(mockConfig.updateConfig).toHaveBeenNthCalledWith(2, {
-      sandbox: { ...base, workspaces: { a: { channelPort: 20001, allowlist: ['keep.me'] }, new: { channelPort: 20003, allowlist: [] } } },
-    })
-  })
-})
-
-describe('updateSandboxConfig (BE-M5)', () => {
-  const empty: SandboxConfig = { toolchains: { node: true, go: false, buildBase: true }, globalAllowlist: [], workspaces: {} }
-  let stored: SandboxConfig
-
-  beforeEach(() => {
-    stored = empty
-    mockConfig.loadConfig.mockReset().mockReturnValue({ workspaces: [] })
-    mockConfig.getDefaultConfig.mockReset().mockReturnValue({ workspaces: [] })
-    mockConfig.getSandboxConfig.mockReset().mockImplementation(() => stored)
-    mockConfig.updateConfig.mockReset().mockImplementation(async (partial: { sandbox: SandboxConfig }) => {
-      await Promise.resolve()
-      stored = partial.sandbox
-      return {}
+    expect(currentSandboxConfig().workspaces).toEqual({
+      a: { channelPort: 20002, allowlist: ['keep.me'] },
+      new: { channelPort: 20003, allowlist: [] },
     })
   })
 
-  it('a concurrent port write and settings write both survive', async () => {
-    const port = createSandboxConfigDeps().setWorkspaceChannelPort('a', 20002)
+  it('a `constructor` workspace gets its own entry and never inherits from Object.prototype', async () => {
+    await createSandboxConfigDeps(registryWith([])).setWorkspaceChannelPort('constructor', 20009)
+    expect(Object.hasOwn(currentSandboxConfig().workspaces, 'constructor')).toBe(true)
+    expect(currentSandboxConfig().workspaces.constructor).toEqual({ channelPort: 20009, allowlist: [] })
+  })
+
+  it('a concurrent port write and settings write both survive (BE-M5)', async () => {
+    const port = createSandboxConfigDeps(registryWith([])).setWorkspaceChannelPort('a', 20002)
     const settings = updateSandboxConfig((current) => ({ ...current, globalAllowlist: ['x.dev'] }))
     await Promise.all([port, settings])
 
-    expect(stored.workspaces.a).toEqual({ channelPort: 20002, allowlist: [] })
-    expect(stored.globalAllowlist).toEqual(['x.dev'])
+    expect(currentSandboxConfig().workspaces.a).toEqual({ channelPort: 20002, allowlist: [] })
+    expect(currentSandboxConfig().globalAllowlist).toEqual(['x.dev'])
   })
 
-  it('resolves to the config it wrote', async () => {
+  it('resolves to the config it wrote, and writes it to sandbox.json', async () => {
     const written = await updateSandboxConfig((current) => ({ ...current, globalAllowlist: ['y.dev'] }))
-    expect(written).toBe(stored)
+    expect(written.globalAllowlist).toEqual(['y.dev'])
+    const onDisk = JSON.parse(fs.readFileSync(`${sandbox.configDir}/sandbox.json`, 'utf-8')) as { version: number; globalAllowlist: string[] }
+    expect(onDisk).toMatchObject({ version: 1, globalAllowlist: ['y.dev'] })
   })
 
-  it('a failed write does not wedge the queue', async () => {
-    mockConfig.updateConfig.mockRejectedValueOnce(new Error('disk full'))
-    await expect(updateSandboxConfig((current) => current)).rejects.toThrow('disk full')
+  it('a failed mutator does not wedge the queue', async () => {
+    await expect(
+      updateSandboxConfig(() => {
+        throw new Error('boom')
+      }),
+    ).rejects.toThrow()
     await expect(updateSandboxConfig((current) => ({ ...current, globalAllowlist: ['z.dev'] }))).resolves.toMatchObject({ globalAllowlist: ['z.dev'] })
+  })
+
+  it('resolver: an inherited name has no stored port', () => {
+    const resolver = createChannelSandboxResolver({
+      getWorkspacePath: () => undefined,
+      getSandboxConfig: () => ({ toolchains: { node: true, go: true, buildBase: true }, globalAllowlist: [], workspaces: {} }),
+      getManager: () => null,
+    })
+    expect(resolver.storedPort('constructor')).toBeNull()
+    expect(resolver.storedPort('__proto__')).toBeNull()
+  })
+
+  describe('ensureEventsSplitAt', () => {
+    it('records the split once and is idempotent', async () => {
+      const first = await ensureEventsSplitAt(new Date('2026-06-01T00:00:00.000Z'))
+      const second = await ensureEventsSplitAt(new Date('2026-09-09T00:00:00.000Z'))
+      expect(first).toBe('2026-06-01T00:00:00.000Z')
+      expect(second).toBe(first)
+      expect(currentSandboxConfig().eventsSplitAt).toBe(first)
+    })
+
+    it('returns null when the write fails', async () => {
+      fs.chmodSync(sandbox.configDir, 0o500)
+      try {
+        if (process.getuid?.() === 0) return // root ignores the mode
+        await expect(ensureEventsSplitAt(new Date())).resolves.toBeNull()
+      } finally {
+        fs.chmodSync(sandbox.configDir, 0o700)
+      }
+    })
   })
 })
 

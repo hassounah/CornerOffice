@@ -6,7 +6,7 @@ import type { AppState } from '../main/ipc/handlers'
 import type { Workspace, ActivityFeedItem, NotificationItem, GamificationState, HomunculusState } from '../main/types'
 import type { ChannelSession, PluginStatus } from '../main/types/channels'
 import { clipboard } from 'electron'
-import { buildRealHandlers } from '../main/ipc/handlers'
+import { buildRealHandlers as buildHandlersWithDeps } from '../main/ipc/handlers'
 import { TERMINAL_IPC } from '../main/ipc/channels'
 
 // ---------------------------------------------------------------------------
@@ -52,21 +52,6 @@ vi.mock('fs', () => ({
   },
 }))
 
-vi.mock('../main/services/config-manager', () => ({
-  configManager: {
-    loadConfig: vi.fn(),
-    getDefaultConfig: vi.fn(() => ({
-      companyName: 'Test',
-      workspaces: [],
-      discoveryExclusions: [],
-      appearance: { theme: 'dark' },
-      notifications: { enabled: true },
-    })),
-    updateConfig: vi.fn().mockResolvedValue(undefined),
-    mutateConfig: vi.fn().mockResolvedValue(undefined),
-  },
-}))
-
 vi.mock('../main/services/state-cache', () => ({
   stateCacheService: {
     getCache: vi.fn(() => ({
@@ -76,8 +61,9 @@ vi.mock('../main/services/state-cache', () => ({
   },
 }))
 
-import { configManager } from '../main/services/config-manager'
 import { stateCacheService } from '../main/services/state-cache'
+import { makeHandlerDeps } from './helpers/handler-deps'
+import type { HandlerDepsKit } from './helpers/handler-deps'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -103,8 +89,6 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     shippedFeatures: [],
     lastActivityTimestamp: null,
     weekShipCount: 0,
-    pinned: false,
-    archived: false,
     level: { name: 'Apprentice', tier: 1 },
     xp: 0,
     ...overrides,
@@ -138,8 +122,14 @@ function makeNotification(overrides: Partial<NotificationItem> = {}): Notificati
 }
 
 let appState: AppState
-let handlers: ReturnType<typeof buildRealHandlers>
+let kit: HandlerDepsKit
+let handlers: ReturnType<typeof buildHandlersWithDeps>
 let mockMainWindow: { webContents: { send: ReturnType<typeof vi.fn> } }
+
+/** `buildRealHandlers` with this test's fake stores (the `kit`). */
+function buildRealHandlers(state: AppState, getWindow: () => Electron.CrossProcessExports.BrowserWindow | null): ReturnType<typeof buildHandlersWithDeps> {
+  return buildHandlersWithDeps(state, getWindow, kit.deps)
+}
 
 function getHandler(channel: string) {
   const handler = handlers[channel]
@@ -158,15 +148,15 @@ beforeEach(() => {
     notifications: [],
     gamificationState: { velocity: 0 } as unknown as GamificationState,
     homunculusState: { instincts: [] } as unknown as HomunculusState,
-    discoveryService: {
-      discover: vi.fn().mockResolvedValue({ paths: ['/home/user/test-ws'] }),
-    } as unknown as AppState['discoveryService'],
+    registry: {} as unknown as AppState['registry'],
+    runtime: {} as unknown as AppState['runtime'],
     channelDiscovery: null,
     channelConnection: null,
     terminalManager: null,
     sandboxManager: null,
   }
 
+  kit = makeHandlerDeps()
   handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
 })
 
@@ -174,15 +164,15 @@ beforeEach(() => {
 // Workspace handlers
 // ---------------------------------------------------------------------------
 
-describe('workspace:discover', () => {
-  it('calls discoveryService.discover with config exclusions', async () => {
-    vi.mocked(configManager.loadConfig).mockReturnValue({
-      discoveryExclusions: ['/excluded'],
-    } as unknown as ReturnType<typeof configManager.loadConfig>)
+describe('retired channels (X1)', () => {
+  it.each(['workspace:discover', 'workspace:updateConfig'])('%s has no real handler any more', (channel) => {
+    expect(handlers[channel]).toBeUndefined()
+  })
 
-    const handler = getHandler('workspace:discover')
-    const result = await handler(fakeEvent, undefined) as IpcResponse<unknown>
-    expect(result.data).toEqual({ paths: ['/home/user/test-ws'] })
+  it('the replacement channels are present', () => {
+    for (const channel of ['workspace:discoverStream', 'workspace:discoverCancel', 'workspace:add', 'workspace:create', 'realm:setAssignment', 'discovery:setExclusions']) {
+      expect(handlers[channel], channel).toBeDefined()
+    }
   })
 })
 
@@ -209,46 +199,18 @@ describe('workspace:getDetail', () => {
   })
 })
 
-describe('workspace:updateConfig', () => {
-  it('updates existing workspace config', async () => {
-    vi.mocked(configManager.loadConfig).mockReturnValue({
-      workspaces: [{ slug: 'test-ws', path: '/home/user/test-ws', displayName: 'Old Name' }],
-    } as unknown as ReturnType<typeof configManager.loadConfig>)
-
-    const handler = getHandler('workspace:updateConfig')
-    const result = await handler(fakeEvent, {
-      slug: 'test-ws',
-      config: { slug: 'test-ws', displayName: 'New Name', pinned: true, archived: false, docsRoot: null },
-    }) as IpcResponse<unknown>
-    expect(result.error).toBeNull()
-    expect(configManager.updateConfig).toHaveBeenCalled()
-    expect(mockMainWindow.webContents.send).toHaveBeenCalledWith('workspace:updated', { slug: 'test-ws' })
+describe('workspace:getDetail — ids', () => {
+  // (`__proto__` is not a valid id at all: it fails the id pattern and is a VALIDATION_ERROR.)
+  it.each(['constructor', 'toString', 'hasOwnProperty'])('treats %s as an ordinary unknown id', async (slug) => {
+    const result = await getHandler('workspace:getDetail')(fakeEvent, { slug }) as IpcResponse<Workspace>
+    expect(result.data).toBeNull()
+    expect(result.error?.code).toBe('NOT_FOUND')
   })
 
-  it('adds new workspace config entry if not in config', async () => {
-    vi.mocked(configManager.loadConfig).mockReturnValue({
-      workspaces: [],
-    } as unknown as ReturnType<typeof configManager.loadConfig>)
-
-    const handler = getHandler('workspace:updateConfig')
-    const result = await handler(fakeEvent, {
-      slug: 'test-ws',
-      config: { slug: 'test-ws', displayName: 'Test', pinned: false, archived: false, docsRoot: null },
-    }) as IpcResponse<unknown>
-    expect(result.error).toBeNull()
-  })
-
-  it('returns error for unknown workspace slug', async () => {
-    vi.mocked(configManager.loadConfig).mockReturnValue({
-      workspaces: [],
-    } as unknown as ReturnType<typeof configManager.loadConfig>)
-
-    const handler = getHandler('workspace:updateConfig')
-    const result = await handler(fakeEvent, {
-      slug: 'nonexistent',
-      config: { slug: 'nonexistent', displayName: 'Test', pinned: false, archived: false, docsRoot: null },
-    }) as IpcResponse<unknown>
-    expect(result.error).not.toBeNull()
+  it('rejects an extra key and a non-id slug', async () => {
+    const handler = getHandler('workspace:getDetail')
+    expect(((await handler(fakeEvent, { slug: 'test-ws', extra: 1 })) as IpcResponse<unknown>).error?.code).toBe('VALIDATION_ERROR')
+    expect(((await handler(fakeEvent, { slug: '../etc' })) as IpcResponse<unknown>).error?.code).toBe('VALIDATION_ERROR')
   })
 })
 
@@ -334,82 +296,89 @@ describe('activity:getFeed', () => {
 // ---------------------------------------------------------------------------
 
 describe('config:get', () => {
-  it('returns loaded config', async () => {
-    vi.mocked(configManager.loadConfig).mockReturnValue({
-      companyName: 'Acme',
-    } as unknown as ReturnType<typeof configManager.loadConfig>)
-
-    const handler = getHandler('config:get')
-    const result = await handler(fakeEvent, undefined) as IpcResponse<unknown>
-    expect(result.data).toEqual({ companyName: 'Acme' })
-  })
-
-  it('returns default config when none loaded', async () => {
-    vi.mocked(configManager.loadConfig).mockReturnValue(null)
-
-    const handler = getHandler('config:get')
-    const result = await handler(fakeEvent, undefined) as IpcResponse<unknown>
-    expect(result.data).toEqual(configManager.getDefaultConfig())
+  it('returns the settings store value', async () => {
+    await kit.settings.mutate((s) => ({ ...s, companyName: 'Acme' }))
+    const result = await getHandler('config:get')(fakeEvent, undefined) as IpcResponse<{ companyName: string }>
+    expect(result.data?.companyName).toBe('Acme')
+    expect(result.data).toBe(kit.settings.get())
   })
 })
 
 describe('config:update', () => {
-  it('updates companyName', async () => {
-    vi.mocked(configManager.loadConfig).mockReturnValue(null)
-
-    const handler = getHandler('config:update')
-    const result = await handler(fakeEvent, { companyName: 'NewCo' }) as IpcResponse<unknown>
+  it('updates companyName through the settings store', async () => {
+    const result = await getHandler('config:update')(fakeEvent, { companyName: 'NewCo' }) as IpcResponse<{ companyName: string }>
     expect(result.error).toBeNull()
-    expect(configManager.updateConfig).toHaveBeenCalledWith(
-      expect.objectContaining({ companyName: 'NewCo' }),
-    )
+    expect(kit.settings.get().companyName).toBe('NewCo')
+    expect(result.data?.companyName).toBe('NewCo')
+  })
+
+  it('saves the dismissed upgrade notice, and rejects a non-boolean', async () => {
+    const ok = await getHandler('config:update')(fakeEvent, { legacyNoticeDismissed: true }) as IpcResponse<{ legacyNoticeDismissed: boolean }>
+    expect(ok.error).toBeNull()
+    expect(kit.settings.get().legacyNoticeDismissed).toBe(true)
+    const bad = await getHandler('config:update')(fakeEvent, { legacyNoticeDismissed: 'yes' }) as IpcResponse<unknown>
+    expect(bad.error).not.toBeNull()
   })
 
   it('updates appearance settings', async () => {
-    vi.mocked(configManager.loadConfig).mockReturnValue(null)
-
-    const handler = getHandler('config:update')
-    await handler(fakeEvent, { appearance: { theme: 'light', compactView: false, shipMomentStyle: 'full' } })
-    expect(configManager.updateConfig).toHaveBeenCalledWith(
-      expect.objectContaining({ appearance: { theme: 'light', compactView: false, shipMomentStyle: 'full' } }),
-    )
+    await getHandler('config:update')(fakeEvent, { appearance: { theme: 'light', compactView: false, shipMomentStyle: 'full' } })
+    expect(kit.settings.get().appearance).toEqual({ theme: 'light', compactView: false, shipMomentStyle: 'full' })
   })
 
-  it('passes codeExplorer.treeWidth through to updateConfig', async () => {
-    vi.mocked(configManager.loadConfig).mockReturnValue(null)
-
-    const handler = getHandler('config:update')
-    const result = await handler(fakeEvent, { codeExplorer: { treeWidth: 320 } }) as IpcResponse<unknown>
+  it('merges codeExplorer.treeWidth', async () => {
+    const result = await getHandler('config:update')(fakeEvent, { codeExplorer: { treeWidth: 320 } }) as IpcResponse<unknown>
     expect(result.error).toBeNull()
-    expect(configManager.updateConfig).toHaveBeenCalledWith(
-      expect.objectContaining({ codeExplorer: { treeWidth: 320 } }),
-    )
+    expect(kit.settings.get().codeExplorer).toEqual({ treeWidth: 320 })
   })
 
-  it('rejects an invalid codeExplorer.treeWidth without calling updateConfig', async () => {
-    vi.mocked(configManager.loadConfig).mockReturnValue(null)
-    vi.mocked(configManager.updateConfig).mockClear()
-
-    const handler = getHandler('config:update')
-    const result = await handler(fakeEvent, { codeExplorer: { treeWidth: -5 } }) as IpcResponse<unknown>
-    expect(result.error).not.toBeNull()
-    expect(configManager.updateConfig).not.toHaveBeenCalled()
+  it('rejects an invalid codeExplorer.treeWidth without writing', async () => {
+    const result = await getHandler('config:update')(fakeEvent, { codeExplorer: { treeWidth: -5 } }) as IpcResponse<unknown>
+    expect(result.error?.code).toBe('VALIDATION_ERROR')
+    expect(kit.settings.writes).toHaveLength(0)
   })
 
-  it('merges workspace updates into existing config', async () => {
-    vi.mocked(configManager.loadConfig).mockReturnValue({
-      workspaces: [{ slug: 'ws-1', path: '/ws1', displayName: 'WS1', pinned: false, archived: false }],
-    } as unknown as ReturnType<typeof configManager.loadConfig>)
+  it('a realm update with a mapping leaves the stored mapping unchanged', async () => {
+    const mapping = [{ location: 'castle' as const, workspaceSlug: 'api' }]
+    await kit.settings.mutate((s) => ({ ...s, realm: { ...s.realm, mapping } }))
+    const result = await getHandler('config:update')(fakeEvent, {
+      realm: { enabled: true, shipCelebration: 'off', mapping: [{ location: 'farm', workspaceSlug: 'evil' }] },
+    }) as IpcResponse<{ realm: { mapping: unknown; shipCelebration: string } }>
+    expect(result.error).toBeNull()
+    expect(kit.settings.get().realm.mapping).toEqual(mapping)
+    expect(kit.settings.get().realm.shipCelebration).toBe('off')
+  })
 
-    const handler = getHandler('config:update')
-    await handler(fakeEvent, {
-      workspaces: [{ slug: 'ws-1', displayName: 'Updated WS1', pinned: true }],
-    })
-    expect(configManager.updateConfig).toHaveBeenCalledWith(
-      expect.objectContaining({
-        workspaces: [expect.objectContaining({ displayName: 'Updated WS1', pinned: true })],
-      }),
-    )
+  it('a realm update keeps the optional realm settings it does not mention', async () => {
+    await getHandler('config:update')(fakeEvent, { realm: { enabled: true, shipCelebration: 'townSquare', villagerDensity: 'high' } })
+    await getHandler('config:update')(fakeEvent, { realm: { enabled: false, shipCelebration: 'townSquare' } })
+    expect(kit.settings.get().realm).toMatchObject({ enabled: false, villagerDensity: 'high' })
+  })
+
+  it('deep-merges terminal so a fontSize update keeps the window bounds, and one window keeps the other', async () => {
+    const bounds = { x: 1, y: 2, width: 30, height: 40 }
+    await getHandler('config:update')(fakeEvent, { terminal: { windowBounds: { workspace: bounds } } })
+    await getHandler('config:update')(fakeEvent, { terminal: { windowBounds: { shell: { ...bounds, x: 5 } } } })
+    await getHandler('config:update')(fakeEvent, { terminal: { fontSize: 16 } })
+    expect(kit.settings.get().terminal).toEqual({ fontSize: 16, windowBounds: { workspace: bounds, shell: { ...bounds, x: 5 } } })
+  })
+
+  it.each([
+    ['workspaces', { workspaces: [{ slug: 'ws-1', pinned: true }] }],
+    ['discoveryExclusions', { discoveryExclusions: ['node_modules'] }],
+    ['terminalEmulator', { terminalEmulator: '/usr/bin/xterm' }],
+    ['an unknown key', { hookScriptPath: '/tmp/x' }],
+  ])('rejects %s (X1: strict schema)', async (_name, body) => {
+    const result = await getHandler('config:update')(fakeEvent, body) as IpcResponse<unknown>
+    expect(result.error?.code).toBe('VALIDATION_ERROR')
+    expect(kit.settings.writes).toHaveLength(0)
+  })
+
+  it('a failing store write surfaces CONFIG_WRITE_FAILED with a path-free message (Sec M1)', async () => {
+    const { StoreWriteError } = await import('../main/services/json-store')
+    kit.settings.failNextWith(new StoreWriteError('settings.json'))
+    const result = await getHandler('config:update')(fakeEvent, { companyName: 'X' }) as IpcResponse<unknown>
+    expect(result.error?.code).toBe('CONFIG_WRITE_FAILED')
+    expect(result.error?.message).not.toContain('/')
   })
 })
 
@@ -672,7 +641,7 @@ describe('terminal:spawn session recording', () => {
   const input = { workspaceSlug: 'test-ws', cols: 80, rows: 24, fallbackFields: ['agentId'] }
 
   beforeEach(() => {
-    vi.mocked(configManager.mutateConfig).mockClear()
+    kit.recordSessionStart.mockClear()
     mockAvailability.value = 'found'
   })
 
@@ -684,40 +653,54 @@ describe('terminal:spawn session recording', () => {
     mockAvailability.value = 'not-found'
     const spawn = vi.fn().mockReturnValue({ workspaceSlug: 'test-ws' })
     appState.workspaces = new Map([['test-ws', makeWorkspace()]])
-    appState.terminalManager = { spawn } as unknown as AppState['terminalManager']
+    appState.terminalManager = { spawn, assertWorkspaceNotMoved: vi.fn().mockResolvedValue(undefined) } as unknown as AppState['terminalManager']
     handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
 
     const result = await getHandler('terminal:spawn')(fakeEvent, input) as IpcResponse<unknown>
 
     expect(result.error).toBeNull()
     expect(spawn).toHaveBeenCalledTimes(1)
-    expect(configManager.mutateConfig).not.toHaveBeenCalled()
+    expect(kit.recordSessionStart).not.toHaveBeenCalled()
   })
 
   it('records the validated host start after a successful spawn', async () => {
     const spawn = vi.fn().mockReturnValue({ workspaceSlug: 'test-ws' })
     appState.workspaces = new Map([['test-ws', makeWorkspace()]])
-    appState.terminalManager = { spawn } as unknown as AppState['terminalManager']
+    appState.terminalManager = { spawn, assertWorkspaceNotMoved: vi.fn().mockResolvedValue(undefined) } as unknown as AppState['terminalManager']
     handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
 
     const result = await getHandler('terminal:spawn')(fakeEvent, input) as IpcResponse<unknown>
 
     expect(result.error).toBeNull()
     expect(spawn).toHaveBeenCalledWith({ workspaceSlug: 'test-ws', cols: 80, rows: 24, agentId: 'claude', permissionMode: 'default' })
-    expect(configManager.mutateConfig).toHaveBeenCalledTimes(1)
+    expect(kit.recordSessionStart).toHaveBeenCalledTimes(1)
+    expect(kit.recordSessionStart).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'test-ws', location: 'host', agentId: 'claude' }))
   })
 
   it('records nothing when the spawn throws', async () => {
     const spawn = vi.fn().mockImplementation(() => {
       throw new Error('boom')
     })
-    appState.terminalManager = { spawn } as unknown as AppState['terminalManager']
+    appState.terminalManager = { spawn, assertWorkspaceNotMoved: vi.fn().mockResolvedValue(undefined) } as unknown as AppState['terminalManager']
     handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
 
     const result = await getHandler('terminal:spawn')(fakeEvent, input) as IpcResponse<unknown>
 
     expect(result.error).not.toBeNull()
-    expect(configManager.mutateConfig).not.toHaveBeenCalled()
+    expect(kit.recordSessionStart).not.toHaveBeenCalled()
+  })
+
+  it('refuses a workspace whose folder moved, before spawning or recording anything', async () => {
+    const spawn = vi.fn()
+    const moved = Object.assign(new Error('Path not found'), { code: 'NOT_FOUND' })
+    appState.terminalManager = { spawn, assertWorkspaceNotMoved: vi.fn().mockRejectedValue(moved) } as unknown as AppState['terminalManager']
+    handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
+
+    const result = await getHandler('terminal:spawn')(fakeEvent, input) as IpcResponse<unknown>
+
+    expect(result.error?.code).toBe('NOT_FOUND')
+    expect(spawn).not.toHaveBeenCalled()
+    expect(kit.recordSessionStart).not.toHaveBeenCalled()
   })
 })
 
@@ -738,8 +721,8 @@ describe('agents:getHostAvailability', () => {
 
 describe('session:getDefaults', () => {
   it('returns the remembered choice with its source', async () => {
-    const choice = { agentId: 'claude', location: 'sandbox', hostPermissionMode: 'default', sandboxPermissionMode: 'auto', networkMode: 'open' }
-    vi.mocked(configManager.loadConfig).mockReturnValueOnce({ sessionDefaults: { last: null, workspaces: { 'test-ws': choice } } } as never)
+    const choice = { agentId: 'claude', location: 'sandbox', hostPermissionMode: 'default', sandboxPermissionMode: 'auto', networkMode: 'open' } as const
+    await kit.sessionDefaults.mutate((f) => ({ ...f, workspaces: { 'test-ws': choice } }))
     handlers = buildRealHandlers(appState, () => mockMainWindow as unknown as Electron.CrossProcessExports.BrowserWindow)
 
     const result = await getHandler('session:getDefaults')(fakeEvent, { workspaceSlug: 'test-ws' }) as IpcResponse<unknown>

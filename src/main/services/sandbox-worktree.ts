@@ -251,7 +251,7 @@ export type EnsureResult =
 /** A worktree `.git` file is one `gitdir: <path>` line; anything bigger is not one. */
 const GIT_FILE_READ_CAP = 64 * 1024
 
-async function readGitFileGitDir(wt: string): Promise<string | null> {
+export async function readGitFileGitDir(wt: string): Promise<string | null> {
   const gitFile = path.join(wt, '.git')
   try {
     // safe-fs: lstat type check before open (never opens a device), no-follow

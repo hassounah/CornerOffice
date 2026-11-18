@@ -8,7 +8,9 @@ import { useGamificationStore } from '@renderer/stores/gamification-store'
 import { useTerminalStore } from '@renderer/stores/terminal-store'
 import type { ActivityFeedItem } from '@main/types/events'
 import type { Workspace } from '@main/types/workspace'
-import type { AppConfig, RealmLocationMapping } from '@main/types/config'
+import { workspaceRegistryFields } from '../helpers/workspace-fixture'
+import type { RealmLocationMapping } from '@main/types/config'
+import type { Settings } from '@main/services/stores'
 
 // ---------------------------------------------------------------------------
 // Mock window.cornerOffice
@@ -52,6 +54,7 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
   return {
     slug: 'test-ws',
     path: '/test',
+    ...workspaceRegistryFields('/test'),
     displayName: 'Test WS',
     docsRoot: '/test/docs',
     docsRootExists: true,
@@ -66,8 +69,6 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     shippedFeatures: [],
     lastActivityTimestamp: null,
     weekShipCount: 0,
-    pinned: false,
-    archived: false,
     level: { number: 1, name: 'Prototype' as const, xpRequired: 0, xpCurrent: 0 },
     xp: 0,
     readmeContent: null,
@@ -75,11 +76,10 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
   }
 }
 
-function makeConfig(mappings: RealmLocationMapping[] = [{ workspaceSlug: 'test-ws', location: 'castle' }]): AppConfig {
+function makeConfig(mappings: RealmLocationMapping[] = [{ workspaceSlug: 'test-ws', location: 'castle' }]): Settings {
   return {
-    version: 2,
+    version: 1,
     companyName: 'Test',
-    workspaces: [],
     notifications: {
       osNotificationsEnabled: false,
       showMissedOnStartup: true,
@@ -93,13 +93,10 @@ function makeConfig(mappings: RealmLocationMapping[] = [{ workspaceSlug: 'test-w
       quietHours: { enabled: false, start: '22:00', end: '08:00' },
     },
     appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full' },
-    hooks: { installed: false, installedAt: null, hookScriptPath: '' },
     realm: { enabled: true, mapping: mappings, shipCelebration: 'townSquare' },
     terminal: { fontSize: 14, windowBounds: {} },
-    discoveryExclusions: [],
-    firstLaunchComplete: true,
-    terminalEmulator: null,
-    hookScriptPath: '',
+    discovery: { exclusions: [] },
+    legacyNoticeDismissed: false,
   }
 }
 
@@ -250,6 +247,23 @@ describe('useRealmStore', () => {
 
       const { buildings } = useRealmStore.getState()
       expect(buildings['castle'].state).toBe('active')
+    })
+
+    it('marks a mapped building unavailable when its folder is not available, and ignores hidden', () => {
+      useSettingsStore.setState({ config: makeConfig() })
+      useWorkspaceStore.setState({
+        workspaces: [makeWorkspace({ slug: 'test-ws', availability: 'missing', hidden: true })],
+      })
+
+      useRealmStore.getState().recalculateWorldState()
+      expect(useRealmStore.getState().buildings['castle'].state).toBe('unavailable')
+
+      useWorkspaceStore.setState({
+        workspaces: [makeWorkspace({ slug: 'test-ws', availability: 'ok', hidden: true })],
+      })
+      useRealmStore.getState().recalculateWorldState()
+      // Hidden is an office-sidebar concept: the building still shows.
+      expect(useRealmStore.getState().buildings['castle'].state).toBe('idle')
     })
 
     it('marks building unassigned when no workspaceSlug', () => {

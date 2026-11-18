@@ -102,6 +102,57 @@ describe('StateCacheService', () => {
     })
   })
 
+  describe('unacknowledgedCount (Sec M5)', () => {
+    function loadWith(counts: Record<string, number>): void {
+      mockFs.existsSync = vi.fn().mockReturnValue(true)
+      mockFs.readFileSync = vi.fn().mockReturnValue(
+        JSON.stringify({
+          version: 1,
+          lastUpdated: new Date().toISOString(),
+          velocity: { current: 0, sparkline: defaultSparkline(), trend: 'flat' },
+          streak: { currentDays: 0, lastShipDate: null },
+          workspaceLevels: {},
+          historyChecksums: {},
+          lastKnownHistoryEntries: {},
+          eventFileOffsets: {},
+          unacknowledgedAttentionEvents: counts,
+          lastOsNotificationTimestamp: null,
+        }),
+      )
+      svc.load()
+    }
+
+    it('returns the stored number for an own entry', () => {
+      loadWith({ 'ws-a': 3 })
+      expect(svc.unacknowledgedCount('ws-a')).toBe(3)
+    })
+
+    it('returns 0 for a missing id', () => {
+      loadWith({})
+      expect(svc.unacknowledgedCount('nope')).toBe(0)
+    })
+
+    it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty'])('returns the default 0 for the inherited name %s', (id) => {
+      loadWith({})
+      expect(svc.unacknowledgedCount(id)).toBe(0)
+    })
+
+    it('counts an own `constructor` entry like any other id', () => {
+      loadWith({ constructor: 2 })
+      expect(svc.unacknowledgedCount('constructor')).toBe(2)
+    })
+
+    it('a `constructor` attention increment leaves numbers in state.json', () => {
+      loadWith({})
+      const next = svc.unacknowledgedCount('constructor') + 1
+      svc.updateField('unacknowledgedAttentionEvents', { ...svc.getCache().unacknowledgedAttentionEvents, constructor: next })
+      svc.flush()
+      const written = JSON.parse(String(mockFs.writeFileSync.mock.calls.at(-1)?.[1])) as { unacknowledgedAttentionEvents: Record<string, unknown> }
+      expect(written.unacknowledgedAttentionEvents.constructor).toBe(1)
+      expect(Object.values(written.unacknowledgedAttentionEvents).every((v) => typeof v === 'number')).toBe(true)
+    })
+  })
+
   describe('reconcile', () => {
     it('returns slugs whose checksums differ from cached', () => {
       mockFs.existsSync = vi.fn().mockReturnValue(true)
@@ -123,6 +174,13 @@ describe('StateCacheService', () => {
       const stale = svc.reconcile({ 'workspace-a': 'newhash', 'workspace-b': 'hash2' })
       expect(stale).toContain('workspace-a')
       expect(stale).not.toContain('workspace-b')
+    })
+
+    it('treats `constructor` and `__proto__` as ordinary ids with nothing cached (Sec M5)', () => {
+      mockFs.existsSync = vi.fn().mockReturnValue(false)
+      svc.load()
+      const stale = svc.reconcile({ constructor: 'abc', __proto__: 'def' } as Record<string, string>)
+      expect(stale).toContain('constructor')
     })
 
     it('returns all slugs when cache is empty', () => {

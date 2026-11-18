@@ -95,7 +95,7 @@ export interface SandboxImageToolchains {
   node: boolean
   go: boolean
   buildBase: boolean
-  /** Extra Wolfi system packages (config.json `sandbox.extraPackages`). Absent or empty leaves the build args, hash and signature as they were. */
+  /** Extra Wolfi system packages (`extraPackages` in sandbox.json). Absent or empty leaves the build args, hash and signature as they were. */
   extraPackages?: readonly string[]
 }
 

@@ -15,8 +15,8 @@ const CHILD_PROCESS_SYNTAX = [
 ]
 
 const HOME_MSG =
-  'Build Corner Office paths with coHome() / coHomeDisplay() and Claude paths with claudeHome() from src/main/services/app-home.ts. Mount sources come from sandboxPaths(). Allowed files: app-home.ts, sandbox-paths.ts, agents/claude/descriptor.ts.'
-const HOME_PATH_RE = '/(^|[\\/~])\\.(corner-office|claude)(\\/|$)/'
+  'Build Corner Office paths with coHome() / coHomeDisplay(), settings paths with configDir() / configDirDisplay(), and Claude paths with claudeHome() from src/main/services/app-home.ts. Mount sources come from sandboxPaths(). Allowed files: app-home.ts, sandbox-paths.ts, agents/claude/descriptor.ts.'
+const HOME_PATH_RE = '/((^|[\\/~])\\.(corner-office|claude)(\\/|$)|\\.config\\/corner-office)/'
 const HOME_PATH_SYNTAX = [
   { selector: `Literal[value=${HOME_PATH_RE}]`, message: HOME_MSG },
   { selector: `TemplateElement[value.raw=${HOME_PATH_RE}]`, message: HOME_MSG },

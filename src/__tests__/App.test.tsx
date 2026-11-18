@@ -103,9 +103,6 @@ vi.mock('../renderer/pages/Settings', () => ({
 vi.mock('../renderer/pages/Notifications', () => ({
   default: () => <div data-testid="page-notifications">Notifications</div>,
 }))
-vi.mock('../renderer/pages/FirstLaunch', () => ({
-  default: () => <div data-testid="page-first-launch">FirstLaunch</div>,
-}))
 // Mocked so its real import graph (code-explorer-store -> @codemirror/state,
 // FileTree, etc.) never loads in this test file's module graph (step 1.21
 // bundle-gate reasoning, 2.7 review) — this page has its own dedicated tests.

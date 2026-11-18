@@ -8,6 +8,8 @@ import { LEGACY_AGENT_ID, getDescriptor } from '../agents/descriptors'
 import type { AgentId } from '../agents/descriptors'
 import { assertArgvToken } from '../agents/handler'
 import { getHandler } from '../agents/registry'
+import { withDeadline } from './fs-deadline'
+import { movedError, requireAvailableWorkspace } from './repo-path'
 import {
   MAX_SCROLLBACK_CHARS,
   DATA_BATCH_MS,
@@ -32,6 +34,9 @@ import { sanitizedEnv } from './env-policy'
 
 /** Spawn claude through a login shell so .bashrc/.profile are sourced (provides PATH for bun, etc.) */
 const USER_SHELL = process.env.SHELL || '/bin/bash'
+
+/** How long the pre-spawn realpath of a workspace folder may take (a slow mount must not hang the spawn). */
+const REALPATH_DEADLINE_MS = 2000
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -122,6 +127,22 @@ export class TerminalManagerService {
     this._sessionObserver = observer
   }
 
+  /**
+   * Sec L7: refuse a host spawn when the registered folder now resolves somewhere else (a symlink swapped in after the
+   * last probe). Await it immediately before `spawn`; `spawn` itself stays synchronous. Same fixed `moved` error as the
+   * runtime's. Shell houses have no workspace and are not checked.
+   */
+  async assertWorkspaceNotMoved(workspaceSlug: string): Promise<void> {
+    const workspace = requireAvailableWorkspace(workspaceSlug, this._appState)
+    let real: string
+    try {
+      real = await withDeadline(fs.promises.realpath(workspace.path), REALPATH_DEADLINE_MS)
+    } catch {
+      throw movedError()
+    }
+    if (real !== workspace.path) throw movedError()
+  }
+
   spawn(options: TerminalSpawnOptions): TerminalSpawnResult {
     const { workspaceSlug, cols, rows, agentId = LEGACY_AGENT_ID, permissionMode = 'default' } = options
 
@@ -138,12 +159,10 @@ export class TerminalManagerService {
       throw new Error(`Sandbox session is busy for workspace: ${workspaceSlug}`)
     }
 
-    const workspace = this._appState.workspaces.get(workspaceSlug)
-    if (!workspace) {
-      throw new Error(`Workspace not found: ${workspaceSlug}`)
-    }
-
-    const cwd = fs.existsSync(workspace.path) ? workspace.path : os.homedir()
+    // Fail closed (Sec H1): a registry workspace that is not `ok` is refused, and there is no `$HOME` fallback.
+    // Shell houses (`spawnShell`) are unchanged: they have no workspace and start in `$HOME` by design.
+    const workspace = requireAvailableWorkspace(workspaceSlug, this._appState)
+    const cwd = workspace.path
 
     if (!getDescriptor(agentId).permissionModes.host.some((m) => m.mode === permissionMode)) {
       throw new Error(`Permission mode ${permissionMode} is not available on the host for ${agentId}`)

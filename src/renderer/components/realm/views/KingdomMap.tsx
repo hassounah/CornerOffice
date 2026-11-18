@@ -8,6 +8,7 @@ import { useTerminalStore } from '../../../stores/terminal-store'
 import { useSandboxStore } from '../../../stores/sandbox-store'
 import { UnmergedDot } from '../../sandbox/UnmergedDot'
 import { unmergedLine } from '../../../utils/sandbox-copy'
+import { AVAILABILITY_SHORT } from '../../../utils/workspace-errors'
 import { RealmAsset } from '../shared/RealmAsset'
 import { RealmTooltip } from '../shared/RealmTooltip'
 import { BuildingSprite } from '../buildings/BuildingSprite'
@@ -313,12 +314,21 @@ export function KingdomMap(): React.ReactElement {
           baseState === 'idle' && (terminalState === 'running' || terminalState === 'starting')
         ) ? 'active' : baseState
 
-        const state = slug && attentionSlugs.has(slug) ? 'attention' : effectiveBase
+        // A mapped workspace whose folder is not available renders dim, labelled with why, and stays clickable (the
+        // Wizard's Study shows the banner with Check again / Remove). Attention does not apply: it has no session.
+        const mappedWorkspace = slug ? workspaces.find((w) => w.slug === slug) : undefined
+        const unavailable =
+          effectiveBase === 'unavailable' && mappedWorkspace && mappedWorkspace.availability !== 'ok'
+            ? { name: mappedWorkspace.displayName, reason: AVAILABILITY_SHORT[mappedWorkspace.availability] }
+            : undefined
+        const state = unavailable ? 'unavailable' : slug && attentionSlugs.has(slug) ? 'attention' : effectiveBase
         const isAssigned = slug !== null
         const charsHere = charactersByLocation.get(loc) ?? []
         // Unmerged sandbox work shows as a marker on the building and a line in its tooltip, even with no session running.
         const unmerged = slug ? (sandboxSummaries[slug]?.unmergedBranches ?? []) : []
-        const tooltipLabel = unmerged.length > 0 ? `${slug} — ${unmergedLine(unmerged)}` : (slug ?? '')
+        const tooltipLabel = unavailable
+          ? `${unavailable.name}: ${unavailable.reason}`
+          : unmerged.length > 0 ? `${slug} — ${unmergedLine(unmerged)}` : (slug ?? '')
 
         const sprite = (
           <BuildingSprite
@@ -327,6 +337,7 @@ export function KingdomMap(): React.ReactElement {
             workspaceSlug={slug}
             onClick={isAssigned ? () => handleRealmLocationClick(loc) : undefined}
             actionLabel={isAssigned ? 'click to open' : undefined}
+            unavailable={unavailable}
           />
         )
 
@@ -343,6 +354,31 @@ export function KingdomMap(): React.ReactElement {
               <RealmTooltip label="No workspace assigned">
                 {sprite}
               </RealmTooltip>
+            )}
+
+            {/* The building is dim, so say why in text too (not colour or opacity alone). The accessible name is on the sprite. */}
+            {unavailable && (
+              <div
+                aria-hidden="true"
+                data-testid={`unavailable-label-${loc}`}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  zIndex: 5,
+                  textAlign: 'center',
+                  fontSize: 12,
+                  fontFamily: 'serif',
+                  color: '#e8d5a3',
+                  background: 'rgba(10,6,2,0.8)',
+                  borderRadius: 3,
+                  padding: '1px 4px',
+                  pointerEvents: 'none',
+                }}
+              >
+                {`${unavailable.name}: ${unavailable.reason}`}
+              </div>
             )}
 
             {slug && unmerged.length > 0 && (

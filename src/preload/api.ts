@@ -5,6 +5,8 @@ export const ALLOWED_PUSH_CHANNELS = [
   'workspace:updated',
   'workspace:statusChanged',
   'workspace:readmeChanged',
+  'workspace:listChanged',
+  'workspace:discoverProgress',
   'activity:newItem',
   'feature:shipped',
   'homunculus:instinctAdded',
@@ -40,12 +42,30 @@ export const api = {
   },
 
   workspace: {
-    discover: () => ipcRenderer.invoke('workspace:discover'),
     getAll: () => ipcRenderer.invoke('workspace:getAll'),
     getDetail: (slug: string) => ipcRenderer.invoke('workspace:getDetail', { slug }),
-    updateConfig: (slug: string, config: unknown) =>
-      ipcRenderer.invoke('workspace:updateConfig', { slug, config }),
     readReadme: (slug: string) => ipcRenderer.invoke('workspace:readReadme', { slug }),
+    // Workspace registry (#0039). Main resolves every path itself; the renderer sends intents.
+    pickFolder: (purpose: 'add' | 'create-parent' | 'docs-root') => ipcRenderer.invoke('workspace:pickFolder', { purpose }),
+    add: (path: string) => ipcRenderer.invoke('workspace:add', { path }),
+    addMany: (paths: string[]) => ipcRenderer.invoke('workspace:addMany', { paths }),
+    create: (parentPath: string, name: string, mode: 'plain' | 'rix') =>
+      ipcRenderer.invoke('workspace:create', { parentPath, name, mode }),
+    remove: (slug: string) => ipcRenderer.invoke('workspace:remove', { slug }),
+    setHidden: (slug: string, hidden: boolean) => ipcRenderer.invoke('workspace:setHidden', { slug, hidden }),
+    rename: (slug: string, displayName: string | null) => ipcRenderer.invoke('workspace:rename', { slug, displayName }),
+    setDocsRoot: (slug: string, docsRoot: string | null) => ipcRenderer.invoke('workspace:setDocsRoot', { slug, docsRoot }),
+    recheck: () => ipcRenderer.invoke('workspace:recheck', {}),
+    discover: () => ipcRenderer.invoke('workspace:discoverStream', {}),
+    discoverCancel: () => ipcRenderer.invoke('workspace:discoverCancel', {}),
+  },
+
+  realm: {
+    setAssignment: (location: string, slug: string | null) => ipcRenderer.invoke('realm:setAssignment', { location, slug }),
+  },
+
+  discovery: {
+    setExclusions: (exclusions: string[]) => ipcRenderer.invoke('discovery:setExclusions', { exclusions }),
   },
 
   homunculus: {
@@ -64,6 +84,9 @@ export const api = {
   config: {
     get: () => ipcRenderer.invoke('config:get'),
     update: (partial: unknown) => ipcRenderer.invoke('config:update', partial),
+    getStoreHealth: () => ipcRenderer.invoke('config:getStoreHealth', {}),
+    revealStoreFile: (store: 'settings' | 'workspaces' | 'sandbox' | 'sessionDefaults') =>
+      ipcRenderer.invoke('config:revealStoreFile', { store }),
   },
 
   notifications: {

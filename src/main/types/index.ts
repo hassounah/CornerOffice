@@ -10,7 +10,6 @@ export type {
   FixCycleBreakdown,
   TeamLevelName,
   TeamLevel,
-  WorkspaceDiscoveryResult,
 } from './workspace'
 
 export type {
@@ -41,11 +40,7 @@ export type {
 export { VELOCITY_WEIGHTS, LEVEL_THRESHOLDS } from './gamification'
 
 export type {
-  AppConfig,
-  WorkspaceConfig,
   NotificationConfig,
-  AppearanceConfig,
-  HookConfig,
   StateCache,
   HistoryEntryKey,
   RealmConfig,

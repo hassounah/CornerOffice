@@ -39,11 +39,27 @@ interface CornerOfficeAPI {
     resumeClose: () => Promise<void>
   }
   workspace: {
-    discover: () => Promise<unknown>
     getAll: () => Promise<unknown>
     getDetail: (slug: string) => Promise<unknown>
-    updateConfig: (slug: string, config: unknown) => Promise<unknown>
     readReadme: (slug: string) => Promise<IpcResponse<{ content: string | null }>>
+    // Workspace registry (#0039): intents only. Main resolves every path itself.
+    pickFolder: (purpose: 'add' | 'create-parent' | 'docs-root') => Promise<unknown>
+    add: (path: string) => Promise<unknown>
+    addMany: (paths: string[]) => Promise<unknown>
+    create: (parentPath: string, name: string, mode: 'plain' | 'rix') => Promise<unknown>
+    remove: (slug: string) => Promise<unknown>
+    setHidden: (slug: string, hidden: boolean) => Promise<unknown>
+    rename: (slug: string, displayName: string | null) => Promise<unknown>
+    setDocsRoot: (slug: string, docsRoot: string | null) => Promise<unknown>
+    recheck: () => Promise<unknown>
+    discover: () => Promise<unknown>
+    discoverCancel: () => Promise<unknown>
+  }
+  realm: {
+    setAssignment: (location: string, slug: string | null) => Promise<unknown>
+  }
+  discovery: {
+    setExclusions: (exclusions: string[]) => Promise<unknown>
   }
   homunculus: {
     getState: () => Promise<unknown>
@@ -57,6 +73,8 @@ interface CornerOfficeAPI {
   config: {
     get: () => Promise<unknown>
     update: (partial: unknown) => Promise<unknown>
+    getStoreHealth: () => Promise<unknown>
+    revealStoreFile: (store: 'settings' | 'workspaces' | 'sandbox' | 'sessionDefaults') => Promise<unknown>
   }
   notifications: {
     getHistory: (limit: number) => Promise<unknown>

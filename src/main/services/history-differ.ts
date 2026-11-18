@@ -68,6 +68,11 @@ export class HistoryDifferService {
     }
   }
 
+  /** Forget a workspace (removed from the registry, or no longer available). Its keys are re-seeded by `initialize` on return. */
+  remove(workspaceSlug: string): void {
+    this._storedKeys.delete(workspaceSlug)
+  }
+
   /**
    * Diff new entries against stored state for a workspace.
    *

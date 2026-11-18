@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useRef } from 'react'
 import { renderHook, act } from '@testing-library/react'
-import type { AppConfig } from '@main/types/config'
+import type { Settings } from '@main/services/stores'
 import {
   DIVIDER_PX,
   KEY_STEP_PX,
@@ -40,7 +40,7 @@ function useSplitHook(container: HTMLDivElement | null = null) {
 }
 
 function setPersisted(treeWidth: number | undefined): void {
-  const config = (treeWidth === undefined ? {} : { codeExplorer: { treeWidth } }) as AppConfig
+  const config = (treeWidth === undefined ? {} : { codeExplorer: { treeWidth } }) as Settings
   useSettingsStore.setState({ config, updateConfig })
 }
 

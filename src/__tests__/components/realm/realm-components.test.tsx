@@ -3,7 +3,8 @@ import { render, screen, fireEvent, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import React from 'react'
 import type { Workspace } from '@main/types/workspace'
-import type { AppConfig } from '@main/types/config'
+import { workspaceRegistryFields } from '../../helpers/workspace-fixture'
+import type { Settings } from '@main/services/stores'
 import type { CharacterInstance } from '@main/types/realm'
 import type { SandboxStatus } from '@main/types/sandbox'
 
@@ -25,14 +26,24 @@ const mockRealmStore = vi.hoisted(() => ({
 }))
 
 const mockSettingsStore = vi.hoisted(() => ({
-  config: null as AppConfig | null,
+  config: null as Settings | null,
   updateConfig: vi.fn().mockResolvedValue(undefined),
+  setAssignment: vi.fn().mockResolvedValue(undefined),
+  // The store-health notice in the Settings Chamber reads these.
+  storeHealth: null as unknown,
+  storeHealthDismissed: false,
+  fetchStoreHealth: vi.fn().mockResolvedValue(undefined),
+  dismissStoreHealth: vi.fn(),
 }))
 
 const mockWorkspaceStore = vi.hoisted(() => ({
   workspaces: [] as Workspace[],
   loading: false,
+  loaded: true,
   fetchOne: vi.fn().mockResolvedValue(undefined),
+  // The workspace manager and the Study's create-warning notice read these.
+  createWarnings: new Map<string, string[]>(),
+  dismissWarning: vi.fn(),
 }))
 
 const mockHomunculusStore = vi.hoisted(() => ({
@@ -271,15 +282,12 @@ import { ELIGIBILITY_COPY } from '../../../renderer/utils/sandbox-copy'
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+function makeConfig(overrides: Partial<Settings> = {}): Settings {
   return {
     version: 1,
     companyName: 'Test Co',
-    workspaces: [],
-    discoveryExclusions: [],
-    firstLaunchComplete: true,
-    terminalEmulator: null,
-    hookScriptPath: '',
+    discovery: { exclusions: [] },
+    legacyNoticeDismissed: false,
     notifications: {
       osNotificationsEnabled: false,
       showMissedOnStartup: true,
@@ -293,7 +301,6 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       quietHours: { enabled: false, start: '22:00', end: '08:00' },
     },
     appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full' },
-    hooks: { installed: false, installedAt: null, hookScriptPath: '' },
     realm: { enabled: false, mapping: [], shipCelebration: 'townSquare' as const },
     terminal: { fontSize: 14, windowBounds: {} },
     ...overrides,
@@ -304,6 +311,7 @@ function makeWorkspace(slug: string, overrides: Partial<Workspace> = {}): Worksp
   return {
     slug,
     path: `/home/user/${slug}`,
+    ...workspaceRegistryFields(`/home/user/${slug}`),
     displayName: `Workspace ${slug}`,
     docsRoot: `/home/user/${slug}/docs`,
     docsRootExists: true,
@@ -318,8 +326,6 @@ function makeWorkspace(slug: string, overrides: Partial<Workspace> = {}): Worksp
     shippedFeatures: [],
     lastActivityTimestamp: null,
     weekShipCount: 0,
-    pinned: false,
-    archived: false,
     level: { number: 1, name: 'Prototype', xpRequired: 100, xpCurrent: 0 },
     xp: 0,
     readmeContent: null,
@@ -394,6 +400,24 @@ describe('BuildingSprite (real)', () => {
     expect(btn).toBeInTheDocument()
     fireEvent.click(btn)
     expect(onClick).toHaveBeenCalledOnce()
+  })
+
+  it('names an unavailable building after its workspace and why, and stays a button', async () => {
+    const { BuildingSprite: RealBuildingSprite } = await vi.importActual<
+      typeof import('../../../renderer/components/realm/buildings/BuildingSprite')
+    >('../../../renderer/components/realm/buildings/BuildingSprite')
+
+    render(
+      <RealBuildingSprite
+        location="castle"
+        buildingState="unavailable"
+        workspaceSlug="api"
+        onClick={vi.fn()}
+        actionLabel="click to open"
+        unavailable={{ name: 'Api', reason: 'folder not found' }}
+      />
+    )
+    expect(screen.getByRole('button', { name: 'The Castle — Api: folder not found (click to open)' })).toBeInTheDocument()
   })
 
   it('renders as img role with tabIndex=-1 when unassigned', async () => {
@@ -1099,6 +1123,23 @@ describe('SettingsChamber', () => {
     render(<SettingsChamber />)
     await user.click(screen.getByRole('tab', { name: /Workspaces/i }))
     expect(screen.getByRole('tab', { name: /Workspaces/i })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('saves a building assignment once per change, with no debounce and no hide control', async () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace('my-project'), makeWorkspace('other')]
+    mockSettingsStore.config = makeConfig({
+      realm: { enabled: true, mapping: [{ location: 'castle', workspaceSlug: 'my-project' }], shipCelebration: 'townSquare' },
+    })
+    const user = userEvent.setup()
+    render(<SettingsChamber />)
+    await user.click(screen.getByRole('tab', { name: /Workspaces/i }))
+
+    await user.selectOptions(screen.getByLabelText('The Castle'), 'other')
+    expect(mockSettingsStore.setAssignment).toHaveBeenCalledTimes(1)
+    expect(mockSettingsStore.setAssignment).toHaveBeenCalledWith('castle', 'other')
+    expect(mockSettingsStore.updateConfig).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: /^Hide/ })).toBeNull()
+    mockWorkspaceStore.workspaces = []
   })
 
   it('renders hooks section when hooks tab clicked', async () => {
@@ -2268,5 +2309,91 @@ describe('KingdomMap — unmerged sandbox work (6.2)', () => {
 
     expect(screen.getAllByRole('img', { name: /Unmerged sandbox work/ })).toHaveLength(1)
     expect(tooltipOf('barracks')).toBe('No workspace assigned')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #0039 realm surfaces: unavailable buildings, the Study's banner, removal
+// ---------------------------------------------------------------------------
+
+describe('KingdomMap — unavailable workspace (#0039)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockRealmStore.buildings = { castle: { location: 'castle', workspaceSlug: 'my-project', state: 'unavailable' } } as never
+    mockRealmStore.characters = []
+    mockSettingsStore.config = makeConfig({
+      realm: {
+        enabled: true,
+        mapping: [{ location: 'castle', workspaceSlug: 'my-project' }],
+        shipCelebration: 'townSquare',
+      },
+    })
+    mockTerminalStore.sessions = {}
+    window.cornerOffice = { ...window.cornerOffice, on: vi.fn(() => vi.fn()) } as unknown as typeof window.cornerOffice
+  })
+
+  afterEach(() => {
+    mockWorkspaceStore.workspaces = []
+    mockRealmStore.buildings = {}
+  })
+
+  it('renders a mapped workspace with a missing folder dim, labelled with why, and still clickable', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace('my-project', { availability: 'missing', displayName: 'Api' })]
+    render(<KingdomMap />)
+
+    expect(screen.getByTestId('building-sprite-castle')).toHaveAttribute('data-state', 'unavailable')
+    expect(screen.getByTestId('unavailable-label-castle')).toHaveTextContent('Api: folder not found')
+    fireEvent.click(screen.getByTestId('building-sprite-castle'))
+    expect(mockRealmStore.openOverlay).toHaveBeenCalled()
+  })
+
+  it('still renders a hidden workspace normally (hide is an office concept)', () => {
+    mockRealmStore.buildings = { castle: { location: 'castle', workspaceSlug: 'my-project', state: 'idle' } } as never
+    mockWorkspaceStore.workspaces = [makeWorkspace('my-project', { hidden: true })]
+    render(<KingdomMap />)
+
+    expect(screen.getByTestId('building-sprite-castle')).toHaveAttribute('data-state', 'idle')
+    expect(screen.queryByTestId('unavailable-label-castle')).toBeNull()
+  })
+})
+
+describe('WizardsStudy — availability and removal (#0039)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockWorkspaceStore.workspaces = []
+    mockWorkspaceStore.createWarnings = new Map()
+  })
+
+  it('shows the availability banner for a workspace whose folder is missing', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace('my-project', { availability: 'missing' })]
+    render(<WizardsStudy workspaceSlug="my-project" />)
+    expect(screen.getByText(/Folder not found/)).toBeInTheDocument()
+  })
+
+  it('shows no banner when the folder is available', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace('my-project')]
+    render(<WizardsStudy workspaceSlug="my-project" />)
+    expect(screen.queryByText(/Folder not found/)).toBeNull()
+  })
+
+  it('says a folder without .rix is not a Rix workspace yet', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace('my-project', { hasRix: false })]
+    render(<WizardsStudy workspaceSlug="my-project" />)
+    expect(screen.getByText(/Not a Rix workspace yet/)).toBeInTheDocument()
+  })
+
+  it('closes when the workspace it shows is removed', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace('my-project')]
+    const { rerender } = render(<WizardsStudy workspaceSlug="my-project" />)
+    expect(mockRealmStore.closeOverlay).not.toHaveBeenCalled()
+
+    mockWorkspaceStore.workspaces = []
+    rerender(<WizardsStudy workspaceSlug="my-project" />)
+    expect(mockRealmStore.closeOverlay).toHaveBeenCalled()
+  })
+
+  it('does not close for an id that was never loaded', () => {
+    render(<WizardsStudy workspaceSlug="not-yet" />)
+    expect(mockRealmStore.closeOverlay).not.toHaveBeenCalled()
   })
 })

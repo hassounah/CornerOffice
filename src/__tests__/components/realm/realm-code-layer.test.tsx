@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import React from 'react'
-import type { AppConfig } from '@main/types/config'
+import type { Settings } from '@main/services/stores'
 
 // ---------------------------------------------------------------------------
 // realm-code-layer.test.tsx — RealmShell's code-explorer layer (TRD §3.8.2,
@@ -26,7 +26,7 @@ const mockRealmStore = vi.hoisted(() => ({
 }))
 
 const mockSettingsStore = vi.hoisted(() => ({
-  config: null as AppConfig | null,
+  config: null as Settings | null,
   updateConfig: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -96,15 +96,12 @@ import { useDocViewerStore } from '../../../renderer/stores/docviewer-store'
 import { useCodeExplorerStore } from '../../../renderer/stores/code-explorer-store'
 import { useGuardDialogStore } from '../../../renderer/hooks/useUnsavedGuard'
 
-function makeRealmConfig(): AppConfig {
+function makeRealmConfig(): Settings {
   return {
     version: 1,
     companyName: 'Test Co',
-    workspaces: [],
-    discoveryExclusions: [],
-    firstLaunchComplete: true,
-    terminalEmulator: null,
-    hookScriptPath: '',
+    discovery: { exclusions: [] },
+    legacyNoticeDismissed: false,
     notifications: {
       osNotificationsEnabled: false,
       showMissedOnStartup: true,
@@ -118,7 +115,6 @@ function makeRealmConfig(): AppConfig {
       quietHours: { enabled: false, start: '22:00', end: '08:00' },
     },
     appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full' },
-    hooks: { installed: false, installedAt: null, hookScriptPath: '' },
     realm: { enabled: true, mapping: [{ location: 'castle', workspaceSlug: 'ws' }], shipCelebration: 'townSquare' },
     terminal: { fontSize: 14, windowBounds: {} },
   }

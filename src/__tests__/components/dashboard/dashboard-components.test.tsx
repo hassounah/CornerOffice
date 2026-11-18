@@ -56,6 +56,7 @@ import type { ActivityFeedItem } from '@main/types/events'
 import { WorkspaceCard } from '../../../renderer/components/dashboard/WorkspaceCard'
 import { ActivityTrackingNote } from '../../../renderer/components/shared/ActivityTrackingNote'
 import { expectNoAxeViolations } from '../../helpers/a11y'
+import { workspaceRegistryFields } from '../../helpers/workspace-fixture'
 import { ActivityFeed } from '../../../renderer/components/dashboard/ActivityFeed'
 import { ActivityItem } from '../../../renderer/components/dashboard/ActivityItem'
 import { useSettingsStore } from '../../../renderer/stores/settings-store'
@@ -70,6 +71,7 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
   return {
     slug: 'test-ws',
     path: '/home/amer/test-ws',
+    ...workspaceRegistryFields('/home/amer/test-ws'),
     displayName: 'Test Workspace',
     docsRoot: '/home/amer/test-ws/docs',
     docsRootExists: true,
@@ -84,8 +86,6 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     shippedFeatures: [],
     lastActivityTimestamp: null,
     weekShipCount: 0,
-    pinned: false,
-    archived: false,
     level: { number: 1, name: 'Prototype', xpRequired: 100, xpCurrent: 0 },
     xp: 0,
     readmeContent: null,
@@ -228,6 +228,40 @@ describe('WorkspaceCard', () => {
     render(<WorkspaceCard workspace={makeWorkspace()} />)
     await user.click(screen.getByRole('button'))
     expect(mockNavigate).toHaveBeenCalledWith('/workspace/test-ws')
+  })
+
+  describe('availability badge (#0039 4.5)', () => {
+    it.each([
+      ['missing', 'Missing'],
+      ['unreachable', 'Not responding'],
+      ['not-a-directory', 'Not a folder'],
+      ['unsafe', 'Unavailable'],
+      ['moved', 'Moved'],
+      ['checking', 'Checking'],
+    ] as const)('a %s folder shows the "%s" badge, is muted, and still opens its page', async (availability, badge) => {
+      const user = userEvent.setup()
+      render(<WorkspaceCard workspace={makeWorkspace({ availability })} />)
+      expect(screen.getByText(badge)).toBeInTheDocument()
+      expect(screen.getByRole('button').className).toContain('opacity-60')
+      await user.click(screen.getByRole('button'))
+      expect(mockNavigate).toHaveBeenCalledWith('/workspace/test-ws')
+    })
+
+    it('an available folder has no badge and is not muted', () => {
+      render(<WorkspaceCard workspace={makeWorkspace()} />)
+      expect(screen.queryByText('Missing')).not.toBeInTheDocument()
+      expect(screen.getByRole('button').className).not.toContain('opacity-60')
+    })
+
+    it('the compact card shows the badge too', () => {
+      vi.mocked(useSettingsStore).mockImplementationOnce(
+        // @ts-expect-error — mock selector receives partial state
+        (selector: (s: Record<string, unknown>) => unknown) =>
+          selector({ config: { appearance: { theme: 'dark', compactView: true }, hooks: { installed: false } } })
+      )
+      render(<WorkspaceCard workspace={makeWorkspace({ availability: 'missing' })} />)
+      expect(screen.getByText('Missing')).toBeInTheDocument()
+    })
   })
 
   it('has aria-label with workspace name', () => {
@@ -413,6 +447,33 @@ describe('ActivityItem', () => {
     render(<ActivityItem item={makeActivityItem()} />)
     await user.click(screen.getByRole('button'))
     expect(mockNavigate).toHaveBeenCalledWith('/workspace/test-ws')
+  })
+
+  describe('an event from a folder that is not a registered workspace (?key)', () => {
+    beforeEach(() => mockNavigate.mockClear())
+
+    it('is labeled "<key> (not in your workspaces)" and goes nowhere', async () => {
+      const user = userEvent.setup()
+      render(<ActivityItem item={makeActivityItem({ workspace: '?proj-x' })} />)
+      expect(screen.getByText('proj-x (not in your workspaces)')).toBeInTheDocument()
+      expect(screen.queryByText('?proj-x')).not.toBeInTheDocument()
+      const button = screen.getByRole('button')
+      expect(button).toBeDisabled()
+      expect(button).toHaveAccessibleName('Feature shipped: auth-overhaul — proj-x (not in your workspaces)')
+      await user.click(button)
+      expect(mockNavigate).not.toHaveBeenCalled()
+    })
+
+    it('is labeled the same way in the compact view', () => {
+      vi.mocked(useSettingsStore).mockImplementationOnce(
+        // @ts-expect-error — mock selector receives partial state
+        (selector: (s: Record<string, unknown>) => unknown) =>
+          selector({ config: { appearance: { theme: 'dark', compactView: true }, hooks: { installed: false } } })
+      )
+      render(<ActivityItem item={makeActivityItem({ workspace: '?proj-x' })} />)
+      expect(screen.getByText('proj-x (not in your workspaces)')).toBeInTheDocument()
+      expect(screen.getByRole('button')).toBeDisabled()
+    })
   })
 
   it('renders compact view when compactView is true', () => {

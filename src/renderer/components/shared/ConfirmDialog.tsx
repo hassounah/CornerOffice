@@ -1,4 +1,5 @@
-import React, { useEffect, useLayoutEffect, useRef } from 'react'
+import React, { useId, useRef } from 'react'
+import { DialogShell } from './DialogShell'
 
 // ---------------------------------------------------------------------------
 // Realm skin style constants (matches RealmDocViewer inline style palette)
@@ -34,6 +35,13 @@ const REALM_MESSAGE: React.CSSProperties = {
   fontSize: 14,
   color: '#e8dcc8',
   marginBottom: 20,
+  lineHeight: 1.5,
+}
+
+const REALM_ERROR: React.CSSProperties = {
+  fontSize: 13,
+  color: '#e07a5f',
+  marginBottom: 16,
   lineHeight: 1.5,
 }
 
@@ -78,6 +86,15 @@ export interface ConfirmDialogProps {
   onConfirm: () => void
   onCancel: () => void
   skin?: 'office' | 'realm'
+  /** Extra content between the message and the buttons (e.g. a list of affected items). */
+  details?: React.ReactNode
+  /** Failure text shown above the buttons, announced as an alert. */
+  error?: string
+  /**
+   * Receives focus on close when the element that opened the dialog has unmounted (UX M-5): confirming a removal
+   * deletes the row the Remove button lived in, and focus would otherwise fall to the page.
+   */
+  fallbackFocus?: React.RefObject<HTMLElement | null>
 }
 
 // ---------------------------------------------------------------------------
@@ -107,81 +124,45 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   skin = 'office',
+  details,
+  error,
+  fallbackFocus,
 }: ConfirmDialogProps): React.ReactElement | null {
+  const uid = useId()
+  const titleId = `${uid}-title`
+  const messageId = `${uid}-message`
   const cancelRef = useRef<HTMLButtonElement>(null)
   const confirmRef = useRef<HTMLButtonElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const dialogRef = useRef<HTMLDialogElement>(null)
 
-  // Enter the top layer before paint so the dialog never flashes non-modal.
-  // Unmounting (open=false → null) removes it from the top layer.
-  useLayoutEffect(() => {
-    const dialog = dialogRef.current
-    if (open && dialog && !dialog.open) {
-      dialog.showModal()
-    }
-  }, [open])
-
-  // Focus the cancel button when the dialog opens (safe default per §17 R17)
-  useEffect(() => {
-    if (open) {
-      cancelRef.current?.focus()
-    }
-  }, [open])
-
-  // Escape key fires onCancel (§17 R17 — never onConfirm)
-  useEffect(() => {
-    if (!open) return
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        e.stopPropagation()
-        onCancel()
-        return
-      }
-
-      // Focus trap: keep Tab/Shift+Tab within the two buttons
-      if (e.key === 'Tab') {
-        const cancel = cancelRef.current
-        const confirm = confirmRef.current
-        if (!cancel || !confirm) return
-
-        if (e.shiftKey) {
-          if (document.activeElement === cancel) {
-            e.preventDefault()
-            confirm.focus()
-          }
-        } else {
-          if (document.activeElement === confirm) {
-            e.preventDefault()
-            cancel.focus()
-          }
-        }
-      }
-    }
-
-    document.addEventListener('keydown', handleKeyDown, true)
-    return () => document.removeEventListener('keydown', handleKeyDown, true)
-  }, [open, onCancel])
-
-  if (!open) return null
-
-  // Shell shared by both skins. Native Escape would close the <dialog> behind
-  // React's back — block it; the keydown handler above routes Escape to onCancel.
+  // The modal <dialog>, Escape -> onCancel (never onConfirm), the focus trap and
+  // initial focus on CANCEL (safe default per §17 R17) all live in DialogShell.
   const renderShell = (children: React.ReactNode): React.ReactElement => (
-    <dialog
-      ref={dialogRef}
-      className="co-confirm-dialog"
+    <DialogShell
+      open={open}
+      onCancel={onCancel}
+      labelledBy={titleId}
+      describedBy={messageId}
+      initialFocusRef={cancelRef}
+      fallbackFocus={fallbackFocus}
       role="alertdialog"
-      aria-modal="true"
-      aria-labelledby="confirm-dialog-title"
-      aria-describedby="confirm-dialog-message"
-      onCancel={(e) => e.preventDefault()}
+      className="co-confirm-dialog"
     >
       {children}
-    </dialog>
+    </DialogShell>
   )
+
+  const errorBlock = error ? (
+    <p
+      role="alert"
+      className={skin === 'realm' ? undefined : 'text-sm text-co-status-attention mb-4'}
+      style={skin === 'realm' ? REALM_ERROR : undefined}
+    >
+      {error}
+    </p>
+  ) : null
+
+  if (!open) return null
 
   if (skin === 'realm') {
     return renderShell(
@@ -201,8 +182,10 @@ export function ConfirmDialog({
         />
         {/* Panel */}
         <div ref={containerRef} style={REALM_OVERLAY}>
-          <div id="confirm-dialog-title" style={REALM_TITLE}>{title}</div>
-          <div id="confirm-dialog-message" style={REALM_MESSAGE}>{message}</div>
+          <div id={titleId} style={REALM_TITLE}>{title}</div>
+          <div id={messageId} style={REALM_MESSAGE}>{message}</div>
+          {details}
+          {errorBlock}
           <div style={REALM_BUTTON_ROW}>
             <button ref={cancelRef} style={REALM_BUTTON_CANCEL} onClick={onCancel}>
               {cancelLabel}
@@ -227,17 +210,19 @@ export function ConfirmDialog({
         className="relative bg-co-bg-primary border border-co-border rounded-xl shadow-2xl p-6 w-full max-w-sm mx-4"
       >
         <h2
-          id="confirm-dialog-title"
+          id={titleId}
           className="text-sm font-semibold text-co-text-primary mb-2"
         >
           {title}
         </h2>
         <p
-          id="confirm-dialog-message"
+          id={messageId}
           className="text-sm text-co-text-secondary mb-6 leading-relaxed"
         >
           {message}
         </p>
+        {details}
+        {errorBlock}
         <div className="flex gap-2 justify-end">
           <button
             ref={cancelRef}

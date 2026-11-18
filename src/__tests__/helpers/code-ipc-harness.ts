@@ -2,6 +2,7 @@ import { vi } from 'vitest'
 import type { IsAppOrigin } from '../../main/ipc/app-origin'
 import type { AppState } from '../../main/ipc/handlers'
 import type { Workspace } from '@main/types/workspace'
+import { fakeRuntime, workspaceRegistryFields } from './workspace-fixture'
 import type { RepoService } from '../../main/services/git-service'
 import type { CodeWatcher } from '../../main/services/code-watcher'
 import type { RepoInfo, CodeStatusResponse, CodeBaselineResponse, CodeFileIndexResponse } from '@main/types/code'
@@ -38,6 +39,7 @@ export function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
   return {
     slug: 'test-ws',
     path: '/tmp/does-not-matter',
+    ...workspaceRegistryFields('/tmp/does-not-matter'),
     displayName: 'Test WS',
     docsRoot: '/tmp/does-not-matter/docs',
     docsRootExists: false,
@@ -52,8 +54,6 @@ export function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     shippedFeatures: [],
     lastActivityTimestamp: null,
     weekShipCount: 0,
-    pinned: false,
-    archived: false,
     level: { number: 1, name: 'Prototype', xpRequired: 100, xpCurrent: 0 },
     xp: 0,
     readmeContent: null,
@@ -62,8 +62,9 @@ export function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
 }
 
 export function makeAppState(workspaces: Workspace[] = []): AppState {
+  const map = new Map(workspaces.map((w) => [w.slug, w]))
   return {
-    workspaces: new Map(workspaces.map((w) => [w.slug, w])),
+    workspaces: map,
     activityFeed: [],
     notifications: [],
     gamificationState: {
@@ -72,7 +73,8 @@ export function makeAppState(workspaces: Workspace[] = []): AppState {
       workspaceLevels: {},
     },
     homunculusState: null,
-    discoveryService: {} as AppState['discoveryService'],
+    registry: {} as AppState['registry'],
+    runtime: fakeRuntime(map),
     channelDiscovery: null,
     channelConnection: null,
     terminalManager: null,

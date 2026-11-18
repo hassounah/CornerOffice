@@ -147,6 +147,13 @@ export interface SandboxManagerAppStateDeps {
   getWorkspace: (slug: string) => SandboxManagerWorkspaceFacts | undefined
   /** Every known workspace's absolute path — used as `RepoCtx.workspaceRoots` (SEC-L3). */
   getWorkspaceRoots: () => readonly string[]
+  /**
+   * Resolves once the workspaces' availability probes have settled (#0039: `getWorkspace` is fail-closed, so a
+   * workspace still `checking` is unknown). `reconcile()` waits for it before it looks at containers, because it
+   * runs once per app session and would otherwise skip every workspace that was not yet available. Optional:
+   * without it, reconcile runs at once.
+   */
+  whenWorkspacesSettled?: () => Promise<void>
 }
 
 /**
@@ -540,7 +547,7 @@ function normalizeDocsRoot(repo: string, raw: string | null): string | null {
   return real
 }
 
-/** `WorkspaceConfig.docsRoot` (settings) → `readMemoryDocsRoot` (memory.md,
+/** The registry entry's `docsRoot` → `readMemoryDocsRoot` (memory.md,
  *  agent-writable) → `{repo}/docs` (default) — plan step 3.4's own
  *  resolution, distinct from the #0028 `Workspace.docsRoot` field (which
  *  loses the provenance eligibility needs). */
@@ -1145,7 +1152,7 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
    */
   async function ensurePort(slug: string): Promise<{ port: number; wasNew: boolean } | null> {
     const cfg = config.getSandboxConfig()
-    const existing = cfg.workspaces[slug]?.channelPort ?? null
+    const existing = Object.hasOwn(cfg.workspaces, slug) ? (cfg.workspaces[slug].channelPort ?? null) : null
     if (existing !== null) return { port: existing, wasNew: false }
 
     const taken = Object.values(cfg.workspaces)
@@ -2129,8 +2136,37 @@ export function createSandboxManager(deps: SandboxManagerDeps, callbacks: Sandbo
     }
   }
 
-  async function reconcile(): Promise<void> {
+  /** The reconcile that is running now, if any: concurrent callers share it (one `ps`, one orphan sweep). */
+  let reconcileInFlight: Promise<void> | null = null
+
+  /**
+   * One reconcile at a time. Every `getEnvironment` while `reconciled` is still false asks for one, and waiting for
+   * workspace availability widens that window, so concurrent calls are coalesced onto the one in flight. Sequential
+   * calls (after it finished) still run again, as before. `runReconcile` starts synchronously, so the first `ps`
+   * is issued in the caller's tick.
+   */
+  function reconcile(): Promise<void> {
+    if (reconcileInFlight) return reconcileInFlight
+    const run = runReconcile().finally(() => {
+      reconcileInFlight = null
+    })
+    reconcileInFlight = run
+    return run
+  }
+
+  async function runReconcile(): Promise<void> {
     if (!cachedDockerState || cachedDockerState.docker !== 'ok') return
+
+    // Workspaces still `checking` are unknown to getWorkspace: wait, so the one reconcile of this session sees them.
+    // Only when the dependency exists: without it the first `ps` must still start in this same tick, as before.
+    if (appState.whenWorkspacesSettled) {
+      try {
+        await appState.whenWorkspacesSettled()
+      } catch {
+        // A failed wait must not stop the reconcile; it runs with whatever is available.
+      }
+      if (!cachedDockerState || cachedDockerState.docker !== 'ok') return // the daemon may have gone while we waited
+    }
 
     const containers = await psSandboxContainers()
     if (containers === null) return // BE-M1: a failed ps leaves reconcile re-runnable

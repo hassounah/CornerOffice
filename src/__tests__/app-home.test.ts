@@ -11,11 +11,16 @@ import {
   PROFILE_NAME_RE,
   ProfileError,
   activeProfile,
+  assertConfigDirSafe,
   claudeHome,
   coHome,
   coHomeDisplay,
   coHomeOr,
+  configDir,
+  configDirDisplay,
   discoveryRoots,
+  ensureConfigDir,
+  ensureDataDir,
   ensureProfileHome,
   fatalProfileError,
   isInSandbox,
@@ -161,7 +166,8 @@ describe('fatalProfileError', () => {
     const write = vi.spyOn(fs, 'writeSync').mockReturnValue(0)
     const procExit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
     exitMock.mockClear()
-    fatalProfileError('boom', 3)
+    // `never`-returning: called inside a callback so the assertions below stay reachable (process.exit is mocked).
+    expect(() => fatalProfileError('boom', 3)).not.toThrow()
     expect(write).toHaveBeenCalledWith(2, 'Corner Office: boom\n')
     expect(exitMock).toHaveBeenCalledWith(3)
     expect(procExit).toHaveBeenCalledWith(3)
@@ -171,7 +177,7 @@ describe('fatalProfileError', () => {
     vi.spyOn(fs, 'writeSync').mockReturnValue(0)
     const procExit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
     exitMock.mockClear()
-    fatalProfileError('x')
+    expect(() => fatalProfileError('x')).not.toThrow()
     expect(exitMock).toHaveBeenCalledWith(1)
     expect(procExit).toHaveBeenCalledWith(1)
   })
@@ -245,5 +251,214 @@ describe('ensureProfileHome', () => {
     ensureProfileHome(p)
     expect(exitMock).toHaveBeenCalledWith(1)
     expect(fs.writeSync).toHaveBeenCalledWith(2, expect.stringContaining('is owned by uid'))
+  })
+})
+
+describe('configDir', () => {
+  beforeEach(() => resetActiveProfileForTests())
+  afterEach(() => resetActiveProfileForTests())
+
+  it('defaults to <realHome>/.config/corner-office', () => {
+    const p = resolveProfile({}, base)
+    expect(p.configDir).toBe('/home/u/.config/corner-office')
+    expect(p.configDirDisplay).toBe('~/.config/corner-office')
+  })
+
+  it('honours an absolute XDG_CONFIG_HOME', () => {
+    const p = resolveProfile({ XDG_CONFIG_HOME: '/xdg' }, base)
+    expect(p.configDir).toBe('/xdg/corner-office')
+    expect(p.configDirDisplay).toBe('/xdg/corner-office')
+  })
+
+  it.each(['relative/dir', '.config', '~/cfg'])('ignores a relative XDG_CONFIG_HOME (%s)', (xdg) => {
+    const p = resolveProfile({ XDG_CONFIG_HOME: xdg }, base)
+    expect(p.configDir).toBe('/home/u/.config/corner-office')
+  })
+
+  it('treats an empty XDG_CONFIG_HOME as unset', () => {
+    expect(resolveProfile({ XDG_CONFIG_HOME: '' }, base).configDir).toBe('/home/u/.config/corner-office')
+  })
+
+  it('a named profile uses <home>/electron and ignores XDG_CONFIG_HOME', () => {
+    const p = resolveProfile({ CORNER_OFFICE_PROFILE: 'dev', XDG_CONFIG_HOME: '/xdg' }, base)
+    expect(p.configDir).toBe('/home/u/.corner-office/profiles/dev/electron')
+    expect(p.configDirDisplay).toBe('~/.corner-office/profiles/dev/electron')
+  })
+
+  it('dev profile: configDir === userDataDir, distinct from the default profile (#0039 3.13)', () => {
+    const dev = resolveProfile({ CORNER_OFFICE_PROFILE: 'dev' }, base)
+    const def = resolveProfile({}, base)
+    expect(dev.configDir).toBe('/home/u/.corner-office/profiles/dev/electron')
+    expect(dev.configDir).toBe(dev.userDataDir)
+    expect(dev.configDir).not.toBe(def.configDir)
+  })
+
+  it('the accessors follow the active profile', () => {
+    setActiveProfile(resolveProfile({ CORNER_OFFICE_PROFILE: 'dev' }, base))
+    expect(configDir()).toBe('/home/u/.corner-office/profiles/dev/electron')
+    expect(configDirDisplay()).toBe('~/.corner-office/profiles/dev/electron')
+  })
+
+  it('the fallback answers from process.env and arms the freeze tripwire', () => {
+    vi.stubEnv('XDG_CONFIG_HOME', '')
+    expect(configDir()).toBe('/home/u/.config/corner-office')
+    expect(configDirDisplay()).toBe('~/.config/corner-office')
+    expect(() => setActiveProfile(resolveProfile({ CORNER_OFFICE_PROFILE: 'dev' }, base))).toThrow(/after coHome/)
+    vi.unstubAllEnvs()
+  })
+
+  it('package.json is named corner-office with no productName (#0039 3.13)', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', '..', 'package.json'), 'utf8')) as Record<string, unknown>
+    expect(pkg.name).toBe('corner-office')
+    expect(pkg).not.toHaveProperty('productName')
+  })
+})
+
+describe('config dir safety', () => {
+  let tmp: string
+  let dir: string
+
+  beforeEach(() => {
+    resetActiveProfileForTests()
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'app-home-cfg-'))
+    dir = path.join(tmp, 'corner-office')
+    setActiveProfile(resolveProfile({ XDG_CONFIG_HOME: tmp }, { ...base, realHome: tmp }))
+    vi.spyOn(fs, 'writeSync').mockReturnValue(0)
+    vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+    exitMock.mockClear()
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    resetActiveProfileForTests()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  })
+
+  const foreignOwner = () => {
+    const real = fs.lstatSync(dir)
+    vi.spyOn(fs, 'lstatSync').mockReturnValue({ ...real, isSymbolicLink: () => false, isDirectory: () => true, uid: (process.getuid?.() ?? 0) + 1 } as fs.Stats)
+  }
+
+  it('ensureConfigDir creates the dir with mode 0700', () => {
+    ensureConfigDir()
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700)
+    expect(exitMock).not.toHaveBeenCalled()
+  })
+
+  it('ensureConfigDir tightens a looser dir and is idempotent', () => {
+    fs.mkdirSync(dir)
+    fs.chmodSync(dir, 0o755)
+    ensureConfigDir()
+    ensureConfigDir()
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700)
+    expect(exitMock).not.toHaveBeenCalled()
+  })
+
+  it('ensureConfigDir exits fatally on a symlink', () => {
+    const target = path.join(tmp, 'elsewhere')
+    fs.mkdirSync(target)
+    fs.symlinkSync(target, dir)
+    ensureConfigDir()
+    expect(exitMock).toHaveBeenCalledWith(1)
+    expect(fs.writeSync).toHaveBeenCalledWith(2, expect.stringContaining(`config folder ${dir} is not a plain directory`))
+  })
+
+  it('ensureConfigDir exits fatally on a foreign owner', () => {
+    fs.mkdirSync(dir)
+    foreignOwner()
+    ensureConfigDir()
+    expect(exitMock).toHaveBeenCalledWith(1)
+    expect(fs.writeSync).toHaveBeenCalledWith(2, expect.stringContaining('is owned by uid'))
+  })
+
+  it('assertConfigDirSafe passes for a plain dir and for a missing one', () => {
+    expect(() => assertConfigDirSafe()).not.toThrow()
+    fs.mkdirSync(dir)
+    expect(() => assertConfigDirSafe()).not.toThrow()
+  })
+
+  it('assertConfigDirSafe throws on a symlink and never exits', () => {
+    const target = path.join(tmp, 'elsewhere')
+    fs.mkdirSync(target)
+    fs.symlinkSync(target, dir)
+    expect(() => assertConfigDirSafe()).toThrow(/not a plain directory/)
+    expect(exitMock).not.toHaveBeenCalled()
+  })
+
+  it('assertConfigDirSafe throws on a foreign owner and never exits', () => {
+    fs.mkdirSync(dir)
+    foreignOwner()
+    expect(() => assertConfigDirSafe()).toThrow(/owned by uid/)
+    expect(exitMock).not.toHaveBeenCalled()
+  })
+
+  describe('an lstat failure other than ENOENT', () => {
+    const failLstat = (code: string | undefined) =>
+      vi.spyOn(fs, 'lstatSync').mockImplementation(() => {
+        throw Object.assign(new Error(`${code ?? 'weird'}: lstat '${dir}' secret-detail`), code ? { code } : {})
+      })
+
+    it('ensureConfigDir reaches fatalProfileError with the fixed message: the code, never the raw error or the path', () => {
+      // Only the safety check's lstat fails; the later one (after the mocked exit returns) is the real call.
+      const real = fs.lstatSync.bind(fs)
+      vi.spyOn(fs, 'lstatSync').mockImplementationOnce(() => {
+        throw Object.assign(new Error(`EACCES: lstat '${dir}' secret-detail`), { code: 'EACCES' })
+      })
+      vi.mocked(fs.lstatSync).mockImplementation(real as typeof fs.lstatSync)
+
+      ensureConfigDir()
+
+      const message = 'the settings folder cannot be inspected (EACCES). Check its permissions, or point XDG_CONFIG_HOME somewhere else.'
+      expect(fs.writeSync).toHaveBeenCalledWith(2, `Corner Office: ${message}\n`)
+      expect(exitMock).toHaveBeenCalledWith(1)
+      const written = vi.mocked(fs.writeSync).mock.calls.map((call) => String(call[1])).join('')
+      expect(written).not.toContain(dir)
+      expect(written).not.toContain('secret-detail')
+    })
+
+    it('assertConfigDirSafe throws the same typed error', () => {
+      failLstat('ENOTDIR')
+      expect(() => assertConfigDirSafe()).toThrow(ProfileError)
+      expect(() => assertConfigDirSafe()).toThrow(/\(ENOTDIR\)/)
+    })
+
+    it('an error without a code is reported as unknown, still without the raw message', () => {
+      failLstat(undefined)
+      expect(() => assertConfigDirSafe()).toThrow('the settings folder cannot be inspected (unknown error). Check its permissions, or point XDG_CONFIG_HOME somewhere else.')
+    })
+
+    it('ENOENT is still not a problem: a missing dir is created', () => {
+      expect(fs.existsSync(dir)).toBe(false)
+      ensureConfigDir()
+      expect(fs.existsSync(dir)).toBe(true)
+    })
+  })
+})
+
+describe('ensureDataDir', () => {
+  let tmp: string
+
+  beforeEach(() => {
+    resetActiveProfileForTests()
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'app-home-data-'))
+    setActiveProfile(resolveProfile({ CORNER_OFFICE_PROFILE: 'dev' }, { ...base, realHome: tmp }))
+  })
+  afterEach(() => {
+    resetActiveProfileForTests()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  })
+
+  it('creates the data dir and events/ with mode 0700', () => {
+    ensureDataDir()
+    expect(fs.statSync(coHome()).mode & 0o777).toBe(0o700)
+    expect(fs.statSync(path.join(coHome(), 'events')).mode & 0o777).toBe(0o700)
+  })
+
+  it('chmods existing dirs to 0700', () => {
+    fs.mkdirSync(path.join(coHome(), 'events'), { recursive: true })
+    fs.chmodSync(coHome(), 0o755)
+    fs.chmodSync(path.join(coHome(), 'events'), 0o755)
+    ensureDataDir()
+    expect(fs.statSync(coHome()).mode & 0o777).toBe(0o700)
+    expect(fs.statSync(path.join(coHome(), 'events')).mode & 0o777).toBe(0o700)
   })
 })

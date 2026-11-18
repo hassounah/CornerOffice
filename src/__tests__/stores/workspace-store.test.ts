@@ -8,7 +8,6 @@ import type { Workspace } from '@main/types/workspace'
 
 const mockGetAll = vi.fn()
 const mockGetDetail = vi.fn()
-const mockUpdateConfig = vi.fn()
 const mockOn = vi.fn((_ch: string, _cb: (...args: unknown[]) => void) => vi.fn())
 
 Object.defineProperty(window, 'cornerOffice', {
@@ -16,7 +15,6 @@ Object.defineProperty(window, 'cornerOffice', {
     workspace: {
       getAll: mockGetAll,
       getDetail: mockGetDetail,
-      updateConfig: mockUpdateConfig,
     },
     on: mockOn,
   },
@@ -30,10 +28,6 @@ Object.defineProperty(window, 'cornerOffice', {
 
 function ok<T>(data: T) {
   return { data, error: null }
-}
-
-function err(message: string) {
-  return { data: null, error: { code: 'INTERNAL_ERROR', message } }
 }
 
 function getState() {
@@ -67,25 +61,6 @@ describe('workspace-store gap tests', () => {
       error: null,
     })
     mockOn.mockReturnValue(vi.fn())
-  })
-
-  // -------------------------------------------------------------------------
-  // updateConfig
-  // -------------------------------------------------------------------------
-
-  it('updateConfig — calls workspace.updateConfig IPC with slug and config', async () => {
-    mockUpdateConfig.mockResolvedValue(ok(null))
-
-    await getState().updateConfig('my-workspace', { theme: 'dark' })
-
-    expect(mockUpdateConfig).toHaveBeenCalledOnce()
-    expect(mockUpdateConfig).toHaveBeenCalledWith('my-workspace', { theme: 'dark' })
-  })
-
-  it('updateConfig — throws on IPC error', async () => {
-    mockUpdateConfig.mockResolvedValue(err('update failed'))
-
-    await expect(getState().updateConfig('my-workspace', {})).rejects.toThrow('update failed')
   })
 
   // -------------------------------------------------------------------------
