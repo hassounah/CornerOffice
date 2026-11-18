@@ -1,17 +1,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
-import type { AppConfig, WorkspaceConfig } from '@main/types/config'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import type { Settings as SettingsData } from '@main/services/stores'
+import { defaultSettings } from '@main/services/stores'
+import type { Workspace } from '@main/types/workspace'
+import { makeWorkspace } from '../../helpers/workspace-fixture'
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
 
 const mockSettingsStore = vi.hoisted(() => ({
-  config: null as AppConfig | null,
+  config: null as SettingsData | null,
   loading: false,
   error: null as string | null,
+  storeHealth: null,
+  storeHealthDismissed: false,
   fetchConfig: vi.fn().mockResolvedValue(undefined),
   updateConfig: vi.fn().mockResolvedValue(undefined),
+  setExclusions: vi.fn().mockResolvedValue(undefined),
+  fetchStoreHealth: vi.fn().mockResolvedValue(undefined),
+  dismissStoreHealth: vi.fn(),
 }))
 
 vi.mock('../../../renderer/stores/settings-store', () => ({
@@ -20,16 +28,10 @@ vi.mock('../../../renderer/stores/settings-store', () => ({
   ),
 }))
 
-const mockWorkspaceStore = vi.hoisted(() => ({
-  workspaces: [] as import('@main/types/workspace').Workspace[],
-  fetchAll: vi.fn().mockResolvedValue(undefined),
-  fetchOne: vi.fn().mockResolvedValue(undefined),
-}))
+const mockNavigate = vi.hoisted(() => vi.fn())
 
-vi.mock('../../../renderer/stores/workspace-store', () => ({
-  useWorkspaceStore: vi.fn((selector?: (s: typeof mockWorkspaceStore) => unknown) =>
-    selector ? selector(mockWorkspaceStore) : mockWorkspaceStore,
-  ),
+vi.mock('react-router', () => ({
+  useNavigate: () => mockNavigate,
 }))
 
 // Mock window.cornerOffice — IPC responses use { data, error } envelope
@@ -67,6 +69,9 @@ import { HookSettings } from '../../../renderer/components/settings/HookSettings
 import { WorkspaceSettings } from '../../../renderer/components/settings/WorkspaceSettings'
 import Settings from '../../../renderer/pages/Settings'
 import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
+import { useWorkspaceStore } from '../../../renderer/stores/workspace-store'
+import { useDiscoveryStore } from '../../../renderer/stores/discovery-store'
+import { IpcError } from '../../../renderer/utils/ipc'
 import { registerDirtySource, useGuardDialogStore } from '../../../renderer/stores/dirty-registry'
 import { expectNoAxeViolations } from '../../helpers/a11y'
 
@@ -74,15 +79,10 @@ import { expectNoAxeViolations } from '../../helpers/a11y'
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+function makeConfig(overrides: Partial<SettingsData> = {}): SettingsData {
   return {
-    version: 1,
+    ...defaultSettings(),
     companyName: 'Acme Corp',
-    workspaces: [],
-    discoveryExclusions: [],
-    firstLaunchComplete: true,
-    terminalEmulator: null,
-    hookScriptPath: '',
     notifications: {
       osNotificationsEnabled: true,
       showMissedOnStartup: true,
@@ -100,29 +100,6 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       compactView: false,
       shipMomentStyle: 'full',
     },
-    hooks: {
-      installed: false,
-      installedAt: null,
-      hookScriptPath: '',
-    },
-    realm: {
-      enabled: false,
-      mapping: [],
-      shipCelebration: 'townSquare' as const,
-    },
-    terminal: { fontSize: 14, windowBounds: {} },
-    ...overrides,
-  }
-}
-
-function makeWorkspaceConfig(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfig {
-  return {
-    slug: 'my-project',
-    path: '/home/user/my-project',
-    displayName: null,
-    docsRoot: null,
-    pinned: false,
-    archived: false,
     ...overrides,
   }
 }
@@ -553,89 +530,133 @@ describe('HookSettings', () => {
 // ---------------------------------------------------------------------------
 
 describe('WorkspaceSettings', () => {
+  const discoveryOriginal = useDiscoveryStore.getState()
+  const withExclusions = (exclusions: string[]): SettingsData => {
+    const config = makeConfig()
+    return { ...config, discovery: { ...config.discovery, exclusions } }
+  }
+
   beforeEach(() => {
     vi.clearAllMocks()
     mockSettingsStore.config = makeConfig()
+    mockSettingsStore.setExclusions.mockResolvedValue(undefined)
+    useWorkspaceStore.setState({ workspaces: [], loaded: true, pending: new Set() })
   })
 
-  it('shows empty state when no workspaces', () => {
+  afterEach(() => {
+    useWorkspaceStore.setState({ workspaces: [] })
+  })
+
+  it('shows the empty prompt (the same one as the Dashboard) when the registry is empty', () => {
     render(<WorkspaceSettings />)
-    expect(screen.getByText('No workspaces discovered yet.')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'No workspaces yet. Try Discover to look for projects, or add a folder.' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Discover/ })).toBeInTheDocument()
+    expect(screen.queryByText(/^Workspaces \(/)).toBeNull()
   })
 
-  it('renders workspace rows', () => {
-    mockSettingsStore.config = makeConfig({
-      workspaces: [makeWorkspaceConfig({ slug: 'my-project' })],
-    })
+  it('New workspace… in the empty prompt opens the create dialog', async () => {
     render(<WorkspaceSettings />)
-    expect(screen.getByText('my-project')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /New workspace/ }))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
   })
 
-  it('renders Re-discover button', () => {
+  it('renders the workspace manager with a row per workspace, home-relative paths and the toolbar', () => {
+    useWorkspaceStore.setState({ workspaces: [makeWorkspace({ slug: 'my-project', displayName: 'My Project', path: '/home/user/my-project' })] })
     render(<WorkspaceSettings />)
-    expect(screen.getByRole('button', { name: 'Re-discover' })).toBeInTheDocument()
+    expect(screen.getByText('Workspaces (1)')).toBeInTheDocument()
+    expect(screen.getByText('My Project')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Add folder/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /New workspace/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Discover/ })).toBeInTheDocument()
   })
 
-  it('calls fetchAll on Re-discover click', () => {
+  it('has no Re-discover button, and no Pinned or Archived section', () => {
+    useWorkspaceStore.setState({ workspaces: [makeWorkspace({ slug: 'my-project' })] })
     render(<WorkspaceSettings />)
-    fireEvent.click(screen.getByRole('button', { name: 'Re-discover' }))
-    expect(mockWorkspaceStore.fetchAll).toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Re-discover' })).toBeNull()
+    expect(screen.queryByText('Pinned')).toBeNull()
+    expect(screen.queryByText('Archived')).toBeNull()
   })
 
-  it('shows pinned section when pinned workspaces exist', () => {
-    mockSettingsStore.config = makeConfig({
-      workspaces: [makeWorkspaceConfig({ slug: 'pinned-ws', pinned: true })],
-    })
+  it('Discover… opens the discover dialog, which starts a scan', async () => {
+    const start = vi.fn().mockResolvedValue(undefined)
+    useDiscoveryStore.setState({ start })
+    useWorkspaceStore.setState({ workspaces: [makeWorkspace({ slug: 'my-project' })] })
     render(<WorkspaceSettings />)
-    expect(screen.getByText('Pinned')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Discover/ }))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(start).toHaveBeenCalled()
+    useDiscoveryStore.setState(discoveryOriginal)
   })
 
-  it('shows archived section when archived workspaces exist', () => {
-    mockSettingsStore.config = makeConfig({
-      workspaces: [makeWorkspaceConfig({ slug: 'archived-ws', archived: true })],
-    })
-    render(<WorkspaceSettings />)
-    expect(screen.getByText('Archived')).toBeInTheDocument()
-  })
-
-  it('renders exclusion pattern input', () => {
+  it('renders the exclusion pattern input', () => {
     render(<WorkspaceSettings />)
     expect(screen.getByRole('textbox', { name: 'Exclusion pattern' })).toBeInTheDocument()
   })
 
-  it('adds exclusion on Add button click', () => {
+  it('adds an exclusion through the discovery channel, and clears the field', async () => {
     render(<WorkspaceSettings />)
     const input = screen.getByRole('textbox', { name: 'Exclusion pattern' })
     fireEvent.change(input, { target: { value: 'vendor' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
-    expect(mockSettingsStore.updateConfig).toHaveBeenCalledWith(
-      expect.objectContaining({ discoveryExclusions: ['vendor'] }),
-    )
+    await waitFor(() => expect(mockSettingsStore.setExclusions).toHaveBeenCalledWith(['vendor']))
+    await waitFor(() => expect(input).toHaveValue(''))
+  })
+
+  it('Enter adds the exclusion too, and a duplicate is ignored', async () => {
+    mockSettingsStore.config = withExclusions(['vendor'])
+    render(<WorkspaceSettings />)
+    const input = screen.getByRole('textbox', { name: 'Exclusion pattern' })
+    fireEvent.change(input, { target: { value: 'vendor' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(input).toHaveValue(''))
+    expect(mockSettingsStore.setExclusions).not.toHaveBeenCalled()
   })
 
   it('renders existing exclusion patterns', () => {
-    mockSettingsStore.config = makeConfig({ discoveryExclusions: ['node_modules', '.git'] })
+    mockSettingsStore.config = withExclusions(['node_modules', '.git'])
     render(<WorkspaceSettings />)
     expect(screen.getByText('node_modules')).toBeInTheDocument()
     expect(screen.getByText('.git')).toBeInTheDocument()
   })
 
-  it('removes exclusion on × click', () => {
-    mockSettingsStore.config = makeConfig({ discoveryExclusions: ['node_modules'] })
+  it('removes an exclusion on × click', async () => {
+    mockSettingsStore.config = withExclusions(['node_modules', '.git'])
     render(<WorkspaceSettings />)
     fireEvent.click(screen.getByRole('button', { name: 'Remove exclusion node_modules' }))
-    expect(mockSettingsStore.updateConfig).toHaveBeenCalledWith(
-      expect.objectContaining({ discoveryExclusions: [] }),
-    )
+    await waitFor(() => expect(mockSettingsStore.setExclusions).toHaveBeenCalledWith(['.git']))
   })
 
-  it('expands workspace row to show details', () => {
-    mockSettingsStore.config = makeConfig({
-      workspaces: [makeWorkspaceConfig({ slug: 'my-project' })],
-    })
+  it('a refused exclusion shows fixed copy, keeps the text, and never the thrown message', async () => {
+    mockSettingsStore.setExclusions.mockRejectedValue(new IpcError('VALIDATION_ERROR', 'raw /secret/path'))
     render(<WorkspaceSettings />)
-    fireEvent.click(screen.getByRole('button', { name: 'Expand my-project' }))
-    expect(screen.getByLabelText('Display Name')).toBeInTheDocument()
+    const input = screen.getByRole('textbox', { name: 'Exclusion pattern' })
+    fireEvent.change(input, { target: { value: 'a/b' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("That input isn't valid.")
+    expect(screen.queryByText(/secret/)).toBeNull()
+    expect(input).toHaveValue('a/b')
+  })
+
+  it('an unexpected failure shows the generic copy', async () => {
+    mockSettingsStore.setExclusions.mockRejectedValue(new Error('boom'))
+    mockSettingsStore.config = withExclusions(['x'])
+    render(<WorkspaceSettings />)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove exclusion x' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong. Nothing was changed.')
+  })
+
+  it('shows Loading while the settings are not loaded', () => {
+    mockSettingsStore.config = null
+    render(<WorkspaceSettings />)
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
+  })
+
+  it('has no axe violations', async () => {
+    useWorkspaceStore.setState({ workspaces: [makeWorkspace({ slug: 'my-project' })] })
+    mockSettingsStore.config = withExclusions(['node_modules'])
+    const { container } = render(<WorkspaceSettings />)
+    await expectNoAxeViolations(container)
   })
 })
 
@@ -725,8 +746,8 @@ describe('Settings page', () => {
 describe('Settings page — settingsRequest', () => {
   const SETTINGS_VIEW = { toolchains: { node: true, go: true, buildBase: true }, defaultAllowlist: [], globalAllowlist: [], workspaceAllowlists: {} }
 
-  function workspace(slug: string, displayName: string): import('@main/types/workspace').Workspace {
-    return { slug, displayName, path: `/home/u/${slug}` } as import('@main/types/workspace').Workspace
+  function workspace(slug: string, displayName: string): Workspace {
+    return makeWorkspace({ slug, displayName, path: `/home/u/${slug}` })
   }
 
   beforeEach(() => {
@@ -734,12 +755,12 @@ describe('Settings page — settingsRequest', () => {
     mockSettingsStore.config = makeConfig()
     mockSettingsStore.loading = false
     mockSettingsStore.error = null
-    mockWorkspaceStore.workspaces = [workspace('alpha', 'Alpha'), workspace('beta', 'Beta')]
+    useWorkspaceStore.setState({ workspaces: [workspace('alpha', 'Alpha'), workspace('beta', 'Beta')] })
     useSandboxStore.setState({ settingsRequest: null, settings: SETTINGS_VIEW })
   })
 
   afterEach(() => {
-    mockWorkspaceStore.workspaces = []
+    useWorkspaceStore.setState({ workspaces: [] })
   })
 
   const picker = () => screen.getByRole('combobox', { name: 'Workspace' }) as HTMLSelectElement

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Workspace, Pipeline, Feature } from '@main/types/workspace'
-import type { AppConfig } from '@main/types/config'
+import type { Settings } from '@main/services/stores'
 import type {
   CodeListDirResponse,
   CodeStatusResponse,
@@ -10,6 +10,7 @@ import type {
   RepoInfo,
 } from '@main/types/code'
 import { assertNoNestedInteractive } from '../../helpers/a11y'
+import { workspaceRegistryFields } from '../../helpers/workspace-fixture'
 
 // ---------------------------------------------------------------------------
 // realm-code-entry.test.tsx — Step 3.3 (#54): Realm's BrowseCodeBanner and
@@ -33,7 +34,7 @@ const mockSettingsStore = vi.hoisted(() => ({
   config: {
     realm: { enabled: true, mapping: [], shipCelebration: 'townSquare' as const },
     terminal: { fontSize: 14, windowBounds: {} },
-  } as unknown as AppConfig | null,
+  } as unknown as Settings | null,
   updateConfig: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -41,6 +42,9 @@ const mockWorkspaceStore = vi.hoisted(() => ({
   workspaces: [] as Workspace[],
   loading: false,
   fetchOne: vi.fn().mockResolvedValue(undefined),
+  // The Study's create-warning notice reads these.
+  createWarnings: new Map<string, string[]>(),
+  dismissWarning: vi.fn(),
 }))
 
 const mockDocViewerStore = vi.hoisted(() => ({
@@ -274,6 +278,7 @@ function makeWorkspace(slug: string, overrides: Partial<Workspace> = {}): Worksp
   return {
     slug,
     path: `/home/user/${slug}`,
+    ...workspaceRegistryFields(`/home/user/${slug}`),
     displayName: `Workspace ${slug}`,
     docsRoot: `/home/user/${slug}/docs`,
     docsRootExists: true,
@@ -288,8 +293,6 @@ function makeWorkspace(slug: string, overrides: Partial<Workspace> = {}): Worksp
     shippedFeatures: [],
     lastActivityTimestamp: null,
     weekShipCount: 0,
-    pinned: false,
-    archived: false,
     level: { number: 1, name: 'Prototype', xpRequired: 100, xpCurrent: 0 },
     xp: 0,
     readmeContent: null,
@@ -336,7 +339,7 @@ beforeEach(() => {
   mockSettingsStore.config = {
     realm: { enabled: true, mapping: [], shipCelebration: 'townSquare' as const },
     terminal: { fontSize: 14, windowBounds: {} },
-  } as unknown as AppConfig
+  } as unknown as Settings
   mockWorkspaceStore.workspaces = []
   mockDocViewerStore.mode = 'closed'
   mockListDir.mockResolvedValue(ok(mkListDirResponse([mkEntry('README.md')])))

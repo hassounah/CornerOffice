@@ -1,9 +1,9 @@
 import React, { useState, useRef } from 'react'
 import { useSettingsStore } from '../../stores/settings-store'
 import { guardAction } from '../../hooks/useUnsavedGuard'
-import type { AppConfig } from '@main/types/config'
+import type { Settings } from '@main/services/stores'
 
-type ShipStyle = AppConfig['appearance']['shipMomentStyle']
+type ShipStyle = Settings['appearance']['shipMomentStyle']
 
 const VIEW_OPTIONS: Array<{ value: 'corner-office' | 'corner-realm'; label: string }> = [
   { value: 'corner-office', label: 'Corner Office' },
@@ -220,7 +220,7 @@ export function AppearanceSettings(): React.ReactElement {
               const newSize = Number(e.target.value)
               if (fontSizeTimerRef.current !== null) clearTimeout(fontSizeTimerRef.current)
               fontSizeTimerRef.current = setTimeout(() => {
-                void updateConfig({ terminal: { fontSize: newSize } } as Partial<AppConfig>)
+                void updateConfig({ terminal: { fontSize: newSize } } as Partial<Settings>)
                 fontSizeTimerRef.current = null
               }, 120)
             }}

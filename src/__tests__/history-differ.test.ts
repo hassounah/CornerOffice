@@ -26,6 +26,24 @@ describe('HistoryDifferService', () => {
     svc = new HistoryDifferService()
   })
 
+  // ── remove ──────────────────────────────────────────────────────────────────
+
+  describe('remove', () => {
+    it('forgets a workspace so a later initialize re-seeds it without ship events', () => {
+      svc.initialize([{ slug: 'ws1', shippedFeatures: [makeFeature()] }])
+      svc.remove('ws1')
+      expect(svc.getStoredKeys('ws1')).toEqual([])
+      svc.initialize([{ slug: 'ws1', shippedFeatures: [makeFeature()] }])
+      expect(svc.diff('ws1', [makeFeature()]).newEntries).toEqual([])
+    })
+
+    it('is a no-op for an unknown workspace and leaves others alone', () => {
+      svc.initialize([{ slug: 'ws2', shippedFeatures: [makeFeature()] }])
+      svc.remove('nope')
+      expect(svc.getStoredKeys('ws2')).toHaveLength(1)
+    })
+  })
+
   // ── initialize ──────────────────────────────────────────────────────────────
 
   describe('initialize', () => {

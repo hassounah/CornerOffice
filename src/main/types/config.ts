@@ -55,7 +55,7 @@ export interface SandboxConfig {
 
 // ---------------------------------------------------------------------------
 // Remembered Start Session options (#0037 TRD §5.2). The zod schemas live in
-// config-manager.ts; these mirror them for renderer-safe imports.
+// services/stores.ts; these mirror them for renderer-safe imports.
 // ---------------------------------------------------------------------------
 
 export interface SessionChoice {
@@ -72,7 +72,8 @@ export interface SessionDefaults {
 }
 
 // ---------------------------------------------------------------------------
-// AppConfig — persisted to ~/.corner-office/config.json
+// Settings shapes. The settings themselves are the `Settings` type inferred from the zod schema in
+// services/stores.ts (persisted to settings.json); the pieces below are the ones other modules name.
 // ---------------------------------------------------------------------------
 
 // Code Explorer layout (#0031) — file tree width in px, shared by Office and Realm views
@@ -95,33 +96,6 @@ export interface TerminalConfig {
   };
 }
 
-export interface AppConfig {
-  version: number;                 // Schema version for migration (review finding BE-12)
-  companyName: string;
-  workspaces: WorkspaceConfig[];
-  notifications: NotificationConfig;
-  appearance: AppearanceConfig;
-  hooks: HookConfig;
-  realm: RealmConfig;
-  terminal: TerminalConfig;
-  codeExplorer?: CodeExplorerConfig; // Absent means defaults — no version bump, no migration
-  sandbox?: SandboxConfig;         // Absent means defaults (getSandboxConfig()) — no version bump, no migration
-  sessionDefaults?: SessionDefaults; // Remembered chooser options (v4); always present after loadConfig, written by main after a successful start
-  discoveryExclusions: string[];   // Additional directory-name exclusion patterns
-  firstLaunchComplete: boolean;
-  terminalEmulator: string | null; // User-override terminal binary; null = auto-detect
-  hookScriptPath: string;          // Deprecated — kept for config schema compat
-}
-
-export interface WorkspaceConfig {
-  slug: string;
-  path: string;
-  displayName: string | null;      // null = use slug title-cased
-  docsRoot: string | null;         // null = parse from memory.md, fallback to {path}/docs/
-  pinned: boolean;
-  archived: boolean;
-}
-
 export interface NotificationConfig {
   osNotificationsEnabled: boolean;
   showMissedOnStartup: boolean;
@@ -137,18 +111,6 @@ export interface NotificationConfig {
     start: string;                 // HH:MM format, e.g. "22:00"
     end: string;                   // HH:MM format, e.g. "08:00"
   };
-}
-
-export interface AppearanceConfig {
-  theme: 'dark' | 'light' | 'system';
-  compactView: boolean;
-  shipMomentStyle: 'full' | 'compact' | 'off'; // default: 'full' (review finding UX)
-}
-
-export interface HookConfig {
-  installed: boolean;
-  installedAt: string | null;      // ISO 8601
-  hookScriptPath: string;          // Deprecated — kept for config schema compat
 }
 
 // StateCache — persisted to ~/.corner-office/state.json

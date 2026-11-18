@@ -10,9 +10,9 @@ import {
   MAIN_CHANNELS,
   PUSH_CHANNELS,
 } from '../main/ipc/channels'
+import { ALLOWED_PUSH_CHANNELS } from '../preload/api'
 import {
   WorkspaceGetDetailSchema,
-  WorkspaceUpdateConfigSchema,
   ActivityGetFeedSchema,
   ConfigUpdateSchema,
   NotificationDismissSchema,
@@ -27,10 +27,10 @@ import {
 
 describe('IPC channel constants', () => {
   it('workspace channels are correct', () => {
-    expect(WORKSPACE_CHANNELS.DISCOVER).toBe('workspace:discover')
     expect(WORKSPACE_CHANNELS.GET_ALL).toBe('workspace:getAll')
     expect(WORKSPACE_CHANNELS.GET_DETAIL).toBe('workspace:getDetail')
-    expect(WORKSPACE_CHANNELS.UPDATE_CONFIG).toBe('workspace:updateConfig')
+    expect('DISCOVER' in WORKSPACE_CHANNELS).toBe(false)
+    expect('UPDATE_CONFIG' in WORKSPACE_CHANNELS).toBe(false)
     expect(WORKSPACE_CHANNELS.UPDATED).toBe('workspace:updated')
     expect(WORKSPACE_CHANNELS.STATUS_CHANGED).toBe('workspace:statusChanged')
   })
@@ -62,8 +62,14 @@ describe('IPC channel constants', () => {
     expect(NOTIFICATION_CHANNELS.NEW).toBe('notification:new')
   })
 
-  it('push channels list has exactly 20 entries', () => {
-    expect(PUSH_CHANNELS).toHaveLength(20)
+  it('push channels list has exactly 22 entries', () => {
+    expect(PUSH_CHANNELS).toHaveLength(22)
+  })
+
+  it('push channels include the registry pushes, and they match the preload whitelist', () => {
+    expect(PUSH_CHANNELS).toContain('workspace:listChanged')
+    expect(PUSH_CHANNELS).toContain('workspace:discoverProgress')
+    expect([...PUSH_CHANNELS].sort()).toEqual([...ALLOWED_PUSH_CHANNELS].sort())
   })
 
   it('push channels includes feature:shipped', () => {
@@ -98,26 +104,6 @@ describe('WorkspaceGetDetailSchema', () => {
 
   it('rejects missing slug', () => {
     expect(WorkspaceGetDetailSchema.safeParse({}).success).toBe(false)
-  })
-})
-
-describe('WorkspaceUpdateConfigSchema', () => {
-  it('accepts valid config update', () => {
-    expect(
-      WorkspaceUpdateConfigSchema.safeParse({
-        slug: 'my-project',
-        config: { slug: 'my-project', displayName: 'My Project', pinned: true, archived: false, docsRoot: null },
-      }).success
-    ).toBe(true)
-  })
-
-  it('rejects empty slug', () => {
-    expect(
-      WorkspaceUpdateConfigSchema.safeParse({
-        slug: '',
-        config: { slug: '', displayName: null, pinned: false, archived: false, docsRoot: null },
-      }).success
-    ).toBe(false)
   })
 })
 
@@ -157,11 +143,8 @@ describe('ConfigUpdateSchema — allowlist enforcement', () => {
   })
 
   it('rejects unknown field (hooks)', () => {
-    const result = ConfigUpdateSchema.safeParse({ hooks: { installed: true } })
-    // Zod strips unknown fields by default; verify hooks is not in the schema shape
-    expect(result.success).toBe(true) // parses OK but strips hooks
-    const data = result.data as Record<string, unknown>
-    expect(data.hooks).toBeUndefined()
+    // The schema is strict (#0039 X1): an unknown key is refused, not silently stripped.
+    expect(ConfigUpdateSchema.safeParse({ hooks: { installed: true } }).success).toBe(false)
   })
 
   it('rejects invalid discovery exclusion with path separator', () => {
@@ -175,14 +158,33 @@ describe('ConfigUpdateSchema — allowlist enforcement', () => {
     expect(ConfigUpdateSchema.safeParse({ discoveryExclusions: ['foo;rm -rf /'] }).success).toBe(false)
   })
 
-  it('accepts valid discovery exclusion', () => {
-    expect(ConfigUpdateSchema.safeParse({ discoveryExclusions: ['node_modules', '.git', 'dist'] }).success).toBe(true)
+  it('no longer accepts discoveryExclusions (they go through discovery:setExclusions)', () => {
+    expect(ConfigUpdateSchema.safeParse({ discoveryExclusions: ['node_modules', '.git', 'dist'] }).success).toBe(false)
   })
 
   it('rejects invalid theme value', () => {
     expect(
       ConfigUpdateSchema.safeParse({ appearance: { theme: 'purple', compactView: false, shipMomentStyle: 'full' } }).success
     ).toBe(false)
+  })
+
+  // Ported from config-manager.test.ts (deleted in #0039 3.7). The sandbox section and the remembered session
+  // choices have their own stores and their own channels; the renderer can write neither through config:update.
+  it('refuses a sandbox key outright, so the stored sandbox section cannot be touched through config:update', () => {
+    const result = ConfigUpdateSchema.safeParse({
+      companyName: 'Acme',
+      sandbox: { toolchains: { node: false, go: false, buildBase: false }, globalAllowlist: ['evil.com'], workspaces: {} },
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('refuses a sessionDefaults key: the renderer cannot write the remembered choices', () => {
+    const choice = { agentId: 'claude', location: 'host', hostPermissionMode: 'default', sandboxPermissionMode: 'default', networkMode: 'allowlist' }
+    expect(ConfigUpdateSchema.safeParse({ sessionDefaults: { last: choice, workspaces: {} } }).success).toBe(false)
+  })
+
+  it('a payload without those keys still passes', () => {
+    expect(ConfigUpdateSchema.safeParse({ companyName: 'New Name' })).toMatchObject({ success: true, data: { companyName: 'New Name' } })
   })
 })
 

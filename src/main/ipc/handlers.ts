@@ -1,7 +1,7 @@
 import log from 'electron-log/main'
 import fs from 'fs'
 import path from 'path'
-import { ipcMain, Menu, clipboard, shell } from 'electron'
+import { dialog, ipcMain, Menu, clipboard, shell } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { wrapHandler, notReadyStub } from './wrap-handler'
 import { wrapCodeHandler } from './wrap-code-handler'
@@ -20,6 +20,7 @@ import {
   GAMIFICATION_CHANNELS,
   ACTIVITY_CHANNELS,
   CONFIG_CHANNELS,
+  REGISTRY_SETTINGS_CHANNELS,
   NOTIFICATION_CHANNELS,
   DOCS_CHANNELS,
   CHANNEL_IPC,
@@ -33,8 +34,22 @@ import {
 } from './channels'
 import {
   WorkspaceGetDetailSchema,
-  WorkspaceUpdateConfigSchema,
   WorkspaceReadReadmeSchema,
+  WorkspacePickFolderSchema,
+  WorkspaceAddSchema,
+  WorkspaceAddManySchema,
+  WorkspaceCreateSchema,
+  WorkspaceRemoveSchema,
+  WorkspaceSetHiddenSchema,
+  WorkspaceRenameSchema,
+  WorkspaceSetDocsRootSchema,
+  WorkspaceRecheckSchema,
+  WorkspaceDiscoverStreamSchema,
+  WorkspaceDiscoverCancelSchema,
+  RealmSetAssignmentSchema,
+  DiscoverySetExclusionsSchema,
+  ConfigGetStoreHealthSchema,
+  ConfigRevealStoreFileSchema,
   ActivityGetFeedSchema,
   ConfigUpdateSchema,
   NotificationDismissSchema,
@@ -77,7 +92,7 @@ import {
   SessionGetDefaultsSchema,
   AgentsGetHostAvailabilitySchema,
 } from './schemas'
-import type { DocsListTreeInput, DocsReadFileInput, DocsWriteFileInput, TerminalSpawnInput } from './schemas'
+import type { ConfigUpdateInput, DocsListTreeInput, DocsReadFileInput, DocsWriteFileInput, TerminalSpawnInput } from './schemas'
 import type { SandboxManagerService } from '../services/sandbox-manager'
 import type { TerminalManagerService } from '../services/terminal-manager'
 import type { IpcResponse } from '../types/ipc'
@@ -93,8 +108,24 @@ import type {
   DocFileResponse,
   DocWriteResponse,
 } from '../types'
-import { WorkspaceDiscoveryService } from '../services/workspace-discovery'
-import { configManager } from '../services/config-manager'
+import { WorkspaceError } from '../services/workspace-registry'
+import type { WorkspaceRegistry } from '../services/workspace-registry'
+import { verifyDocsRootAtUse, type WorkspaceRuntime } from '../services/workspace-runtime'
+import { createWorkspaceCreator } from '../services/workspace-create'
+import type { CreateInput, CreateResult } from '../services/workspace-create'
+import { createGitService } from '../services/git-runner'
+import { createDiscoverController } from '../services/workspace-discover'
+import type { DiscoverController, DiscoverDeps, DiscoverProgress } from '../services/workspace-discover'
+import { STORE_NAMES, realRevealFs, revealStoreFile } from '../services/store-files'
+import type { RevealDeps, StoreHealthDetailMap, StoreHealthMap } from '../services/store-files'
+import { overlapsAnchored, isRefusedAsWorkspace } from '../services/anchored-paths'
+import { isUnsafeRoot, requireAvailableWorkspace } from '../services/repo-path'
+import { getStartupFlags } from '../services/startup-registry'
+import { configDir, configDirDisplay, discoveryRoots } from '../services/app-home'
+import type { JsonStore } from '../services/json-store'
+import { REALM_LOCATIONS, registryStore, sandboxStore, sessionDefaultsStore, settingsStore } from '../services/stores'
+import type { RealmLocation } from '../types/config'
+import type { Registry, SandboxFile, SessionDefaultsFile, Settings } from '../services/stores'
 import { getSessionDefaults, recordSessionStart } from '../services/session-defaults'
 import type { SessionStart } from '../services/session-defaults'
 import { getHostAvailability } from '../agents/availability'
@@ -128,12 +159,15 @@ function isKeyDocument(name: string): boolean {
   return KEY_DOCUMENT_NAMES.includes(name.toLowerCase()) || name.toLowerCase().endsWith(KEY_DOCUMENT_SUFFIX)
 }
 
-function resolveDocsRoot(workspaceSlug: string, appState: AppState): string {
-  const ws = appState.workspaces.get(workspaceSlug)
-  if (!ws) {
-    throw Object.assign(new Error('Access denied'), { code: IPC_ERROR_CODES.PERMISSION_DENIED })
-  }
-  return ws.docsRoot
+async function resolveDocsRoot(workspaceSlug: string, appState: AppState): Promise<string> {
+  // Fail closed (Sec H1): an unavailable workspace has no docs root to read or write. A refused docs root (it is, or
+  // leads into, an app folder; Sec M1) is never served either, and an approved one is verified again now, because
+  // the repo controls the path after the approval (a missing root that became a symlink, a symlink re-pointed).
+  const ws = requireAvailableWorkspace(workspaceSlug, appState)
+  if (ws.docsRootRefused === true) throw denied()
+  const real = await verifyDocsRootAtUse(ws)
+  if (real === null) throw denied()
+  return real
 }
 
 /**
@@ -185,15 +219,42 @@ export function registerHandlers(codeHandlerDeps?: {
   isAppOrigin: IsAppOrigin
 }): void {
   const codeWrapDeps = codeHandlerDeps ?? { getMainWindow: () => null, isAppOrigin: () => false }
-  ipcMain.handle(WORKSPACE_CHANNELS.DISCOVER,     stub(WORKSPACE_CHANNELS.DISCOVER))
   ipcMain.handle(WORKSPACE_CHANNELS.GET_ALL,      stub(WORKSPACE_CHANNELS.GET_ALL))
   ipcMain.handle(
     WORKSPACE_CHANNELS.GET_DETAIL,
     wrapHandler(notReadyStub(), WorkspaceGetDetailSchema) as HandlerFn,
   )
+  // Workspace registry (#0039): every channel that mutates, opens a dialog or touches the filesystem is registered
+  // through wrapCodeHandler even as a stub, so the sender/origin check and the fixed-copy error codes survive the swap.
+  const registryStubs: readonly (readonly [string, ZodSchema])[] = [
+    [WORKSPACE_CHANNELS.PICK_FOLDER, WorkspacePickFolderSchema],
+    [WORKSPACE_CHANNELS.ADD, WorkspaceAddSchema],
+    [WORKSPACE_CHANNELS.ADD_MANY, WorkspaceAddManySchema],
+    [WORKSPACE_CHANNELS.CREATE, WorkspaceCreateSchema],
+    [WORKSPACE_CHANNELS.REMOVE, WorkspaceRemoveSchema],
+    [WORKSPACE_CHANNELS.SET_HIDDEN, WorkspaceSetHiddenSchema],
+    [WORKSPACE_CHANNELS.RENAME, WorkspaceRenameSchema],
+    [WORKSPACE_CHANNELS.SET_DOCS_ROOT, WorkspaceSetDocsRootSchema],
+    [WORKSPACE_CHANNELS.RECHECK, WorkspaceRecheckSchema],
+    [WORKSPACE_CHANNELS.DISCOVER_STREAM, WorkspaceDiscoverStreamSchema],
+    [WORKSPACE_CHANNELS.DISCOVER_CANCEL, WorkspaceDiscoverCancelSchema],
+    [CONFIG_CHANNELS.REVEAL_STORE_FILE, ConfigRevealStoreFileSchema],
+  ]
+  for (const [channel, schema] of registryStubs) {
+    ipcMain.handle(channel, wrapCodeHandler(notReadyStub(), schema, codeWrapDeps) as HandlerFn)
+  }
+  // The two settings writes get the sender/origin check too (Sec L3), even though they touch no path or process.
   ipcMain.handle(
-    WORKSPACE_CHANNELS.UPDATE_CONFIG,
-    wrapHandler(notReadyStub(), WorkspaceUpdateConfigSchema) as HandlerFn,
+    REGISTRY_SETTINGS_CHANNELS.REALM_SET_ASSIGNMENT,
+    wrapCodeHandler(notReadyStub(), RealmSetAssignmentSchema, codeWrapDeps) as HandlerFn,
+  )
+  ipcMain.handle(
+    REGISTRY_SETTINGS_CHANNELS.DISCOVERY_SET_EXCLUSIONS,
+    wrapCodeHandler(notReadyStub(), DiscoverySetExclusionsSchema, codeWrapDeps) as HandlerFn,
+  )
+  ipcMain.handle(
+    CONFIG_CHANNELS.GET_STORE_HEALTH,
+    wrapHandler(notReadyStub(), ConfigGetStoreHealthSchema) as HandlerFn,
   )
   ipcMain.handle(
     WORKSPACE_CHANNELS.READ_README,
@@ -372,7 +433,10 @@ export interface AppState {
   notifications: NotificationItem[]
   gamificationState: GamificationState
   homunculusState: HomunculusState | null
-  discoveryService: WorkspaceDiscoveryService
+  /** The workspace registry (#0039): the one writer of `workspaces.json`. Replaces the startup `$HOME` scan. */
+  registry: WorkspaceRegistry
+  /** Builds, watches and rechecks the `Workspace` objects in `workspaces`. */
+  runtime: WorkspaceRuntime
   // Channels integration (Phase 1+)
   channelDiscovery: ChannelDiscoveryService | null
   channelConnection: ChannelConnectionService | null
@@ -383,8 +447,71 @@ export interface AppState {
 }
 
 
-function slugToTitle(slug: string): string {
-  return slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+/**
+ * What the real handlers read and write besides `AppState` (frozen in plan 3.2, #0039). Injected so handler tests
+ * use fakes. The four JSON stores replace `ConfigManager`.
+ */
+export interface RealHandlerDeps {
+  /** Fire-and-forget: remember what a successful session start used. */
+  recordSessionStart: (start: SessionStart) => void
+  stores: {
+    settings: JsonStore<Settings>
+    registry: JsonStore<Registry>
+    sandbox: JsonStore<SandboxFile>
+    sessionDefaults: JsonStore<SessionDefaultsFile>
+  }
+  /** The sender/origin check for the `wrapCodeHandler` channels (workspace intents, discover, reveal). Required: no default. */
+  isAppOrigin: IsAppOrigin
+
+  // ---- Optional seams, each with a production default (see `defaultRealHandlerDeps`) ----
+
+  /** The native folder dialog. Returns the chosen path, or null when cancelled. */
+  pickFolder?: (purpose: 'add' | 'create-parent' | 'docs-root', win: BrowserWindow | null) => Promise<string | null>
+  /** "Create new" (`workspace-create`). */
+  createWorkspace?: (input: CreateInput) => Promise<CreateResult>
+  /** `shell.showItemInFolder`. */
+  showItemInFolder?: (p: string) => void
+  /** Filesystem seams for `config:revealStoreFile`. */
+  revealFs?: Pick<RevealDeps, 'readdir' | 'lstat'>
+  /** Overrides for the Discover engine (the walker, realpath, roots, home, ...). */
+  discover?: Partial<DiscoverDeps>
+  /** Startup facts the store-health panel reports. */
+  storeFlags?: () => { configDirMismatch: boolean; legacyConfigPresent: boolean }
+}
+
+/** The production wiring: the store singletons, and the registry ids as the known workspace ids. */
+export function defaultRealHandlerDeps(appState: AppState, isAppOrigin: IsAppOrigin): RealHandlerDeps {
+  return {
+    recordSessionStart: (start) => recordSessionStart(sessionDefaultsStore, () => new Set(appState.registry.list().map((e) => e.id)), start),
+    stores: { settings: settingsStore, registry: registryStore, sandbox: sandboxStore, sessionDefaults: sessionDefaultsStore },
+    isAppOrigin,
+  }
+}
+
+async function pickFolderWithDialog(purpose: 'add' | 'create-parent' | 'docs-root', win: BrowserWindow | null): Promise<string | null> {
+  const options: Electron.OpenDialogOptions = {
+    properties: ['openDirectory', 'dontAddToRecent', ...(purpose === 'create-parent' ? (['createDirectory'] as const) : [])],
+    defaultPath: resolveRealHome(),
+  }
+  const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+  return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
+}
+
+/** Built lazily: constructing a git service must not happen at import time. */
+function defaultCreateWorkspace(appState: AppState): (input: CreateInput) => Promise<CreateResult> {
+  let creator: ((input: CreateInput) => Promise<CreateResult>) | null = null
+  return (input) => {
+    if (!creator) {
+      const git = createGitService()
+      creator = createWorkspaceCreator({ registry: appState.registry, runGit: (ctx, args, opts) => git.runGit(ctx, args, opts) })
+    }
+    return creator(input)
+  }
+}
+
+/** A workspace id that is not registered. */
+function workspaceNotFound(): WorkspaceError {
+  return new WorkspaceError('NOT_FOUND')
 }
 
 /**
@@ -394,23 +521,51 @@ function slugToTitle(slug: string): string {
 export function buildRealHandlers(
   appState: AppState,
   getMainWindow: () => BrowserWindow | null,
-  deps: { recordSessionStart: (start: SessionStart) => void } = {
-    recordSessionStart: (start) => recordSessionStart(configManager, () => new Set(appState.workspaces.keys()), start),
-  },
+  deps: RealHandlerDeps,
 ): Partial<Record<string, HandlerFn>> {
   // Outbound rate limit state: 10 messages/s per session
   const _sendRateMap = new Map<string, { count: number; windowStart: number }>()
   const MAX_SEND_RATE = 10
 
+  const { registry, runtime } = appState
+  const codeWrapDeps = { getMainWindow, isAppOrigin: deps.isAppOrigin }
+  const pickFolder = deps.pickFolder ?? pickFolderWithDialog
+  const createWorkspace = deps.createWorkspace ?? defaultCreateWorkspace(appState)
+  const showItemInFolder = deps.showItemInFolder ?? ((p: string) => shell.showItemInFolder(p))
+  const storeFlags = deps.storeFlags ?? (() => getStartupFlags())
+
+  /** The parsed workspace for a registry id, after the runtime has caught up with the registry write (BE H-5). */
+  async function settledWorkspace(id: string): Promise<Workspace> {
+    await runtime.whenSynced()
+    const ws = appState.workspaces.get(id)
+    if (!ws) throw workspaceNotFound()
+    return ws
+  }
+
+  // One Discover at a time. Progress goes to the window; a send that fails (window destroyed or reloaded) is logged
+  // and aborts the walk, because the walker swallows callback errors and cannot report them itself.
+  const discovery: DiscoverController = createDiscoverController({
+    roots: () => discoveryRoots(),
+    userExclusions: () => deps.stores.settings.get().discovery.exclusions,
+    registered: () => registry.list().map((e) => ({ id: e.id, path: e.path })),
+    home: () => resolveRealHome(),
+    isAnchored: overlapsAnchored,
+    isUnsafeRoot,
+    isRefused: isRefusedAsWorkspace,
+    realpath: (p) => fs.promises.realpath(p),
+    progressChannel: WORKSPACE_CHANNELS.DISCOVER_PROGRESS,
+    send: (channel, payload: DiscoverProgress) => {
+      const win = getMainWindow()
+      if (!win || win.isDestroyed()) return false
+      win.webContents.send(channel, payload)
+      return true
+    },
+    onSendFailure: (err) => log.warn('[Discover] Could not deliver progress:', err instanceof Error ? err.name : 'error'),
+    ...deps.discover,
+  })
+
   return {
     // ─── Workspace ────────────────────────────────────────────────────────────
-
-    [WORKSPACE_CHANNELS.DISCOVER]: wrapHandler(async (_input: unknown) => {
-      const config = configManager.loadConfig()
-      return appState.discoveryService.discover({
-        userExclusions: config?.discoveryExclusions ?? [],
-      })
-    }) as HandlerFn,
 
     [WORKSPACE_CHANNELS.GET_ALL]: wrapHandler(async (_input: unknown) => {
       return Array.from(appState.workspaces.values())
@@ -418,58 +573,136 @@ export function buildRealHandlers(
 
     [WORKSPACE_CHANNELS.GET_DETAIL]: wrapHandler(
       async ({ slug }: { slug: string }) => {
-        const ws = appState.workspaces.get(slug)
-        if (!ws) throw new Error(`Workspace "${slug}" not found`)
+        const ws = appState.workspaces.get(slug) // a Map: `constructor` and `__proto__` are ordinary keys
+        if (!ws) throw workspaceNotFound()
         return ws
       },
       WorkspaceGetDetailSchema,
     ) as HandlerFn,
 
-    [WORKSPACE_CHANNELS.UPDATE_CONFIG]: wrapHandler(
-      async ({ slug, config: wsConfig }) => {
-        const current = configManager.loadConfig() ?? configManager.getDefaultConfig()
-        const idx = current.workspaces.findIndex((ws) => ws.slug === slug)
-        const updatedWorkspaces = [...current.workspaces]
+    [WORKSPACE_CHANNELS.PICK_FOLDER]: wrapCodeHandler(
+      async ({ purpose }: { purpose: 'add' | 'create-parent' | 'docs-root' }) => ({ path: await pickFolder(purpose, getMainWindow()) }),
+      WorkspacePickFolderSchema,
+      codeWrapDeps,
+    ) as HandlerFn,
 
-        if (idx >= 0) {
-          updatedWorkspaces[idx] = {
-            ...updatedWorkspaces[idx],
-            displayName: wsConfig.displayName,
-            pinned: wsConfig.pinned,
-            archived: wsConfig.archived,
-            docsRoot: wsConfig.docsRoot,
-          }
-        } else {
-          const discovered = appState.workspaces.get(slug)
-          if (!discovered) throw new Error(`Workspace "${slug}" not found`)
-          updatedWorkspaces.push({
-            slug,
-            path: discovered.path,
-            displayName: wsConfig.displayName,
-            pinned: wsConfig.pinned,
-            archived: wsConfig.archived,
-            docsRoot: wsConfig.docsRoot,
-          })
-        }
-
-        await configManager.updateConfig({ workspaces: updatedWorkspaces })
-
-        // Update in-memory state
-        const ws = appState.workspaces.get(slug)
-        if (ws) {
-          appState.workspaces.set(slug, {
-            ...ws,
-            displayName: wsConfig.displayName ?? slugToTitle(slug),
-            pinned: wsConfig.pinned,
-            archived: wsConfig.archived,
-            docsRoot: wsConfig.docsRoot ?? ws.docsRoot,
-          })
-          getMainWindow()?.webContents.send(WORKSPACE_CHANNELS.UPDATED, { slug })
-        }
-
-        return { success: true }
+    [WORKSPACE_CHANNELS.ADD]: wrapCodeHandler(
+      async ({ path: rawPath }: { path: string }) => {
+        const entry = await registry.add(rawPath, 'manual')
+        return settledWorkspace(entry.id)
       },
-      WorkspaceUpdateConfigSchema,
+      WorkspaceAddSchema,
+      codeWrapDeps,
+    ) as HandlerFn,
+
+    [WORKSPACE_CHANNELS.ADD_MANY]: wrapCodeHandler(
+      async ({ paths }: { paths: string[] }) => {
+        const { added, skipped } = await registry.addMany(paths)
+        await runtime.whenSynced()
+        return {
+          added: added.map((e) => appState.workspaces.get(e.id)).filter((w): w is Workspace => w !== undefined),
+          skipped,
+        }
+      },
+      WorkspaceAddManySchema,
+      codeWrapDeps,
+    ) as HandlerFn,
+
+    [WORKSPACE_CHANNELS.CREATE]: wrapCodeHandler(
+      async (input: CreateInput) => {
+        const { entry, warnings } = await createWorkspace(input)
+        return { workspace: await settledWorkspace(entry.id), warnings }
+      },
+      WorkspaceCreateSchema,
+      codeWrapDeps,
+    ) as HandlerFn,
+
+    [WORKSPACE_CHANNELS.REMOVE]: wrapCodeHandler(
+      async ({ slug }: { slug: string }) => {
+        await registry.remove(slug)
+        await runtime.whenSynced()
+        return { removed: true as const }
+      },
+      WorkspaceRemoveSchema,
+      codeWrapDeps,
+    ) as HandlerFn,
+
+    [WORKSPACE_CHANNELS.SET_HIDDEN]: wrapCodeHandler(
+      async ({ slug, hidden }: { slug: string; hidden: boolean }) => {
+        const entry = await registry.setHidden(slug, hidden)
+        return settledWorkspace(entry.id)
+      },
+      WorkspaceSetHiddenSchema,
+      codeWrapDeps,
+    ) as HandlerFn,
+
+    [WORKSPACE_CHANNELS.RENAME]: wrapCodeHandler(
+      async ({ slug, displayName }: { slug: string; displayName: string | null }) => {
+        const entry = await registry.rename(slug, displayName)
+        return settledWorkspace(entry.id)
+      },
+      WorkspaceRenameSchema,
+      codeWrapDeps,
+    ) as HandlerFn,
+
+    [WORKSPACE_CHANNELS.SET_DOCS_ROOT]: wrapCodeHandler(
+      async ({ slug, docsRoot }: { slug: string; docsRoot: string | null }) => {
+        const entry = await registry.setDocsRoot(slug, docsRoot)
+        return settledWorkspace(entry.id)
+      },
+      WorkspaceSetDocsRootSchema,
+      codeWrapDeps,
+    ) as HandlerFn,
+
+    [WORKSPACE_CHANNELS.RECHECK]: wrapCodeHandler(
+      async (_input: Record<string, never>) => {
+        await runtime.recheck({ force: true })
+        return Array.from(appState.workspaces.values())
+      },
+      WorkspaceRecheckSchema,
+      codeWrapDeps,
+    ) as HandlerFn,
+
+    [WORKSPACE_CHANNELS.DISCOVER_STREAM]: wrapCodeHandler(
+      (_input: Record<string, never>) => discovery.run(),
+      WorkspaceDiscoverStreamSchema,
+      codeWrapDeps,
+    ) as HandlerFn,
+
+    [WORKSPACE_CHANNELS.DISCOVER_CANCEL]: wrapCodeHandler(
+      async (_input: Record<string, never>) => ({ cancelled: discovery.cancel() }),
+      WorkspaceDiscoverCancelSchema,
+      codeWrapDeps,
+    ) as HandlerFn,
+
+    // ─── Realm assignment and discovery exclusions ────────────────────────────
+
+    [REGISTRY_SETTINGS_CHANNELS.REALM_SET_ASSIGNMENT]: wrapCodeHandler(
+      async ({ location, slug }: { location: RealmLocation; slug: string | null }) => {
+        if (slug !== null && !registry.list().some((e) => e.id === slug)) throw workspaceNotFound()
+        const next = await deps.stores.settings.mutate((settings) => {
+          // A workspace sits in at most one building: assigning it here unassigns it everywhere else.
+          const mapping = REALM_LOCATIONS.map((loc) => {
+            const existing = settings.realm.mapping.find((m) => m.location === loc)
+            const current = existing?.workspaceSlug ?? null
+            if (loc === location) return { location: loc, workspaceSlug: slug }
+            return { location: loc, workspaceSlug: slug !== null && current === slug ? null : current }
+          })
+          return { ...settings, realm: { ...settings.realm, mapping } }
+        })
+        return next.realm
+      },
+      RealmSetAssignmentSchema,
+      codeWrapDeps,
+    ) as HandlerFn,
+
+    [REGISTRY_SETTINGS_CHANNELS.DISCOVERY_SET_EXCLUSIONS]: wrapCodeHandler(
+      async ({ exclusions }: { exclusions: string[] }) => {
+        const next = await deps.stores.settings.mutate((settings) => ({ ...settings, discovery: { ...settings.discovery, exclusions } }))
+        return next.discovery.exclusions
+      },
+      DiscoverySetExclusionsSchema,
+      codeWrapDeps,
     ) as HandlerFn,
 
     [WORKSPACE_CHANNELS.READ_README]: wrapHandler(
@@ -511,58 +744,66 @@ export function buildRealHandlers(
 
     // ─── Config ───────────────────────────────────────────────────────────────
 
-    [CONFIG_CHANNELS.GET]: wrapHandler(async (_input: unknown) => {
-      return configManager.loadConfig() ?? configManager.getDefaultConfig()
-    }) as HandlerFn,
+    [CONFIG_CHANNELS.GET]: wrapHandler(async (_input: unknown) => deps.stores.settings.get()) as HandlerFn,
 
     [CONFIG_CHANNELS.UPDATE]: wrapHandler(
-      async (input) => {
-        const { workspaces: wsUpdates, ...otherUpdates } = input
-        const current = configManager.loadConfig() ?? configManager.getDefaultConfig()
-
-        // NOTE: hookScriptPath and hooks.installed are NOT in ConfigUpdateSchema
-        // and cannot be overridden via IPC — enforced by the schema allowlist.
-        const partial: Partial<typeof current> = {}
-        if (otherUpdates.companyName !== undefined) partial.companyName = otherUpdates.companyName
-        if (otherUpdates.appearance !== undefined) partial.appearance = otherUpdates.appearance
-        if (otherUpdates.notifications !== undefined) partial.notifications = otherUpdates.notifications
-        if (otherUpdates.discoveryExclusions !== undefined) partial.discoveryExclusions = otherUpdates.discoveryExclusions
-        if (otherUpdates.terminalEmulator !== undefined) partial.terminalEmulator = otherUpdates.terminalEmulator
-        if (otherUpdates.realm !== undefined) partial.realm = otherUpdates.realm
-        if (otherUpdates.codeExplorer !== undefined) {
-          partial.codeExplorer = { ...current.codeExplorer, ...otherUpdates.codeExplorer }
-        }
-        if (otherUpdates.terminal !== undefined) {
-          // Deep-merge terminal config to prevent fontSize updates from clobbering windowBounds
-          const currentTerminal = current.terminal ?? { fontSize: 14, windowBounds: {} }
-          const incomingTerminal = otherUpdates.terminal
-          const mergedWindowBounds = {
-            ...currentTerminal.windowBounds,
-            ...(incomingTerminal.windowBounds ?? {}),
-          }
-          partial.terminal = {
-            ...currentTerminal,
-            ...incomingTerminal,
-            windowBounds: mergedWindowBounds,
-          }
-        }
-
-        if (wsUpdates && wsUpdates.length > 0) {
-          partial.workspaces = current.workspaces.map((ws) => {
-            const update = wsUpdates.find((u) => u.slug === ws.slug)
-            if (!update) return ws
-            return {
-              ...ws,
-              ...(update.displayName !== undefined ? { displayName: update.displayName } : {}),
-              ...(update.pinned !== undefined ? { pinned: update.pinned } : {}),
-              ...(update.archived !== undefined ? { archived: update.archived } : {}),
+      async (input: ConfigUpdateInput) =>
+        deps.stores.settings.mutate((current) => {
+          // NOTE: hookScriptPath and hooks.installed are NOT in ConfigUpdateSchema
+          // and cannot be overridden via IPC — enforced by the schema allowlist.
+          const next: Settings = { ...current }
+          if (input.companyName !== undefined) next.companyName = input.companyName
+          if (input.legacyNoticeDismissed !== undefined) next.legacyNoticeDismissed = input.legacyNoticeDismissed
+          if (input.appearance !== undefined) next.appearance = input.appearance
+          if (input.notifications !== undefined) next.notifications = input.notifications
+          // Merge over the current realm so the building assignments (`mapping`) are never touched from here.
+          if (input.realm !== undefined) next.realm = { ...current.realm, ...input.realm }
+          if (input.codeExplorer !== undefined) next.codeExplorer = { ...current.codeExplorer, ...input.codeExplorer }
+          if (input.terminal !== undefined) {
+            // Deep-merge so a fontSize update can't clobber windowBounds (and one window's bounds can't clobber the other's).
+            next.terminal = {
+              ...current.terminal,
+              ...input.terminal,
+              fontSize: input.terminal.fontSize ?? current.terminal.fontSize,
+              windowBounds: { ...current.terminal.windowBounds, ...(input.terminal.windowBounds ?? {}) },
             }
-          })
-        }
-
-        return configManager.updateConfig(partial)
-      },
+          }
+          return next
+        }),
       ConfigUpdateSchema,
+    ) as HandlerFn,
+
+    [CONFIG_CHANNELS.GET_STORE_HEALTH]: wrapHandler(
+      async (_input: Record<string, never>) => {
+        const stores: StoreHealthMap = {
+          settings: deps.stores.settings.health(),
+          workspaces: deps.stores.registry.health(),
+          sandbox: deps.stores.sandbox.health(),
+          sessionDefaults: deps.stores.sessionDefaults.health(),
+        }
+        const { settings, registry, sandbox, sessionDefaults } = deps.stores
+        const details: StoreHealthDetailMap = {
+          settings: settings.healthDetail(),
+          workspaces: registry.healthDetail(),
+          sandbox: sandbox.healthDetail(),
+          sessionDefaults: sessionDefaults.healthDetail(),
+        }
+        // `configDirDisplay` is home-relative display text (~/.config/corner-office), never an absolute path.
+        return { stores, details, ...storeFlags(), configDirDisplay: configDirDisplay() }
+      },
+      ConfigGetStoreHealthSchema,
+    ) as HandlerFn,
+
+    [CONFIG_CHANNELS.REVEAL_STORE_FILE]: wrapCodeHandler(
+      ({ store }: { store: (typeof STORE_NAMES)[number] }) =>
+        revealStoreFile(store, {
+          configDir,
+          readdir: deps.revealFs?.readdir ?? realRevealFs.readdir,
+          lstat: deps.revealFs?.lstat ?? realRevealFs.lstat,
+          showItemInFolder,
+        }),
+      ConfigRevealStoreFileSchema,
+      codeWrapDeps,
     ) as HandlerFn,
 
     // ─── Notifications ────────────────────────────────────────────────────────
@@ -601,7 +842,7 @@ export function buildRealHandlers(
     [DOCS_CHANNELS.LIST_TREE]: wrapHandler(
       async ({ dirPath, workspaceSlug }: DocsListTreeInput) => {
         return withTimeout(async function listTreeImpl(): Promise<DocTreeResponse> {
-          const docsRoot = resolveDocsRoot(workspaceSlug, appState)
+          const docsRoot = await resolveDocsRoot(workspaceSlug, appState)
           const resolvedDir = await validatePathWithinRoot(dirPath, docsRoot)
 
           const stat = await fs.promises.stat(resolvedDir)
@@ -771,6 +1012,7 @@ export function buildRealHandlers(
     [TERMINAL_IPC.SPAWN]: wrapHandler(
       async ({ workspaceSlug, cols, rows, agentId, permissionMode, fallbackFields }: TerminalSpawnInput) => {
         if (!appState.terminalManager) throw new Error('Terminal manager not initialized')
+        await appState.terminalManager.assertWorkspaceNotMoved(workspaceSlug)
         const result = appState.terminalManager.spawn({ workspaceSlug, cols, rows, agentId, permissionMode })
         // After the spawn succeeded: recording is fire-and-forget and can never fail the start. A start of an agent the
         // PATH check can't find is not remembered: it will most likely exit 127, and the next chooser should not offer it again.
@@ -795,7 +1037,7 @@ export function buildRealHandlers(
 
     [SESSION_IPC.GET_DEFAULTS]: wrapHandler(
       async ({ workspaceSlug }: { workspaceSlug: string }) =>
-        getSessionDefaults(configManager.loadConfig() ?? configManager.getDefaultConfig(), workspaceSlug),
+        getSessionDefaults(deps.stores.sessionDefaults.get(), workspaceSlug),
       SessionGetDefaultsSchema,
     ) as HandlerFn,
 
@@ -905,7 +1147,7 @@ export function buildRealHandlers(
     [DOCS_CHANNELS.READ_FILE]: wrapHandler(
       async ({ filePath, workspaceSlug }: DocsReadFileInput) => {
         return withTimeout(async function readFileImpl(): Promise<DocFileResponse> {
-          const docsRoot = resolveDocsRoot(workspaceSlug, appState)
+          const docsRoot = await resolveDocsRoot(workspaceSlug, appState)
           const resolvedFile = await validatePathWithinRoot(filePath, docsRoot)
 
           const ext = path.extname(resolvedFile).slice(1).toLowerCase()
@@ -952,7 +1194,7 @@ export function buildRealHandlers(
     [DOCS_CHANNELS.WRITE_FILE]: wrapHandler(
       async ({ filePath, workspaceSlug, content, expectedMtime }: DocsWriteFileInput) => {
         return withTimeout(async function writeFileImpl(): Promise<DocWriteResponse> {
-          const docsRoot = resolveDocsRoot(workspaceSlug, appState)
+          const docsRoot = await resolveDocsRoot(workspaceSlug, appState)
 
           const { resolvedFile, size, lastModified } = await durableWrite({
             root: docsRoot,

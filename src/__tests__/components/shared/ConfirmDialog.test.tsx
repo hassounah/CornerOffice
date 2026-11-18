@@ -159,6 +159,36 @@ describe('ConfirmDialog — top layer', () => {
   })
 })
 
+describe('ConfirmDialog — details and error', () => {
+  it.each(['office', 'realm'] as const)('%s skin renders details and an alert error', (skin) => {
+    renderDialog({ skin, details: <ul><li>affected item</li></ul>, error: 'Could not remove' })
+    expect(screen.getByText('affected item')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not remove')
+  })
+
+  it('renders neither when not provided', () => {
+    renderDialog()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+describe('ConfirmDialog — focus trap', () => {
+  it('wraps Tab from confirm to cancel and Shift+Tab from cancel to confirm', () => {
+    renderDialog()
+    const cancel = screen.getByRole('button', { name: 'Keep editing' })
+    const confirm = screen.getByRole('button', { name: 'Discard' })
+    confirm.focus()
+    act(() => {
+      fireEvent.keyDown(confirm, { key: 'Tab' })
+    })
+    expect(document.activeElement).toBe(cancel)
+    act(() => {
+      fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true })
+    })
+    expect(document.activeElement).toBe(confirm)
+  })
+})
+
 describe('ConfirmDialog — realm skin (§17 R18)', () => {
   it('renders title and message in realm skin', () => {
     renderDialog({ skin: 'realm' })

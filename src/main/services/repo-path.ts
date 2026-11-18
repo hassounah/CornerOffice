@@ -2,6 +2,8 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import type { AppState } from '../ipc/handlers'
+import { IPC_ERROR_CODES } from '../types/ipc'
+import type { Availability, Workspace } from '../types/workspace'
 import { denied, notFound } from './safe-fs'
 import { isNonDefaultProfile } from './app-home'
 import { SANDBOX_SLUG_RE, worktreePin } from './sandbox-spec'
@@ -71,19 +73,70 @@ export function isUnsafeRoot(real: string, home: string = realHomedir()): boolea
   return real === home || home.startsWith(real + path.sep) || real === path.parse(real).root
 }
 
+/** The fixed error each non-`ok` availability maps to (Sec H1). Messages are fixed and path-free. */
+const UNAVAILABLE: Readonly<Record<Exclude<Availability, 'ok'>, { code: string; message: string }>> = {
+  missing: { code: IPC_ERROR_CODES.WORKSPACE_PATH_NOT_FOUND, message: 'Workspace path not found' },
+  'not-a-directory': { code: IPC_ERROR_CODES.WORKSPACE_NOT_A_DIRECTORY, message: 'Workspace path is not a directory' },
+  unsafe: { code: IPC_ERROR_CODES.WORKSPACE_UNSAFE_ROOT, message: 'Workspace path is not allowed' },
+  unreachable: { code: IPC_ERROR_CODES.TIMEOUT, message: 'Request timed out' },
+  moved: { code: IPC_ERROR_CODES.NOT_FOUND, message: 'Path not found' },
+  checking: { code: IPC_ERROR_CODES.NOT_FOUND, message: 'Path not found' },
+  budget: { code: IPC_ERROR_CODES.NOT_FOUND, message: 'Path not found' },
+}
+
+/** The fixed error for a workspace whose folder is no longer where it was registered (a symlink swap, a move). */
+export function movedError(): Error {
+  const { code, message } = UNAVAILABLE.moved
+  return Object.assign(new Error(message), { code })
+}
+
 /**
- * Resolve a workspace slug to its repo root, enforcing the same M3 rule as
- * `computeRepoRootStatus` server-side. Throws `denied()` / `notFound()`.
+ * Fail-closed gate for every consumer of a workspace's path (Sec H1). An unknown id is `denied()`. Otherwise the
+ * runtime's synchronous `isAvailable` decides: only an `ok` entry with no probe in flight passes. For anything else
+ * a non-blocking, throttled `runtime.recheck()` is fired (so a folder that comes back is noticed) and a fixed error
+ * for that state is thrown. Never touches the filesystem and never returns a path for a workspace that is not `ok`.
  */
-export async function resolveRepoRoot(slug: string, appState: AppState): Promise<string> {
+export function requireAvailableWorkspace(slug: string, appState: AppState): Workspace {
   const ws = appState.workspaces.get(slug)
   if (!ws) throw denied()
+  if (appState.runtime.isAvailable(slug)) return ws
+
+  try {
+    void Promise.resolve(appState.runtime.recheck()).catch(() => undefined)
+  } catch {
+    // A recheck that cannot even start must not change the answer: the workspace is unavailable either way.
+  }
+  // `ok` but not available means a probe is in flight: treat it as still `checking`.
+  const state = ws.availability === 'ok' ? 'checking' : ws.availability
+  const { code, message } = UNAVAILABLE[state]
+  throw Object.assign(new Error(message), { code })
+}
+
+/**
+ * The non-throwing form of `requireAvailableWorkspace`, for seams that answer "unknown" (the sandbox manager's
+ * `getWorkspace`, the channel resolver's `getWorkspacePath`): the workspace while it is available, else undefined.
+ * Synchronous, and it does not trigger a recheck.
+ */
+export function getAvailableWorkspace(slug: string, appState: AppState): Workspace | undefined {
+  return appState.runtime.isAvailable(slug) ? appState.workspaces.get(slug) : undefined
+}
+
+/**
+ * Resolve a workspace slug to its repo root, enforcing the same M3 rule as
+ * `computeRepoRootStatus` server-side. The workspace must be available, and its
+ * realpath must still equal the registered one (a folder swapped for a symlink
+ * after the check is refused). Throws `denied()` / `notFound()` or a fixed
+ * availability error.
+ */
+export async function resolveRepoRoot(slug: string, appState: AppState): Promise<string> {
+  const ws = requireAvailableWorkspace(slug, appState)
   let real: string
   try {
     real = await fs.promises.realpath(ws.path)
   } catch {
     throw notFound()
   }
+  if (real !== ws.path) throw denied()
   if (!(await fs.promises.stat(real)).isDirectory()) throw notFound()
   if (isUnsafeRoot(real)) throw denied()
   return real
@@ -112,8 +165,8 @@ export async function resolveCodeRoot(
   // #0038 D6: the sandboxes root is the real app's, whatever the profile; a profile never reads or watches it.
   if (isNonDefaultProfile()) throw denied()
 
-  const ws = appState.workspaces.get(slug)
-  if (!ws || !SANDBOX_SLUG_RE.test(slug)) throw denied()
+  if (!SANDBOX_SLUG_RE.test(slug)) throw denied()
+  const ws = requireAvailableWorkspace(slug, appState)
 
   let real: string
   let sandboxesReal: string

@@ -1,7 +1,9 @@
 import { create } from 'zustand'
 import { useActivityStore } from './activity-store'
 import { useChannelsStore } from './channels-store'
+import { useWorkspaceStore } from './workspace-store'
 import type { ActivityType } from '@main/types/events'
+import { isUnattributed } from '../utils/unattributed'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,6 +44,10 @@ interface PermissionState {
 // ---------------------------------------------------------------------------
 
 const MAX_QUEUE_PER_SESSION = 20
+
+function normalizePath(p: string): string {
+  return p.replace(/\/+$/, '')
+}
 
 /** Activity types that mean the session still needs input — do NOT clear permission request cards on these. */
 const PERMISSION_PRESERVING_TYPES = new Set<ActivityType>([
@@ -176,8 +182,16 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
         // Skip activity types that indicate the session still needs input
         if (PERMISSION_PRESERVING_TYPES.has(item.type)) continue
 
-        // Session match: find channel session whose workspaceName matches item.workspace
-        const matched = sessions.find((s) => s.workspaceName === item.workspace)
+        // An unattributed event (`?key`, #0039) belongs to no registered workspace: it never clears a card.
+        if (isUnattributed(item.workspace)) continue
+
+        // Session match by PATH, not by name: two folders can share a basename. The workspace is found by id; a session
+        // belongs to it when its directory equals the workspace's `path` or the `selectedPath` it was added under.
+        // Hidden workspaces are in this list too, so their permission cards still resolve (TRD §3.12).
+        const workspace = useWorkspaceStore.getState().workspaces.find((w) => w.slug === item.workspace)
+        if (!workspace) continue
+        const workspacePaths = [normalizePath(workspace.path), normalizePath(workspace.selectedPath)]
+        const matched = sessions.find((s) => workspacePaths.includes(normalizePath(s.workspaceDir)))
         if (!matched) continue
 
         // Only clear requests that arrived strictly before this activity event.

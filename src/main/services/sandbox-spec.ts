@@ -10,6 +10,8 @@ import { AgentIdSchema } from '../agents/agent-id-schema'
 import type { AgentId } from '../agents/descriptors'
 import { assertAgentEnvName } from '../agents/handler'
 import type { AgentMountSpec } from '../agents/handler'
+import { SANDBOX_SLUG_RE, hasControlChar } from '../types/slugs'
+import { isAppFolder } from './anchored-paths'
 
 // ---------------------------------------------------------------------------
 // sandbox-spec.ts — constants, naming and the pure validation/pin helpers for
@@ -23,8 +25,8 @@ import type { AgentMountSpec } from '../agents/handler'
 
 export const SANDBOX_IMAGE = 'claude-sandbox:latest'
 
-/** D13: container name, worktree directory and event slug all derive from this. */
-export const SANDBOX_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+// D13: container name, worktree directory and event slug all derive from SANDBOX_SLUG_RE (defined in types/slugs.ts, re-exported here).
+export { SANDBOX_SLUG_RE }
 
 /** Docker-valid by construction: `SANDBOX_SLUG_RE` never allows a leading `-`. Claude keeps the legacy name (D22). */
 export const containerName = (slug: string, agentId: AgentId = LEGACY_AGENT_ID): string =>
@@ -164,17 +166,6 @@ export function assertMountSafe(p: string, opts: { home: string }): boolean {
 
 // ── Value validation (§10.4) ────────────────────────────────────────────────
 
-// Scanned as numeric code points, like repo-path.ts's stripDefaultIgnorable,
-// rather than as a regex literal (a `\x00`-`\x1F` regex trips `no-control-regex`,
-// and this project never disables a lint rule to work around it).
-function hasControlChar(v: string): boolean {
-  for (const ch of v) {
-    const code = ch.codePointAt(0) ?? 0
-    if (code <= 0x1f || code === 0x7f) return true
-  }
-  return false
-}
-
 /** Env values (git identity, base branch, HOME): no control characters, capped at 1024 chars (§10.4). */
 export function validateEnvValue(v: string): boolean {
   if (v.length > 1024) return false
@@ -312,19 +303,6 @@ interface DocsRootOutcome {
   hardFail: boolean
 }
 
-/**
- * #0035: Corner Office's and Claude Code's own state (`~/.corner-office`,
- * `~/.claude`) is never a docs_root — assertMountSafe allows those hidden dirs
- * only for the app's fixed mounts, and a read-write docs mount there would let
- * the agent edit app config or another sandbox's worktree.
- */
-function insideAppState(p: string, home: string): boolean {
-  return hiddenHomeSegments().some((d) => {
-    const dir = path.join(home, d)
-    return p === dir || p.startsWith(dir + path.sep)
-  })
-}
-
 /** SEC-M1 backstop: a relative path that stays inside the repo. */
 function relIsSafe(rel: string): boolean {
   return !(path.isAbsolute(rel) || rel === '..' || rel.startsWith('..' + path.sep))
@@ -383,7 +361,10 @@ function planDocsRootMount(
     // confirm-first recreate dialog (new-container / mount-plan) is the gate.
     // 'default' ({repo}/docs) is always inside REPO.
     if (overlapsExisting(docsRoot.path)) return { mounts: [], warning: null, hardFail: true }
-    if (!assertMountSafe(docsRoot.path, { home }) || insideAppState(docsRoot.path, home)) {
+    // #0035 / #0039 (I1): Corner Office's and Claude Code's own state (`~/.corner-office`, the config dir, `~/.claude`,
+    // `~/.codex`, ...) is never a docs_root: a read-write docs mount there would let the agent edit app config or another
+    // sandbox's worktree. `isAppFolder` is strict in every mode (no sandboxes/<id> carve-out).
+    if (!assertMountSafe(docsRoot.path, { home }) || isAppFolder(docsRoot.path, home)) {
       return { mounts: [], warning: 'docs-root-unsafe', hardFail: false }
     }
     return {

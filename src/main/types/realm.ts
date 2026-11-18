@@ -23,7 +23,8 @@ export type CharacterState =
 // Building types
 // ---------------------------------------------------------------------------
 
-export type BuildingState = 'active' | 'idle' | 'unassigned'
+/** `unavailable`: assigned to a workspace whose folder is missing, moved, unreachable, unsafe or still being checked (#0039). */
+export type BuildingState = 'active' | 'idle' | 'unassigned' | 'unavailable'
 
 export type TavernFill = 'empty' | 'sparse' | 'half' | 'full' | 'packed'
 

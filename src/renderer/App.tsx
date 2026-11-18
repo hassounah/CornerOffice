@@ -22,7 +22,6 @@ const WorkspaceDetail = React.lazy(() => import('./pages/WorkspaceDetail'))
 const Homunculus = React.lazy(() => import('./pages/Homunculus'))
 const Settings = React.lazy(() => import('./pages/Settings'))
 const Notifications = React.lazy(() => import('./pages/Notifications'))
-const FirstLaunch = React.lazy(() => import('./pages/FirstLaunch'))
 // Code explorer (#0028, TRD §3.8.1): lazy so code-explorer-store's
 // @codemirror/state import never lands in the entry chunk (step 1.21 gate).
 const CodeExplorerPage = React.lazy(() => import('./pages/CodeExplorerPage'))
@@ -122,9 +121,6 @@ function ClassicAppRoutes(): React.ReactElement {
   return (
     <React.Suspense fallback={<PageFallback />}>
       <Routes>
-        {/* First-launch wizard — full-screen, no shell */}
-        <Route path="/first-launch" element={<FirstLaunch />} />
-
         {/* Code explorer — full-window, sibling of AppShell (TRD §3.8.1), its
             own WindowTitleBar instead of the shell's */}
         <Route path="/workspace/:slug/code" element={<CodeExplorerPage />} />

@@ -16,6 +16,7 @@ import {
 } from '../main/services/repo-path'
 import { sandboxPaths } from '../main/services/sandbox-paths'
 import type { SandboxPaths } from '../main/services/sandbox-paths'
+import { fakeRuntime } from './helpers/workspace-fixture'
 
 function makeAppState(workspaces: Record<string, string>): AppState {
   const map = new Map<string, Workspace>()
@@ -28,7 +29,8 @@ function makeAppState(workspaces: Record<string, string>): AppState {
     notifications: [],
     gamificationState: {} as unknown as AppState['gamificationState'],
     homunculusState: null,
-    discoveryService: {} as unknown as AppState['discoveryService'],
+    registry: {} as unknown as AppState['registry'],
+    runtime: fakeRuntime(map),
     channelDiscovery: null,
     channelConnection: null,
     terminalManager: null,

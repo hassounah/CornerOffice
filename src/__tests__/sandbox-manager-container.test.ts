@@ -1474,7 +1474,8 @@ describe('per-agent containers (D4)', () => {
     const manager = createSandboxManager(h.makeDeps({ docker }))
 
     const ensurePromise = manager.ensureContainer('myslug', 'codex')
-    await new Promise((r) => setTimeout(r, 50))
+    // Wait for the Codex create to be parked rather than sleeping a fixed time: on a loaded machine it can take longer.
+    await vi.waitFor(() => expect(log).toContain('codex-create-parked'), { timeout: 5_000 })
     const recreatePromise = manager.recreate('myslug', false, claudeHash)
     await new Promise((r) => setTimeout(r, 100))
 

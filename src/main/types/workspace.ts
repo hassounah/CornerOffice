@@ -1,11 +1,33 @@
 export type WorkspaceStatus = 'active' | 'waiting' | 'parked' | 'idle' | 'attention';
 
+/**
+ * Whether a registered folder is usable right now (#0039). Anything but `ok` is a stub: empty arrays, not parsed, not watched.
+ * `budget` means the folder was not probed yet because too many slow folders hold the probe budget; it is not a verdict on the folder.
+ */
+export type Availability = 'checking' | 'ok' | 'missing' | 'unreachable' | 'not-a-directory' | 'unsafe' | 'moved' | 'budget';
+
+/** How a workspace got into the registry. */
+export type WorkspaceSource = 'manual' | 'discovered';
+
 export interface Workspace {
-  slug: string;                    // Directory name, e.g. "seraph"
-  path: string;                    // Absolute path, e.g. "/home/amer/seraph"
+  slug: string;                    // The registry id (kept under the old name), e.g. "seraph"
+  path: string;                    // Absolute realpath, e.g. "/home/amer/seraph"
+  selectedPath: string;            // The path as chosen (normalized, not realpath'd); event matching only
+  hidden: boolean;                 // Office skin only
+  source: WorkspaceSource;
+  hasRix: boolean;                 // The folder has a `.rix` directory (Rix features are available)
+  availability: Availability;
   displayName: string;             // Custom name or slug, title-cased
   docsRoot: string;                // Absolute path to docs_root
   docsRootExists: boolean;         // Whether the docs_root directory exists on disk
+  /**
+   * The docs root the repo or user chose, and the `<path>/docs` default, were both refused (they are, or lead into, an
+   * app folder or an unsafe root). `docsRoot` is then only the default location for display: docs are not scanned,
+   * served or watched. Absent means `false`.
+   */
+  docsRootRefused?: boolean;
+  /** The approved docs root did not exist when it was approved; it is verified again on first use. Absent means `false`. */
+  docsRootUnverified?: boolean;
   repoRootStatus: 'ok' | 'missing' | 'unsafe'; // Runtime-only; drives the code explorer's FR-1 disabled state (#0028, M3)
   status: WorkspaceStatus;
   nextFeatureId: number | null;
@@ -17,8 +39,6 @@ export interface Workspace {
   shippedFeatures: ShippedFeature[];
   lastActivityTimestamp: string | null;  // ISO 8601
   weekShipCount: number;           // Features shipped this calendar week
-  pinned: boolean;
-  archived: boolean;
   level: TeamLevel;
   xp: number;
   readmeContent: string | null;
@@ -102,9 +122,4 @@ export interface TeamLevel {
   name: TeamLevelName;
   xpRequired: number;
   xpCurrent: number;
-}
-
-export interface WorkspaceDiscoveryResult {
-  path: string;   // Absolute path to workspace directory
-  slug: string;   // Basename of workspace directory
 }

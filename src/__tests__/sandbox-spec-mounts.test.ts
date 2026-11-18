@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -23,6 +23,7 @@ import type {
   OldMount,
 } from '../main/services/sandbox-spec'
 import { sandboxPaths } from '../main/services/sandbox-paths'
+import { resetActiveProfileForTests } from '../main/services/app-home'
 
 // ---------------------------------------------------------------------------
 // sandbox-spec-mounts.test.ts (TRD §3.5, §3.6.3, D11, D12, M2, C2, H1, H3,
@@ -314,12 +315,71 @@ describe('planMounts — docs_root', () => {
     expect(result.mounts.some((m) => m.source === appDir)).toBe(false)
   })
 
+  it('the mount guard does not change with the workspace registry: sandbox mode still drops ~/.corner-office/sandboxes/<id> (#0039)', () => {
+    vi.stubEnv('CORNER_OFFICE_SANDBOX', '1')
+    try {
+      const fixture = makeFixture()
+      const worktreeLike = path.join(fixture.home, '.corner-office', 'sandboxes', 'other-ws')
+      mkdir(worktreeLike)
+      const docsRoot: DocsRootFacts = { path: worktreeLike, source: 'memory.md', exists: true, inRepoRel: null }
+      const result = planMounts({ ...fixture.baseFacts, docsRoot })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(result.warnings).toContain('docs-root-unsafe')
+      expect(result.mounts.some((m) => m.source === worktreeLike)).toBe(false)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('outside REPO under an agent home entry (~/.claude/notes): refused as docs-root-unsafe (A7)', () => {
     const fixture = makeFixture()
     const agentDir = path.join(fixture.home, '.claude', 'notes')
     mkdir(agentDir)
     const docsRoot: DocsRootFacts = { path: agentDir, source: 'memory.md', exists: true, inRepoRel: null }
     expect(planMounts({ ...fixture.baseFacts, docsRoot })).toEqual({ ok: false, reason: 'docs-root-unsafe' })
+  })
+
+  it('outside REPO at ~/.claude itself: never mounted as the docs root (refused or dropped)', () => {
+    const fixture = makeFixture()
+    const agentHome = path.join(fixture.home, '.claude')
+    mkdir(agentHome)
+    const docsRoot: DocsRootFacts = { path: agentHome, source: 'memory.md', exists: true, inRepoRel: null }
+    const result = planMounts({ ...fixture.baseFacts, docsRoot })
+    if (result.ok) {
+      expect(result.warnings).toContain('docs-root-unsafe')
+      expect(result.mounts.some((m) => m.source === agentHome && m.provenance === 'memory.md')).toBe(false)
+    } else {
+      expect(result.reason).toBe('docs-root-unsafe')
+    }
+  })
+
+  it.each([
+    ['the config dir itself', ['cfg', 'corner-office']],
+    ['inside the config dir', ['cfg', 'corner-office', 'sub']],
+    ['an ancestor of the config dir', ['cfg']],
+  ])('outside REPO, %s: dropped with docs-root-unsafe (#0039, I1)', (_label, segs) => {
+    const fixture = makeFixture()
+    const configDirPath = path.join(fixture.home, 'cfg', 'corner-office')
+    mkdir(path.join(configDirPath, 'sub'))
+    // The default profile puts the config dir at $XDG_CONFIG_HOME/corner-office when that is absolute.
+    resetActiveProfileForTests()
+    vi.stubEnv('XDG_CONFIG_HOME', path.join(fixture.home, 'cfg'))
+    try {
+      const target = path.join(fixture.home, ...segs)
+      const docsRoot: DocsRootFacts = { path: target, source: 'memory.md', exists: true, inRepoRel: null }
+      const result = planMounts({ ...fixture.baseFacts, docsRoot })
+      // Either way the folder is never mounted: dropped with a warning, or the whole plan refused.
+      if (result.ok) {
+        expect(result.warnings).toContain('docs-root-unsafe')
+        expect(result.mounts.some((m) => m.source === target)).toBe(false)
+      } else {
+        expect(result).toEqual({ ok: false, reason: 'docs-root-unsafe' })
+      }
+    } finally {
+      vi.unstubAllEnvs()
+      resetActiveProfileForTests()
+    }
   })
 
   it('outside REPO under ~/.codex: dropped with docs-root-unsafe, and a Claude plan never mounts ~/.codex (SM-4, D8)', () => {

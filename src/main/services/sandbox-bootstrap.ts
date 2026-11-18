@@ -1,5 +1,7 @@
+import log from 'electron-log/main'
 import net from 'net'
-import { configManager } from './config-manager'
+import { sandboxStore } from './stores'
+import type { WorkspaceRegistry } from './workspace-registry'
 import { parseContainerName } from './sandbox-spec'
 import type { SandboxPaths } from './sandbox-paths'
 import type { SandboxManagerConfigDeps, SandboxManagerService } from './sandbox-manager'
@@ -42,7 +44,10 @@ export interface ChannelResolverDeps {
 export function createChannelSandboxResolver(deps: ChannelResolverDeps): ChannelSandboxResolver {
   return {
     workspacePath: (slug) => deps.getWorkspacePath(slug) ?? '',
-    storedPort: (slug) => deps.getSandboxConfig().workspaces[slug]?.channelPort ?? null,
+    storedPort: (slug) => {
+      const workspaces = deps.getSandboxConfig().workspaces
+      return Object.hasOwn(workspaces, slug) ? (workspaces[slug].channelPort ?? null) : null
+    },
     onSandboxCard: (slug, shortId, sessionId) => deps.getManager()?.onSandboxCard(slug, shortId, sessionId),
     onSandboxCardRejected: (slug) => deps.getManager()?.onSandboxCardRejected(slug),
   }
@@ -53,43 +58,72 @@ export function createSandboxIsAlive(getManager: () => SandboxManagerService | n
   return (session) => (session.sandboxSlug ? (getManager()?.isSessionRunning(session.sandboxSlug) ?? false) : pidAlive(session))
 }
 
-/** Reads the effective sandbox config fresh on every call, so a settings change is picked up without a restart. */
+/** Reads the effective sandbox config from `sandboxStore` (cached, never writes), so a settings change is picked up without a restart. */
 export function currentSandboxConfig(): SandboxConfig {
-  const cfg = configManager.loadConfig() ?? configManager.getDefaultConfig()
-  return configManager.getSandboxConfig(cfg)
+  return sandboxStore.get()
 }
-
-let sandboxConfigQueue: Promise<unknown> = Promise.resolve()
 
 /**
- * The one writer of the sandbox config section (BE-M5). The mutator runs on the
- * config as it is when its turn comes, so a channel-port write and a settings
- * write can't overwrite each other. A failed write doesn't wedge the queue.
+ * D23 cutover: records `eventsSplitAt` the first time it is asked for and returns it afterwards. Call it before the
+ * event watcher starts, so a file written after the split is never mistaken for legacy history. Idempotent.
+ * `null` when the write fails: callers then treat every host-root file as legacy (fail closed toward `sandbox`).
+ * Frozen signature (plan 3.2); it runs on `sandboxStore` (#0039).
  */
-export function updateSandboxConfig(mutator: (current: SandboxConfig) => SandboxConfig): Promise<SandboxConfig> {
-  const run = sandboxConfigQueue.then(async () => {
-    const next = mutator(currentSandboxConfig())
-    await configManager.updateConfig({ sandbox: next })
-    return next
-  })
-  sandboxConfigQueue = run.catch(() => undefined)
-  return run
+export async function ensureEventsSplitAt(now: Date): Promise<string | null> {
+  try {
+    const next = await sandboxStore.mutate((file) => (file.eventsSplitAt === null ? { ...file, eventsSplitAt: now.toISOString() } : file))
+    return next.eventsSplitAt
+  } catch (err) {
+    log.warn('[sandbox-bootstrap] Could not record eventsSplitAt:', err instanceof Error ? err.name : 'error')
+    return null
+  }
 }
 
-export function createSandboxConfigDeps(): SandboxManagerConfigDeps {
+/**
+ * The one writer of the sandbox config section (BE-M5). It is `sandboxStore.mutate`, which is serialized: the mutator
+ * runs on the config as it is when its turn comes, so a channel-port write and a settings write can't overwrite each
+ * other, and a failed write doesn't wedge the queue.
+ */
+export function updateSandboxConfig(mutator: (current: SandboxConfig) => SandboxConfig): Promise<SandboxConfig> {
+  return sandboxStore.mutate((file) => {
+    const next = mutator(file)
+    return { ...next, version: 1, extraPackages: next.extraPackages ?? [], eventsSplitAt: next.eventsSplitAt ?? file.eventsSplitAt }
+  })
+}
+
+/** The sandbox manager's config seam. The docs-root override comes from the workspace registry (`RegistryEntry.docsRoot`). */
+export function createSandboxConfigDeps(registry: Pick<WorkspaceRegistry, 'list'>): SandboxManagerConfigDeps {
   return {
     getSandboxConfig: currentSandboxConfig,
-    getWorkspaceDocsRootOverride: (slug) => {
-      const cfg = configManager.loadConfig() ?? configManager.getDefaultConfig()
-      return cfg.workspaces.find((w) => w.slug === slug)?.docsRoot ?? null
-    },
+    getWorkspaceDocsRootOverride: (slug) => registry.list().find((e) => e.id === slug)?.docsRoot ?? null,
     setWorkspaceChannelPort: async (slug, port) => {
       await updateSandboxConfig((current) => ({
         ...current,
-        workspaces: { ...current.workspaces, [slug]: { channelPort: port, allowlist: current.workspaces[slug]?.allowlist ?? [] } },
+        workspaces: {
+          ...current.workspaces,
+          [slug]: { channelPort: port, allowlist: Object.hasOwn(current.workspaces, slug) ? current.workspaces[slug].allowlist : [] },
+        },
       }))
     },
   }
+}
+
+/**
+ * The first Docker probe, started in the background after READY. The first transition into `ok` runs the
+ * manager's `reconcile()`, which asks the fail-closed `getWorkspace` seam about every workspace and then
+ * remembers it has run: a workspace still `checking` would be skipped until the next restart. So the probe
+ * waits for the runtime's availability probes to settle. READY is never held up: this resolves in the background.
+ */
+export function probeSandboxWhenSettled(
+  runtime: { settled(): Promise<void> },
+  manager: Pick<SandboxManagerService, 'getEnvironment'>,
+  onError: (err: unknown) => void,
+): Promise<void> {
+  return runtime
+    .settled()
+    .then(() => manager.getEnvironment({ refresh: true }))
+    .then(() => undefined)
+    .catch(onError)
 }
 
 /** True when nothing is listening on `127.0.0.1:port` (bind, then close). */

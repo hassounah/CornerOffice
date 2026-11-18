@@ -35,8 +35,8 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('ALLOWED_PUSH_CHANNELS', () => {
-  it('has exactly 20 entries', () => {
-    expect(ALLOWED_PUSH_CHANNELS).toHaveLength(20)
+  it('has exactly 22 entries', () => {
+    expect(ALLOWED_PUSH_CHANNELS).toHaveLength(22)
   })
 
   it('contains all expected channel names', () => {
@@ -44,6 +44,8 @@ describe('ALLOWED_PUSH_CHANNELS', () => {
       'workspace:updated',
       'workspace:statusChanged',
       'workspace:readmeChanged',
+      'workspace:listChanged',
+      'workspace:discoverProgress',
       'activity:newItem',
       'feature:shipped',
       'homunculus:instinctAdded',
@@ -167,25 +169,41 @@ describe('api.off', () => {
 // ---------------------------------------------------------------------------
 
 describe('api invoke methods', () => {
-  it('workspace.discover calls workspace:discover', async () => {
+  it('workspace.discover calls workspace:discoverStream', async () => {
     mockInvoke.mockResolvedValueOnce([])
     await api.workspace.discover()
-    expect(mockInvoke).toHaveBeenCalledWith('workspace:discover')
+    expect(mockInvoke).toHaveBeenCalledWith('workspace:discoverStream', {})
+  })
+
+  it('workspace.updateConfig is gone (X1)', () => {
+    expect('updateConfig' in api.workspace).toBe(false)
+  })
+
+  it.each([
+    ['pickFolder', () => api.workspace.pickFolder('add'), 'workspace:pickFolder', { purpose: 'add' }],
+    ['add', () => api.workspace.add('/p'), 'workspace:add', { path: '/p' }],
+    ['addMany', () => api.workspace.addMany(['/a', '/b']), 'workspace:addMany', { paths: ['/a', '/b'] }],
+    ['create', () => api.workspace.create('/parent', 'name', 'rix'), 'workspace:create', { parentPath: '/parent', name: 'name', mode: 'rix' }],
+    ['remove', () => api.workspace.remove('ws'), 'workspace:remove', { slug: 'ws' }],
+    ['setHidden', () => api.workspace.setHidden('ws', true), 'workspace:setHidden', { slug: 'ws', hidden: true }],
+    ['rename', () => api.workspace.rename('ws', null), 'workspace:rename', { slug: 'ws', displayName: null }],
+    ['setDocsRoot', () => api.workspace.setDocsRoot('ws', '/d'), 'workspace:setDocsRoot', { slug: 'ws', docsRoot: '/d' }],
+    ['recheck', () => api.workspace.recheck(), 'workspace:recheck', {}],
+    ['discoverCancel', () => api.workspace.discoverCancel(), 'workspace:discoverCancel', {}],
+    ['realm.setAssignment', () => api.realm.setAssignment('castle', 'ws'), 'realm:setAssignment', { location: 'castle', slug: 'ws' }],
+    ['discovery.setExclusions', () => api.discovery.setExclusions(['x']), 'discovery:setExclusions', { exclusions: ['x'] }],
+    ['config.getStoreHealth', () => api.config.getStoreHealth(), 'config:getStoreHealth', {}],
+    ['config.revealStoreFile', () => api.config.revealStoreFile('settings'), 'config:revealStoreFile', { store: 'settings' }],
+  ])('%s sends intents only, never a resolved path', async (_name, call, channel, payload) => {
+    mockInvoke.mockResolvedValueOnce({ data: null, error: null })
+    await call()
+    expect(mockInvoke).toHaveBeenCalledWith(channel, payload)
   })
 
   it('workspace.getDetail passes slug in envelope', async () => {
     mockInvoke.mockResolvedValueOnce({})
     await api.workspace.getDetail('my-project')
     expect(mockInvoke).toHaveBeenCalledWith('workspace:getDetail', { slug: 'my-project' })
-  })
-
-  it('workspace.updateConfig passes slug and config', async () => {
-    mockInvoke.mockResolvedValueOnce(undefined)
-    await api.workspace.updateConfig('proj', { pinned: true })
-    expect(mockInvoke).toHaveBeenCalledWith('workspace:updateConfig', {
-      slug: 'proj',
-      config: { pinned: true },
-    })
   })
 
   it('workspace.readReadme passes slug in envelope', async () => {

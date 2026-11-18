@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import React from 'react'
-import type { AppConfig } from '@main/types/config'
+import type { Settings } from '@main/services/stores'
 
 // ---------------------------------------------------------------------------
 // Store mocks
@@ -22,7 +22,7 @@ const mockRealmStore = vi.hoisted(() => ({
 }))
 
 const mockSettingsStore = vi.hoisted(() => ({
-  config: null as AppConfig | null,
+  config: null as Settings | null,
   updateConfig: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -43,10 +43,36 @@ vi.mock('../../../renderer/stores/settings-store', () => ({
   ),
 }))
 
+// `loaded` is false until the list is fetched, so the empty-registry welcome only shows once the list is known empty.
+const mockWorkspaceState = vi.hoisted(() => ({
+  loaded: false,
+  announce: '',
+  announceSeq: 0,
+  workspaces: [] as unknown[],
+  fetchAll: vi.fn().mockResolvedValue(undefined),
+  fetchOne: vi.fn().mockResolvedValue(undefined),
+  createWarnings: new Map<string, string[]>(),
+  dismissWarning: vi.fn(),
+}))
+
 vi.mock('../../../renderer/stores/workspace-store', () => ({
-  useWorkspaceStore: vi.fn((selector: (s: Record<string, unknown>) => unknown) =>
-    selector({ workspaces: [], fetchAll: vi.fn().mockResolvedValue(undefined), fetchOne: vi.fn().mockResolvedValue(undefined) })
+  useWorkspaceStore: vi.fn((selector: (s: typeof mockWorkspaceState) => unknown) => selector(mockWorkspaceState)),
+}))
+
+// The empty-registry welcome hosts the shared prompt; its own tests cover it.
+// The real prompt renders the upgrade notice itself for the realm skin; the mock stands in for it with the same test id.
+vi.mock('../../../renderer/components/workspaces/EmptyWorkspacesPrompt', () => ({
+  EmptyWorkspacesPrompt: ({ skin }: { skin: string }) => (
+    <div data-testid="empty-workspaces-prompt" data-skin={skin}>
+      <div data-testid="legacy-notice-instance" />
+    </div>
   ),
+}))
+vi.mock('../../../renderer/components/workspaces/LegacyNotice', () => ({
+  LegacyNotice: () => <div data-testid="legacy-notice-instance" />,
+}))
+vi.mock('../../../renderer/components/workspaces/CreateWorkspaceDialog', () => ({
+  CreateWorkspaceDialog: () => null,
 }))
 
 // Mock overlay components (lazy loaded in RealmShell)
@@ -121,15 +147,12 @@ import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeRealmConfig(overrides: Partial<AppConfig['realm']> = {}): AppConfig {
+function makeRealmConfig(overrides: Partial<Settings['realm']> = {}): Settings {
   return {
     version: 1,
     companyName: 'Test Co',
-    workspaces: [],
-    discoveryExclusions: [],
-    firstLaunchComplete: true,
-    terminalEmulator: null,
-    hookScriptPath: '',
+    discovery: { exclusions: [] },
+    legacyNoticeDismissed: false,
     notifications: {
       osNotificationsEnabled: false,
       showMissedOnStartup: true,
@@ -143,7 +166,6 @@ function makeRealmConfig(overrides: Partial<AppConfig['realm']> = {}): AppConfig
       quietHours: { enabled: false, start: '22:00', end: '08:00' },
     },
     appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full' },
-    hooks: { installed: false, installedAt: null, hookScriptPath: '' },
     realm: {
       enabled: true,
       mapping: [],
@@ -166,11 +188,60 @@ describe('RealmShell', () => {
     mockRealmStore.notificationScrollOpen = false
     mockRealmStore.celebration = { active: false, featureName: null, workspaceSlug: null }
     mockSettingsStore.config = makeRealmConfig()
+    mockWorkspaceState.loaded = false
+    mockWorkspaceState.workspaces = []
   })
 
   it('renders kingdom map as base layer', () => {
     render(<RealmShell />)
     expect(screen.getByTestId('kingdom-map')).toBeInTheDocument()
+  })
+
+  it('announces a workspace action in its one live region', () => {
+    mockWorkspaceState.announce = 'api added'
+    mockWorkspaceState.announceSeq = 1
+    render(<RealmShell />)
+    const regions = screen.getAllByTestId('live-region')
+    expect(regions).toHaveLength(1)
+    expect(regions[0]).toHaveTextContent('api added')
+    mockWorkspaceState.announce = ''
+    mockWorkspaceState.announceSeq = 0
+  })
+
+  it('shows the realm empty-registry welcome only once the list is loaded and empty', () => {
+    const { unmount } = render(<RealmShell />)
+    expect(screen.queryByTestId('empty-workspaces-prompt')).toBeNull()
+    unmount()
+
+    mockWorkspaceState.loaded = true
+    render(<RealmShell />)
+    expect(screen.getByTestId('empty-workspaces-prompt')).toHaveAttribute('data-skin', 'realm')
+  })
+
+  it('dismisses the empty-registry welcome with Explore first', () => {
+    mockWorkspaceState.loaded = true
+    render(<RealmShell />)
+    fireEvent.click(screen.getByRole('button', { name: 'Explore first' }))
+    expect(screen.queryByTestId('empty-workspaces-prompt')).toBeNull()
+  })
+
+  it('renders the upgrade notice exactly once: in the shell normally, only inside the overlay while the welcome is open', () => {
+    // List not loaded yet / registry not empty: the shell's own copy.
+    const first = render(<RealmShell />)
+    expect(screen.getAllByTestId('legacy-notice-instance')).toHaveLength(1)
+    expect(screen.queryByTestId('empty-workspaces-prompt')).toBeNull()
+    first.unmount()
+
+    // Empty-registry welcome open: the copy inside the aria-modal dialog, none behind it.
+    mockWorkspaceState.loaded = true
+    render(<RealmShell />)
+    expect(screen.getAllByTestId('legacy-notice-instance')).toHaveLength(1)
+    expect(screen.getByRole('dialog')).toContainElement(screen.getByTestId('legacy-notice-instance'))
+
+    // Dismissed with Explore first: back to the shell's copy, still one.
+    fireEvent.click(screen.getByRole('button', { name: 'Explore first' }))
+    expect(screen.getAllByTestId('legacy-notice-instance')).toHaveLength(1)
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   it('renders WizardsStudy overlay when primaryOverlay is wizards-study', async () => {
@@ -214,6 +285,16 @@ describe('RealmShell', () => {
     render(<RealmShell />)
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(mockRealmStore.closeOverlay).toHaveBeenCalledOnce()
+  })
+
+  it('Esc already consumed by a field (a dirty inline rename) does not close the overlay', () => {
+    mockRealmStore.primaryOverlay = 'settings-chamber'
+    mockRealmStore.primaryOverlayContext = { overlayId: 'settings-chamber' }
+    render(<RealmShell />)
+    const consumed = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    consumed.preventDefault()
+    document.dispatchEvent(consumed)
+    expect(mockRealmStore.closeOverlay).not.toHaveBeenCalled()
   })
 
   it('Esc while editing a dirty doc routes through the unsaved-changes guard (R-01)', () => {
@@ -268,6 +349,8 @@ describe('RealmShell', () => {
   })
 
   it('shows first-run welcome when all mappings are unassigned', () => {
+    mockWorkspaceState.loaded = true
+    mockWorkspaceState.workspaces = [{ slug: 'ws' }]
     mockSettingsStore.config = makeRealmConfig({
       mapping: [
         { location: 'castle', workspaceSlug: null },
@@ -276,6 +359,19 @@ describe('RealmShell', () => {
     })
     render(<RealmShell />)
     expect(screen.getByRole('dialog', { name: /Welcome to the Realm/i })).toBeInTheDocument()
+  })
+
+  it('shows neither welcome while the workspace list has not loaded', () => {
+    mockWorkspaceState.loaded = false
+    mockSettingsStore.config = makeRealmConfig({
+      mapping: [
+        { location: 'castle', workspaceSlug: null },
+        { location: 'barracks', workspaceSlug: null },
+      ],
+    })
+    render(<RealmShell />)
+    expect(screen.queryByRole('dialog', { name: /Welcome to the Realm/i })).toBeNull()
+    expect(screen.queryByTestId('empty-workspaces-prompt')).toBeNull()
   })
 
   it('does NOT show first-run when some mappings are assigned', () => {
@@ -291,6 +387,8 @@ describe('RealmShell', () => {
 
   it('first-run "Configure My Kingdom" opens settings with workspaces section', async () => {
     const user = userEvent.setup()
+    mockWorkspaceState.loaded = true
+    mockWorkspaceState.workspaces = [{ slug: 'ws' }]
     mockSettingsStore.config = makeRealmConfig({
       mapping: [{ location: 'castle', workspaceSlug: null }],
     })
@@ -355,6 +453,8 @@ describe('RealmShell', () => {
 
   it('first-run "Explore First" dismisses the welcome dialog', async () => {
     const user = userEvent.setup()
+    mockWorkspaceState.loaded = true
+    mockWorkspaceState.workspaces = [{ slug: 'ws' }]
     mockSettingsStore.config = makeRealmConfig({
       mapping: [{ location: 'castle', workspaceSlug: null }],
     })

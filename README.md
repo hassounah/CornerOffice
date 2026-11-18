@@ -93,11 +93,67 @@ A profile is a separate home for one running instance: its own config, state, wi
 
 Both `CORNER_OFFICE_*` profile variables are ignored (with a warning on stderr) in packaged builds. An invalid value is fatal and the message names the variable.
 
-- **First run:** an empty profile shows the first-launch flow and has no workspaces until discovery runs. To start with your settings, copy them in: `cp ~/.corner-office/config.json ~/.corner-office/profiles/dev/`.
+- **First run:** an empty profile starts with no workspaces and shows the empty-workspaces prompt (Discover, Add folder, Create new). Settings and the workspace list live in the profile's config folder, `~/.corner-office/profiles/dev/electron/`. To start from your real settings, copy the files you want from `~/.config/corner-office/` into it (see [Where Corner Office keeps its files](#where-corner-office-keeps-its-files)).
 - **Logs:** the default profile logs to `~/.config/corner-office/logs/main.log`; a named profile logs to `<profile home>/logs/main.log`.
 - **Reset:** `rm -rf ~/.corner-office/profiles/dev`.
 - **Events:** to exercise the activity feed, append one JSON line to a file under `<profile home>/events/<workspace-slug>/`, for example `echo '{"event":"SessionStart","sessionId":"s1","timestamp":"2026-01-01T00:00:00.000Z","workspace":"my-workspace"}' >> ~/.corner-office/profiles/dev/events/my-workspace/test.jsonl` (create the folder first). The accepted fields are defined in `src/main/services/event-parser.ts`.
 - **Warning:** never run `make dev` or `pnpm` on the host inside `~/.corner-office/sandboxes/*`. That runs code written by the agent on your computer, outside the sandbox.
+
+## Where Corner Office keeps its files
+
+Corner Office splits what it stores into **config** (your settings and workspace list) and **data** (caches, events, sandbox state).
+
+**Config folder:** `${XDG_CONFIG_HOME:-~/.config}/corner-office`. A dev profile uses `<profile home>/electron` instead, for example `~/.corner-office/profiles/dev/electron/`.
+
+| File | Holds |
+| --- | --- |
+| `settings.json` | Company name, notifications, appearance, terminal, code explorer, realm (including which workspace is in which building), Discover exclusions |
+| `workspaces.json` | Your workspace list: each workspace's folder, name and whether it is hidden |
+| `sandbox.json` | Sandbox settings: toolchains, extra packages, the global allowlist, and per-workspace allowlists and ports |
+| `session-defaults.json` | The last session choice (host or sandbox, agent) for each workspace |
+| `window-state.json` | Window size and position |
+
+Each of the first four files keeps a `.bak` copy. A file that cannot be read is kept next to it as `<file>.corrupt-<timestamp>` and replaced (from the backup when there is one), and Corner Office tells you which store it was, whether the backup was restored or the file was reset, what to do next, and the name of the kept copy. The notice stays until you dismiss it or restart. A file that fails to read because of a temporary error is not replaced: the notice says it could not be read just now, and it is tried again on its own.
+
+If an old `~/.corner-office/config.json` is still there after an update, a one-time notice says your earlier workspace list and sandbox settings were not carried over (sandbox allowlists, ports and extra packages are back to safe defaults; add back only what you still need, in the Armory). Dismissing it is remembered.
+
+**Data folder:** `~/.corner-office`. It holds `events/`, `sandbox/`, `sandboxes/`, `profiles/` and `state.json`. The old `~/.corner-office/config.json` is no longer read or written; it can be deleted.
+
+- `XDG_CONFIG_HOME` must be an absolute path. A relative value is ignored and `~/.config` is used.
+- **Do not run two instances with different `XDG_CONFIG_HOME` values.** Each would keep its own settings and workspace list, and they would still share the data folder (events, sandboxes), so they can disagree about what exists. Pick one value and keep it.
+- The config folder must be a plain directory that you own. If it is a symlink, a file, or owned by someone else, Corner Office refuses to start and names the folder. Remove it, or point `XDG_CONFIG_HOME` somewhere else.
+- Corner Office warns when Electron's data folder differs from the config folder (usually a changed `XDG_CONFIG_HOME`).
+
+### Workspace errors
+
+Failures from adding, creating, removing or scanning for workspaces show one of these messages. Nothing is changed when one is shown.
+
+| Code | Message |
+| --- | --- |
+| `WORKSPACE_PATH_NOT_FOUND` | That folder doesn't exist anymore. |
+| `WORKSPACE_NOT_A_DIRECTORY` | That's a file, not a folder. |
+| `WORKSPACE_UNSAFE_ROOT` | Corner Office can't use your home folder or a folder above it. Pick a project folder. |
+| `WORKSPACE_APP_FOLDER` | That folder holds Corner Office or Claude data. Pick a project folder. |
+| `WORKSPACE_DUPLICATE` | Already added as `<name>`. |
+| `WORKSPACE_EXISTS` | A folder with that name already exists here. |
+| `WORKSPACE_NAME_INVALID` | Use letters, numbers, spaces, dots, dashes or underscores (up to 64), starting with a letter or number. |
+| `WORKSPACE_BUSY_TERMINAL` | A session is running in this workspace. End it first. |
+| `WORKSPACE_BUSY_SANDBOX` | Its sandbox is running. End the sandbox session first. |
+| `WORKSPACE_LIMIT` | You've reached the limit of 500 workspaces. Remove some first. |
+| `DISCOVERY_BUSY` | A scan is already running (the Discover dialog joins it instead of showing this). |
+| `CONFIG_INVALID` | Corner Office refused to save an invalid change. Nothing was written. Please report this. |
+| `CONFIG_WRITE_FAILED` | Couldn't save to `<config folder>` (for example `~/.config/corner-office`). Check that the folder is writable and the disk isn't full. |
+| `VALIDATION_ERROR` | That input isn't valid. |
+| any other error | Something went wrong. Nothing was changed. |
+| `TIMEOUT` | That folder isn't responding. It may be on a slow or unmounted drive. |
+| `NOT_READY` | Corner Office is still starting. Try again in a moment. |
+| `NOT_FOUND` | That workspace isn't in your list any more. |
+
+A registered workspace whose folder is missing, moved or unsafe stays in the list with a banner. It cannot open a terminal or the code explorer, and its sandbox cannot be started, recreated, handed off or deleted, until the folder is back. A session that is already running can still be ended.
+
+At most 6 folder checks (running or stuck on a dead mount) happen at once. When a stuck mount holds all of them, the folders that could not be checked yet show **Not checked yet** instead of "not responding", and are checked automatically when a slot frees. A folder that last checked fine stays usable until its own check fails.
+
+**Docs folder.** A workspace's docs come from its docs-root setting, else the absolute `docs_root` in `.rix/memory.md` (a relative one is ignored), else `<folder>/docs`. A docs folder that is, or leads into, one of the app's own folders (for example `~/.claude`) or your home folder is refused. The workspace then uses `<folder>/docs` if that is fine; if not, docs are off for it and the page says so. The path is checked again every time docs are read or written.
 
 ## Building
 
@@ -178,11 +234,11 @@ To work on Corner Office itself inside a sandbox session, the agent can run the 
 
 One-time setup on the host. `make dev` prints the exact lines when something is missing:
 
-1. Quit Corner Office and add the Electron runtime packages to `"sandbox"` in `~/.corner-office/config.json`: `"extraPackages": ["xvfb", "glib", ...]` (the full list is printed by `make dev`). Restart the app, then **Settings > Sandbox > Image: Rebuild** (this rebuilds the shared image for all workspaces).
+1. Quit Corner Office and add the Electron runtime packages to the top level of `sandbox.json` in the config folder (`~/.config/corner-office/`): `"extraPackages": ["xvfb", "glib", ...]` (the full list is printed by `make dev`). Restart the app, then **Settings > Sandbox > Image: Rebuild** (this rebuilds the shared image for all workspaces).
 2. Add `electronjs.org` and `release-assets.githubusercontent.com` to the workspace's sandbox allowlist.
 3. Restart the session.
 
-`sandbox.extraPackages` is a generic, currently config-only setting: any system packages from the Wolfi repo, installed as root at image build time and shared by all workspaces. Names must be lowercase package names (`a-z`, `0-9`, `+._-`); invalid entries are dropped with a warning, and the list is capped at 64.
+`extraPackages` (in `sandbox.json`) is a generic, currently config-only setting: any system packages from the Wolfi repo, installed as root at image build time and shared by all workspaces. Names must be lowercase package names (`a-z`, `0-9`, `+._-`); invalid entries are dropped with a warning, and the list is capped at 64.
 
 Then, inside the sandbox session:
 
@@ -219,7 +275,7 @@ A sandbox limits the damage an unattended agent can do. It is not a guarantee. T
 - Files the agent writes on its branch (`package.json` scripts, `.husky/`, the Makefile, and the repository's own `.codex/` and `.claude/` config) only run on your host once you check out or merge that branch, so review before you merge.
 - Don't run `git` or git-aware tools (including your editor's git integration) inside directories the agent writes to, such as the worktree's subfolders, `.rix` or the docs folder. A nested `.git` the agent plants there can make git run code (hooks, config) on your host.
 - Events are labelled by where they were written. Each sandbox writes to its own events directory (`~/.corner-office/sandbox/<workspace>/events`), which the app watches separately from the host's `~/.corner-office/events`. Anything in the first is tagged Sandbox and anything in the second is tagged Host, whatever the event says about itself (including its `agent` field), so a sandbox agent can no longer pass its events off as host events.
-  - History from before this change is the exception: in a workspace that has a sandbox, host-folder events older than the cutover (recorded once, as `sandbox.eventsSplitAt` in `config.json`) keep the old session-ID rule, so old sandbox events aren't relabelled as Host.
+  - History from before this change is the exception: in a workspace that has a sandbox, host-folder events older than the cutover (recorded once, as `eventsSplitAt` in `sandbox.json`) keep the old session-ID rule, so old sandbox events aren't relabelled as Host.
   - A sandbox container that kept running across the upgrade (only possible after a crash) still writes to the old host folder until it is recreated, so its events are labelled Host in the meantime.
 
 Everything a sandbox sends to the app (chat, permission prompts, notifications, activity) is untrusted text and carries a persistent Sandbox tag.

@@ -1,7 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { Pipeline, Feature, IdeationItem, WorkspaceStatus } from '@main/types/workspace'
+import type { Pipeline, Feature, IdeationItem, Workspace, WorkspaceStatus } from '@main/types/workspace'
+import { classicSettingsChrome, realmTokenOverrides } from '../realm-chrome'
+import { AvailabilityBanner } from '../../workspaces/AvailabilityBanner'
+import { CreateWarningNotice } from '../../workspaces/CreateWarningNotice'
+import { RemoveWorkspaceDialog } from '../../workspaces/WorkspaceManager'
+import { NOT_RIX_COPY, NO_DOCS_FOLDER_COPY } from '../../../utils/workspace-errors'
 import { useWorkspaceStore } from '../../../stores/workspace-store'
 import { useDocViewerStore } from '../../../stores/docviewer-store'
 import { useChannelsStore } from '../../../stores/channels-store'
@@ -631,6 +636,19 @@ export function WizardsStudy({ workspaceSlug }: { workspaceSlug: string | null }
     dialogRef.current?.focus()
   }, [])
 
+  // The workspace this Study shows was removed (from the banner, the Settings Chamber, or another window): close it
+  // rather than leave a "not found" panel. Only once it was seen, so a Study opened for an id not loaded yet waits.
+  const closeStudy = useRealmStore((s) => s.closeOverlay)
+  const wasPresent = useRef(false)
+  useEffect(() => {
+    if (workspace) {
+      wasPresent.current = true
+      return
+    }
+    if (wasPresent.current) closeStudy()
+  }, [workspace, closeStudy])
+  const [removing, setRemoving] = useState<Workspace | null>(null)
+
   // Fetch fresh workspace data when the Study opens
   useEffect(() => {
     if (workspaceSlug) void fetchOne(workspaceSlug)
@@ -777,6 +795,23 @@ export function WizardsStudy({ workspaceSlug }: { workspaceSlug: string | null }
 
       {/* Content */}
       <div style={{ position: 'relative', zIndex: 1, padding: '18px 22px', height: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 10 }}>
+
+        {/* Availability, create warnings and the not-Rix notes (#0039). The wrapper carries the realm tokens. */}
+        {workspace.availability !== 'ok' && (
+          <div style={{ ...classicSettingsChrome, ...realmTokenOverrides }}>
+            <AvailabilityBanner workspace={workspace} onRemove={() => setRemoving(workspace)} />
+          </div>
+        )}
+        <div style={{ ...realmTokenOverrides }}>
+          <CreateWarningNotice slug={workspace.slug} path={workspace.path} />
+        </div>
+        {workspace.availability === 'ok' && !workspace.hasRix && (
+          <p style={{ margin: 0, fontSize: 13, color: '#c9b88e' }}>{NOT_RIX_COPY}</p>
+        )}
+        {workspace.availability === 'ok' && !workspace.docsRootExists && (
+          <p style={{ margin: 0, fontSize: 13, color: '#c9b88e' }}>{NO_DOCS_FOLDER_COPY}</p>
+        )}
+        <RemoveWorkspaceDialog target={removing} skin="realm" onClose={() => setRemoving(null)} fallbackFocus={dialogRef} />
 
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

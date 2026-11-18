@@ -37,6 +37,10 @@ export interface Profile {
   userDataDir: string | null
   /** null = electron-log default | `<home>/logs/main.log`. */
   logFile: string | null
+  /** Settings and registry files (#0039): `${XDG_CONFIG_HOME:-~/.config}/corner-office` | `<home>/electron`. */
+  configDir: string
+  /** `configDir` with the home directory shown as `~`, for display only. */
+  configDirDisplay: string
   /** CORNER_OFFICE_DEBUG_PORT; unpackaged only. */
   debugPort: number | null
   /** Sandbox mode: `<home>/claude`; otherwise `<realHome>/.claude`. */
@@ -55,6 +59,16 @@ export interface ResolveOptions {
   isPackaged: boolean
   realHome: string
   appPath: string
+}
+
+/** The default profile's config dir. A relative XDG_CONFIG_HOME is ignored (Sec L3). */
+function defaultConfigDirs(env: NodeJS.ProcessEnv, realHome: string): { dir: string; display: string } {
+  const xdg = env.XDG_CONFIG_HOME
+  if (xdg && path.isAbsolute(xdg)) {
+    const dir = path.join(xdg, 'corner-office')
+    return { dir, display: dir }
+  }
+  return { dir: path.join(realHome, '.config', 'corner-office'), display: '~/.config/corner-office' }
 }
 
 export function resolveProfile(env: NodeJS.ProcessEnv, opts: ResolveOptions): Profile {
@@ -103,11 +117,14 @@ export function resolveProfile(env: NodeJS.ProcessEnv, opts: ResolveOptions): Pr
     throw new ProfileError(`sandbox mode must not use the real Claude home (${realClaudeHome})`)
   }
 
+  const defaults = defaultConfigDirs(env, realHome)
   return {
     name,
     home,
     homeDisplay: name === null ? '~/.corner-office' : `~/.corner-office/profiles/${name}`,
     userDataDir: name === null ? null : path.join(home, 'electron'),
+    configDir: name === null ? defaults.dir : path.join(home, 'electron'),
+    configDirDisplay: name === null ? defaults.display : `~/.corner-office/profiles/${name}/electron`,
     logFile: name === null ? null : path.join(home, 'logs', 'main.log'),
     debugPort,
     claudeHome: claudeHomeDir,
@@ -123,11 +140,14 @@ function current(): Profile {
   if (active) return active
   fallbackRead = true
   const realHome = resolveRealHome()
+  const defaults = defaultConfigDirs(process.env, realHome)
   return {
     name: null,
     home: path.join(realHome, '.corner-office'),
     homeDisplay: '~/.corner-office',
     userDataDir: null,
+    configDir: defaults.dir,
+    configDirDisplay: defaults.display,
     logFile: null,
     debugPort: null,
     claudeHome: path.join(realHome, '.claude'),
@@ -175,6 +195,23 @@ export function coHomeDisplay(): string {
   return current().homeDisplay
 }
 
+/** Where settings and the workspace registry live. Same freeze tripwire as `coHome()`. */
+export function configDir(): string {
+  return current().configDir
+}
+
+export function configDirDisplay(): string {
+  return current().configDirDisplay
+}
+
+/**
+ * The default profile's config dir for `realHome` (an absolute `XDG_CONFIG_HOME` is honoured), whatever profile is
+ * active. In sandbox mode the real app's settings live here, and a workspace must never be or contain them.
+ */
+export function defaultConfigDir(realHome: string, env: NodeJS.ProcessEnv = process.env): string {
+  return defaultConfigDirs(env, realHome).dir
+}
+
 export function claudeHome(): string {
   return current().claudeHome
 }
@@ -194,6 +231,66 @@ export function fatalProfileError(msg: string, code = 1): never {
   fs.writeSync(2, `Corner Office: ${msg}\n`)
   app.exit(code)
   process.exit(code)
+}
+
+/** Why `dir` is unsafe to keep settings in (a symlink, a non-directory, a foreign owner), or null. A missing dir is not unsafe. */
+function configDirProblem(dir: string): string | null {
+  let st: fs.Stats
+  try {
+    st = fs.lstatSync(dir)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return null
+    // Any other failure (EACCES, ENOTDIR, ELOOP...) is not "safe": a typed error with a fixed message, never the raw
+    // fs error, which carries the path.
+    throw new ProfileError(`the settings folder cannot be inspected (${typeof code === 'string' ? code : 'unknown error'}). Check its permissions, or point XDG_CONFIG_HOME somewhere else.`)
+  }
+  if (st.isSymbolicLink() || !st.isDirectory()) {
+    return `config folder ${dir} is not a plain directory (it is a symlink or a file). Remove it, or point XDG_CONFIG_HOME somewhere else.`
+  }
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null
+  if (uid !== null && st.uid !== uid) {
+    return `config folder ${dir} is owned by uid ${st.uid}, not you (uid ${uid}). Remove it, or point XDG_CONFIG_HOME somewhere else.`
+  }
+  return null
+}
+
+/**
+ * Create the config dir (0700), tighten a looser one, and exit fatally on a symlink, a
+ * non-directory or a foreign owner: the app never runs on a config dir it does not own.
+ */
+export function ensureConfigDir(): void {
+  const dir = configDir()
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  let problem: string | null
+  try {
+    problem = configDirProblem(dir)
+  } catch (err) {
+    // A folder that cannot even be inspected is as unusable as a symlinked one: say so (fixed, path-free message) and exit.
+    if (!(err instanceof ProfileError)) throw err
+    problem = err.message
+  }
+  if (problem) fatalProfileError(problem)
+  const st = fs.lstatSync(dir)
+  if ((st.mode & 0o077) !== 0) fs.chmodSync(dir, 0o700)
+}
+
+/** The same ownership checks as `ensureConfigDir`, for use after startup: throws a plain error and never exits. */
+export function assertConfigDirSafe(): void {
+  const problem = configDirProblem(configDir())
+  if (problem) throw new Error(problem)
+}
+
+/** Create the data dir (`coHome()`) and its `events/` dir, both 0700. */
+export function ensureDataDir(): void {
+  const dir = coHome()
+  for (const d of [dir, path.join(dir, 'events')]) {
+    if (!fs.existsSync(d)) {
+      fs.mkdirSync(d, { recursive: true, mode: 0o700 })
+    } else {
+      fs.chmodSync(d, 0o700)
+    }
+  }
 }
 
 /** Create a non-default profile's home (0700), tighten an existing looser one, and refuse a symlink or a directory owned by someone else. */

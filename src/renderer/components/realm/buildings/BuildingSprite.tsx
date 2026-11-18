@@ -63,6 +63,7 @@ function buildingFilter(state: BuildingState | 'reserved' | 'attention'): string
     case 'idle':
       return 'drop-shadow(0 0 4px rgba(201,168,76,0.3)) brightness(0.85)'
     case 'unassigned':
+    case 'unavailable':
       return 'brightness(0.4) saturate(0.3)'
     case 'reserved':
       return 'drop-shadow(0 0 4px rgba(201,168,76,0.4))'
@@ -72,7 +73,7 @@ function buildingFilter(state: BuildingState | 'reserved' | 'attention'): string
 }
 
 function buildingOpacity(state: BuildingState | 'reserved' | 'attention'): number {
-  return state === 'unassigned' ? 0.7 : 1
+  return state === 'unassigned' || state === 'unavailable' ? 0.7 : 1
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +87,11 @@ interface BuildingSpriteProps {
   onClick?: () => void
   /** Human-readable purpose shown in aria-label (e.g. "click to open workspace") */
   actionLabel?: string
+  /**
+   * For an `unavailable` building: the workspace's name and why its folder cannot be used ("Api", "folder not found").
+   * The accessible name then reads "The Castle — Api: folder not found".
+   */
+  unavailable?: { name: string; reason: string }
 }
 
 export function BuildingSprite({
@@ -94,6 +100,7 @@ export function BuildingSprite({
   workspaceSlug,
   onClick,
   actionLabel,
+  unavailable,
 }: BuildingSpriteProps): React.ReactElement {
   const animationsEnabled = useSettingsStore((s) => s.config?.realm?.animationsEnabled ?? true)
   const label = LOCATION_LABEL[location]
@@ -103,6 +110,8 @@ export function BuildingSprite({
 
   const ariaLabel = isUnassigned
     ? `${label} — No workspace assigned`
+    : buildingState === 'unavailable' && unavailable
+      ? `${label} — ${unavailable.name}: ${unavailable.reason}${actionLabel ? ` (${actionLabel})` : ''}`
     : workspaceSlug
       ? `${label} — ${workspaceSlug}${actionLabel ? ` (${actionLabel})` : ''}`
       : `${label}${actionLabel ? ` (${actionLabel})` : ''}`

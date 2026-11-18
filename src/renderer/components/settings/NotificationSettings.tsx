@@ -1,8 +1,8 @@
 import React from 'react'
 import { useSettingsStore } from '../../stores/settings-store'
-import type { AppConfig } from '@main/types/config'
+import type { Settings } from '@main/services/stores'
 
-type NotificationConfig = AppConfig['notifications']
+type NotificationConfig = Settings['notifications']
 
 function Toggle({
   checked,

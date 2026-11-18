@@ -134,7 +134,8 @@ export function buildSandboxHandlers(manager: SandboxManagerService, deps: Build
       }
       if (patch.workspaceAllowlist) {
         const { workspaceSlug, entries } = patch.workspaceAllowlist
-        merged.workspaces[workspaceSlug] = { ...current.workspaces[workspaceSlug], channelPort: current.workspaces[workspaceSlug]?.channelPort ?? null, allowlist: entries }
+        const existing = Object.hasOwn(current.workspaces, workspaceSlug) ? current.workspaces[workspaceSlug] : undefined
+        merged.workspaces[workspaceSlug] = { ...existing, channelPort: existing?.channelPort ?? null, allowlist: entries }
       }
       return merged
     })

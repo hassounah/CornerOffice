@@ -35,6 +35,23 @@ const FIXED_MESSAGE: Readonly<Record<string, string>> = {
   [IPC_ERROR_CODES.STALE_WRITE]: 'File changed on disk',
   [IPC_ERROR_CODES.TIMEOUT]: 'Request timed out',
   [IPC_ERROR_CODES.SANDBOX_OFF_IN_PROFILE]: 'Sandbox sessions are off in this profile',
+  [IPC_ERROR_CODES.NOT_READY]: 'Corner Office is still starting',
+  // A registry operation refusing its input after zod passed it (for example a path that fails the realpath checks).
+  [IPC_ERROR_CODES.VALIDATION_ERROR]: 'Invalid request',
+  // Workspace registry (#0039): neutral English only. The renderer owns the user-facing copy (TRD §3.7).
+  [IPC_ERROR_CODES.WORKSPACE_PATH_NOT_FOUND]: 'Workspace path not found',
+  [IPC_ERROR_CODES.WORKSPACE_NOT_A_DIRECTORY]: 'Workspace path is not a directory',
+  [IPC_ERROR_CODES.WORKSPACE_UNSAFE_ROOT]: 'Workspace path is not allowed',
+  [IPC_ERROR_CODES.WORKSPACE_APP_FOLDER]: 'Workspace path overlaps application data',
+  [IPC_ERROR_CODES.WORKSPACE_DUPLICATE]: 'Workspace already added',
+  [IPC_ERROR_CODES.WORKSPACE_EXISTS]: 'Workspace folder already exists',
+  [IPC_ERROR_CODES.WORKSPACE_NAME_INVALID]: 'Workspace name is not valid',
+  [IPC_ERROR_CODES.WORKSPACE_BUSY_TERMINAL]: 'Workspace has a running session',
+  [IPC_ERROR_CODES.WORKSPACE_BUSY_SANDBOX]: 'Workspace sandbox is busy',
+  [IPC_ERROR_CODES.WORKSPACE_LIMIT]: 'Workspace limit reached',
+  [IPC_ERROR_CODES.DISCOVERY_BUSY]: 'Discovery is already running',
+  [IPC_ERROR_CODES.CONFIG_INVALID]: 'Configuration change was not valid',
+  [IPC_ERROR_CODES.CONFIG_WRITE_FAILED]: 'Configuration could not be saved',
 }
 
 // Matches a POSIX or Windows absolute path (or a drive-relative Windows path)

@@ -97,6 +97,18 @@ describe('FileWatcherService', () => {
       expect(mockWatcherInstances.length).toBeGreaterThanOrEqual(2)
     })
 
+    it('watchDocs: false (a refused docs root) starts no docs watcher', () => {
+      const callbacks = makeCallbacks()
+      const withDocs = new FileWatcherService(callbacks)
+      withDocs.addWorkspace('/ws/a', null)
+      const withDocsCount = mockWatcherInstances.length
+      mockWatcherInstances.length = 0
+      const svc = new FileWatcherService(callbacks)
+      svc.addWorkspace('/ws/b', '/ws/b/docs', { watchDocs: false })
+      expect(mockWatcherInstances.length).toBe(withDocsCount - 1)
+      expect(chokidar.watch).not.toHaveBeenLastCalledWith('/ws/b/docs', expect.anything())
+    })
+
     it('is idempotent — does not create duplicate watchers', () => {
       const callbacks = makeCallbacks()
       const svc = new FileWatcherService(callbacks)

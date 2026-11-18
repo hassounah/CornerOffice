@@ -322,7 +322,9 @@ export const useRealmStore = create<RealmStoreState>((set, get) => ({
       const ws = workspaces.find((w) => w.slug === mapping.workspaceSlug)
       let state: BuildingState = 'unassigned'
       if (mapping.workspaceSlug) {
-        state = ws ? (ws.activePipelines.length > 0 ? 'active' : 'idle') : 'unassigned'
+        // A workspace whose folder is not available keeps its building (still clickable, so the user can reach the
+        // banner), but renders dim. `hidden` plays no part here: Hide is an office-sidebar concept.
+        state = ws ? (ws.availability !== 'ok' ? 'unavailable' : ws.activePipelines.length > 0 ? 'active' : 'idle') : 'unassigned'
       }
       newBuildings[mapping.location] = {
         location: mapping.location,

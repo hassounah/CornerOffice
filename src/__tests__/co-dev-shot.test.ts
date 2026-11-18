@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { PROFILE_NAME_RE } from '../main/services/app-home'
@@ -32,6 +32,12 @@ interface ShotModule {
 }
 
 const load = async (): Promise<ShotModule> => (await import(SCRIPT)) as ShotModule
+
+// The first import of the script is the slow part (it resolves its own dependencies); under a loaded
+// full run it can exceed a single test's default timeout, so pay for it once, in a hook with room.
+beforeAll(async () => {
+  await load()
+}, 60_000)
 
 afterEach(() => {
   vi.restoreAllMocks()

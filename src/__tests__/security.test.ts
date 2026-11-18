@@ -254,8 +254,13 @@ describe('Preload channel whitelist', () => {
     }
   })
 
-  it('whitelist has exactly 20 entries', () => {
-    expect(ALLOWED_PUSH_CHANNELS).toHaveLength(20)
+  it('whitelist has exactly 22 entries', () => {
+    expect(ALLOWED_PUSH_CHANNELS).toHaveLength(22)
+  })
+
+  it('includes the workspace registry push channels', () => {
+    expect(ALLOWED_PUSH_CHANNELS).toContain('workspace:listChanged')
+    expect(ALLOWED_PUSH_CHANNELS).toContain('workspace:discoverProgress')
   })
 
   it('includes notification:clicked channel', () => {

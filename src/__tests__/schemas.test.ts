@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
   WorkspaceGetDetailSchema,
-  WorkspaceUpdateConfigSchema,
   ActivityGetFeedSchema,
   ConfigUpdateSchema,
   NotificationDismissSchema,
@@ -18,16 +17,6 @@ describe('WorkspaceGetDetailSchema', () => {
 
   it('rejects empty slug', () => {
     expect(WorkspaceGetDetailSchema.safeParse({ slug: '' }).success).toBe(false)
-  })
-})
-
-describe('WorkspaceUpdateConfigSchema', () => {
-  it('accepts full valid input', () => {
-    const result = WorkspaceUpdateConfigSchema.safeParse({
-      slug: 'ws',
-      config: { slug: 'ws', displayName: 'Test', pinned: false, archived: false, docsRoot: null },
-    })
-    expect(result.success).toBe(true)
   })
 })
 
@@ -71,11 +60,11 @@ describe('ConfigUpdateSchema', () => {
     expect(result.success).toBe(true)
   })
 
-  it('accepts discoveryExclusions', () => {
+  it('no longer accepts discoveryExclusions (X1)', () => {
     const result = ConfigUpdateSchema.safeParse({
       discoveryExclusions: ['node_modules', '.git'],
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBe(false)
   })
 
   it('rejects invalid discoveryExclusion with path separator', () => {
@@ -96,7 +85,7 @@ describe('ConfigUpdateSchema', () => {
     expect(result.success).toBe(true)
   })
 
-  it('rejects duplicate realm locations', () => {
+  it('strips realm.mapping instead of applying it (assignments go through realm:setAssignment)', () => {
     const result = ConfigUpdateSchema.safeParse({
       realm: {
         enabled: true,
@@ -107,21 +96,23 @@ describe('ConfigUpdateSchema', () => {
         shipCelebration: 'townSquare',
       },
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBe(true)
+    expect(result.data?.realm).toEqual({ enabled: true, shipCelebration: 'townSquare' })
+    expect(result.data?.realm).not.toHaveProperty('mapping')
   })
 
-  it('accepts workspace display updates', () => {
+  it('no longer accepts workspace display updates (X1: use the workspace:* intents)', () => {
     const result = ConfigUpdateSchema.safeParse({
       workspaces: [{ slug: 'ws-1', displayName: 'New Name', pinned: true }],
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBe(false)
   })
 
-  it('accepts terminalEmulator', () => {
+  it('no longer accepts terminalEmulator (X1)', () => {
     const result = ConfigUpdateSchema.safeParse({
       terminalEmulator: 'alacritty',
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBe(false)
   })
 
   it('accepts companyName', () => {

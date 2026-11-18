@@ -39,6 +39,9 @@ vi.mock('react-window', () => ({
 const mockWorkspaceStore = vi.hoisted(() => ({
   workspaces: [] as Workspace[],
   loading: false,
+  createWarnings: new Map<string, readonly string[]>(),
+  dismissWarning: vi.fn(),
+  remove: vi.fn().mockResolvedValue(undefined),
   fetchAll: vi.fn().mockResolvedValue(undefined),
   fetchOne: vi.fn().mockResolvedValue(undefined),
   selectWorkspace: vi.fn(),
@@ -109,6 +112,7 @@ import { HistoryTimeline } from '../../../renderer/components/workspace/HistoryT
 import WorkspaceDetail from '../../../renderer/pages/WorkspaceDetail'
 import { setPendingReturnFocus } from '../../../renderer/utils/code-explorer-return-focus'
 import { assertNoNestedInteractive } from '../../helpers/a11y'
+import { workspaceRegistryFields } from '../../helpers/workspace-fixture'
 import { useSandboxStore } from '../../../renderer/stores/sandbox-store'
 import { useTerminalStore } from '../../../renderer/stores/terminal-store'
 import type { SandboxStatus } from '@main/types/sandbox'
@@ -192,6 +196,7 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
   return {
     slug: 'test-ws',
     path: '/home/user/test-ws',
+    ...workspaceRegistryFields('/home/user/test-ws'),
     displayName: 'Test Workspace',
     docsRoot: '/home/user/test-ws/docs',
     docsRootExists: true,
@@ -206,8 +211,6 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     shippedFeatures: [],
     lastActivityTimestamp: null,
     weekShipCount: 0,
-    pinned: false,
-    archived: false,
     level: makeLevel(),
     xp: 250,
     readmeContent: null,
@@ -1016,8 +1019,106 @@ describe('WorkspaceDetail', () => {
     mockWorkspaceStore.workspaces = [makeWorkspace({ docsRootExists: false })]
     render(<WorkspaceDetail />)
     const btn = screen.getByRole('button', { name: /browse docs/i })
-    expect(btn).toBeDisabled()
-    expect(btn).toHaveAttribute('title', 'Docs directory not found — try refreshing')
+    expect(btn).toHaveAttribute('aria-disabled', 'true')
+    expect(btn).toHaveAccessibleDescription('No docs folder')
+    mockDocViewerStore.openFolder.mockClear()
+    fireEvent.click(btn)
+    expect(mockDocViewerStore.openFolder).not.toHaveBeenCalled()
+  })
+
+  it('Browse Docs and Browse Code say the folder is unavailable when the workspace is not ok', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace({ availability: 'missing', docsRootExists: true })]
+    render(<WorkspaceDetail />)
+    expect(screen.getByRole('button', { name: /browse docs/i })).toHaveAccessibleDescription("This folder isn't available right now")
+    expect(screen.getByRole('button', { name: /browse code/i })).toHaveAccessibleDescription("This folder isn't available right now")
+  })
+
+  it('Browse Docs gives the docs-refused reason, not "No docs folder", when the docs root was refused', () => {
+    mockWorkspaceStore.workspaces = [makeWorkspace({ docsRootExists: false, docsRootRefused: true })]
+    render(<WorkspaceDetail />)
+    const btn = screen.getByRole('button', { name: /browse docs/i })
+    expect(btn).toHaveAccessibleDescription("Docs are off: the chosen docs folder is one of the app's own folders. Pick another docs folder.")
+    expect(btn).not.toHaveAccessibleDescription('No docs folder')
+  })
+
+  describe('registry states (#0039 4.5)', () => {
+    afterEach(() => {
+      mockWorkspaceStore.createWarnings = new Map()
+    })
+
+    it('shows the availability banner for a folder that is not usable, and not for one that is', () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace({ availability: 'missing' })]
+      const { unmount } = render(<WorkspaceDetail />)
+      expect(screen.getByText(/Folder not found: ~?\/?.*test-ws\. It may be on an unmounted drive\./)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument()
+      unmount()
+
+      mockWorkspaceStore.workspaces = [makeWorkspace()]
+      render(<WorkspaceDetail />)
+      expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
+    })
+
+    it('Start Session is aria-disabled with the reason while the folder is not usable', () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace({ availability: 'unreachable' })]
+      render(<WorkspaceDetail />)
+      const start = screen.getByRole('button', { name: 'Start Session' })
+      expect(start).toHaveAttribute('aria-disabled', 'true')
+      expect(start).toHaveAccessibleDescription("This folder isn't available right now. Check it again, or remove it.")
+    })
+
+    it('does not show the not-Rix copy or an empty-features line for an unavailable folder', () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace({ availability: 'missing', hasRix: false })]
+      render(<WorkspaceDetail />)
+      expect(screen.queryByText(/Not a Rix workspace yet/)).toBeNull()
+      expect(screen.queryByText('No features shipped yet.')).toBeNull()
+    })
+
+    it('a workspace without .rix says so on the page and on the Board', () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace({ hasRix: false, projectContext: '' })]
+      render(<WorkspaceDetail />)
+      expect(screen.getAllByText('Not a Rix workspace yet. Rix creates `.rix/` the first time it runs here.')).toHaveLength(2)
+      expect(screen.queryByText('No features shipped yet.')).toBeNull()
+    })
+
+    it('shows the create warning in the header until it is dismissed', () => {
+      mockWorkspaceStore.createWarnings = new Map([['test-ws', ['git-unavailable']]])
+      mockWorkspaceStore.workspaces = [makeWorkspace()]
+      render(<WorkspaceDetail />)
+      const header = screen.getByRole('banner')
+      expect(within(header).getByText("Created. Git wasn't found, so the folder isn't a git repository yet.")).toBeInTheDocument()
+      fireEvent.click(within(header).getByRole('button', { name: 'Dismiss the notice about test-ws' }))
+      expect(mockWorkspaceStore.dismissWarning).toHaveBeenCalledWith('test-ws')
+    })
+
+    it('leaves for / when the workspace it was showing is removed', () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace()]
+      const { rerender } = render(<WorkspaceDetail />)
+      expect(mockNavigate).not.toHaveBeenCalled()
+      mockWorkspaceStore.workspaces = []
+      rerender(<WorkspaceDetail />)
+      expect(mockNavigate).toHaveBeenCalledWith('/', { replace: true })
+    })
+
+    it('does not navigate away for a slug that was never there', () => {
+      mockWorkspaceStore.workspaces = []
+      render(<WorkspaceDetail />)
+      expect(mockNavigate).not.toHaveBeenCalled()
+      expect(screen.getByText('Workspace not found.')).toBeInTheDocument()
+    })
+
+    it('Remove in the banner opens the confirmation, and confirming removes and goes to /', async () => {
+      mockWorkspaceStore.workspaces = [makeWorkspace({ availability: 'missing' })]
+      render(<WorkspaceDetail />)
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+      expect(await screen.findByText('Remove Test Workspace?')).toBeInTheDocument()
+      const dialog = screen.getByRole('alertdialog')
+      await act(async () => {
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }))
+      })
+      expect(mockWorkspaceStore.remove).toHaveBeenCalledWith('test-ws')
+      expect(mockNavigate).toHaveBeenCalledWith('/')
+    })
   })
 
   it('Browse Docs button is enabled when docsRootExists is true', () => {
@@ -1049,16 +1150,16 @@ describe('WorkspaceDetail', () => {
     mockWorkspaceStore.workspaces = [makeWorkspace({ repoRootStatus: 'missing' })]
     render(<WorkspaceDetail />)
     const btn = screen.getByRole('button', { name: /browse code/i })
-    expect(btn).toBeDisabled()
-    expect(btn).toHaveAttribute('title', 'Workspace folder not found — try refreshing')
+    expect(btn).toHaveAttribute('aria-disabled', 'true')
+    expect(btn).toHaveAccessibleDescription('Workspace folder not found — try refreshing')
   })
 
   it('is disabled with the unsafe-root tooltip when repoRootStatus is unsafe', () => {
     mockWorkspaceStore.workspaces = [makeWorkspace({ repoRootStatus: 'unsafe' })]
     render(<WorkspaceDetail />)
     const btn = screen.getByRole('button', { name: /browse code/i })
-    expect(btn).toBeDisabled()
-    expect(btn).toHaveAttribute('title', 'Code explorer is disabled for your home folder or a drive root')
+    expect(btn).toHaveAttribute('aria-disabled', 'true')
+    expect(btn).toHaveAccessibleDescription('Code explorer is disabled for your home folder or a drive root')
   })
 
   it('navigates to the code explorer route when clicked', () => {

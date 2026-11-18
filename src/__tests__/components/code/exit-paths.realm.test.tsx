@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, within, act, renderHook } from '@testing-library/react'
 import React from 'react'
-import type { AppConfig } from '@main/types/config'
+import type { Settings } from '@main/services/stores'
 import type { CodeFileResponse } from '@main/types/code'
 import type { Workspace } from '@main/types/workspace'
 
@@ -98,7 +98,7 @@ const mockRealmStore = vi.hoisted(() => ({
 }))
 
 const mockSettingsStore = vi.hoisted(() => ({
-  config: null as AppConfig | null,
+  config: null as Settings | null,
   updateConfig: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -245,16 +245,14 @@ import { useCodeExplorerStore } from '../../../renderer/stores/code-explorer-sto
 import { useDocViewerStore } from '../../../renderer/stores/docviewer-store'
 import { useGuardDialogStore } from '../../../renderer/hooks/useUnsavedGuard'
 import { REPO_STATE_FIXTURES } from '../../helpers/repo-state-fixtures'
+import { workspaceRegistryFields } from '../../helpers/workspace-fixture'
 
-function makeRealmConfig(): AppConfig {
+function makeRealmConfig(): Settings {
   return {
     version: 1,
     companyName: 'Test Co',
-    workspaces: [],
-    discoveryExclusions: [],
-    firstLaunchComplete: true,
-    terminalEmulator: null,
-    hookScriptPath: '',
+    discovery: { exclusions: [] },
+    legacyNoticeDismissed: false,
     notifications: {
       osNotificationsEnabled: false,
       showMissedOnStartup: true,
@@ -268,7 +266,6 @@ function makeRealmConfig(): AppConfig {
       quietHours: { enabled: false, start: '22:00', end: '08:00' },
     },
     appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full' },
-    hooks: { installed: false, installedAt: null, hookScriptPath: '' },
     realm: { enabled: true, mapping: [{ location: 'castle', workspaceSlug: 'ws' }], shipCelebration: 'townSquare' },
     terminal: { fontSize: 14, windowBounds: {} },
   }
@@ -331,6 +328,7 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
   return {
     slug: 'test-ws',
     path: '/test',
+    ...workspaceRegistryFields('/test'),
     displayName: 'Test WS',
     docsRoot: '/test/docs',
     docsRootExists: true,
@@ -345,8 +343,6 @@ function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
     shippedFeatures: [],
     lastActivityTimestamp: null,
     weekShipCount: 0,
-    pinned: false,
-    archived: false,
     level: { number: 1, name: 'Prototype', xpRequired: 0, xpCurrent: 0 },
     xp: 0,
     readmeContent: null,

@@ -399,6 +399,9 @@ describe('reconcile by container name', () => {
     const h = prepared()
     const manager = createSandboxManager(h.makeDeps())
     await manager.getEnvironment({ refresh: true })
+    // The first `ok` transition started a reconcile in the background; concurrent callers share it (#0039), so wait
+    // for it to finish. Each test then scripts its `ps` and runs a fresh, explicit reconcile.
+    await manager.reconcile()
     return { h, manager }
   }
 

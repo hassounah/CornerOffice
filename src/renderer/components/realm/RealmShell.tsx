@@ -9,6 +9,11 @@ import { useSettingsStore } from '../../stores/settings-store'
 import { useSandboxStore } from '../../stores/sandbox-store'
 import { KingdomMap } from './views/KingdomMap'
 import { OverlayBackdrop } from './OverlayBackdrop'
+import { realmTokenOverrides } from './realm-chrome'
+import { WorkspaceLiveRegion } from '../shared/LiveRegion'
+import { CreateWorkspaceDialog } from '../workspaces/CreateWorkspaceDialog'
+import { EmptyWorkspacesPrompt } from '../workspaces/EmptyWorkspacesPrompt'
+import { LegacyNotice } from '../workspaces/LegacyNotice'
 
 // ---------------------------------------------------------------------------
 // First-run overlay (shown when all 10 mappings are unassigned)
@@ -96,6 +101,50 @@ function FirstRunWelcome({ onDismiss, onConfigure }: {
 }
 
 // ---------------------------------------------------------------------------
+// Empty-registry overlay (#0039 UX M7): the realm's version of "no workspaces yet". Its own copy, the same three
+// actions, and the legacy-list line when an old config is still on disk.
+// ---------------------------------------------------------------------------
+
+function EmptyRegistryWelcome({ onDismiss, onOpenWorkspace }: {
+  onDismiss: () => void
+  onOpenWorkspace: (slug: string) => void
+}): React.ReactElement {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const [creating, setCreating] = useState(false)
+
+  useEffect(() => {
+    dialogRef.current?.focus()
+  }, [])
+
+  return (
+    <OverlayBackdrop onClose={onDismiss}>
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="w-[560px] rounded-lg p-4 shadow-2xl"
+        style={{ ...realmTokenOverrides, background: '#1e140a', border: '2px solid rgba(201, 168, 76, 0.5)', fontFamily: 'serif', color: '#e8d5a3', outline: 'none' }}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="empty-workspaces-title"
+      >
+        <EmptyWorkspacesPrompt skin="realm" onCreate={() => setCreating(true)} onOpenWorkspace={onOpenWorkspace} />
+        <div className="flex justify-center pb-2">
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="py-2 px-4 rounded text-sm transition-opacity hover:opacity-90"
+            style={{ background: 'transparent', border: '1px solid rgba(201, 168, 76, 0.4)', color: '#9c8a6a' }}
+          >
+            Explore first
+          </button>
+        </div>
+        <CreateWorkspaceDialog open={creating} onClose={() => setCreating(false)} onCreated={(ws) => onOpenWorkspace(ws.slug)} />
+      </div>
+    </OverlayBackdrop>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Lazy overlay components (loaded on demand)
 // ---------------------------------------------------------------------------
 
@@ -132,6 +181,8 @@ export function RealmShell(): React.ReactElement {
   const dismissCelebration = useRealmStore((s) => s.dismissCelebration)
   const openOverlay = useRealmStore((s) => s.openOverlay)
   const fetchWorkspaces = useWorkspaceStore((s) => s.fetchAll)
+  const workspacesLoaded = useWorkspaceStore((s) => s.loaded)
+  const workspaceCount = useWorkspaceStore((s) => s.workspaces.length)
   const codeOpen = useCodeExplorerStore((s) => s.open)
   const closeCodeExplorer = useCodeExplorerStore((s) => s.closeExplorer)
 
@@ -274,10 +325,23 @@ export function RealmShell(): React.ReactElement {
   }, [codeOpen])
 
   // First-run detection: all 10 mappings unassigned
+  // Only once the workspace list is known: before that, "all unassigned" is just a fresh install that has not loaded
+  // yet, and the welcome would flash and then swap for the empty-registry one.
   const isFirstRun = !firstRunDismissed &&
+    workspacesLoaded &&
     realmConfig !== undefined &&
     realmConfig.mapping.length > 0 &&
     realmConfig.mapping.every((m) => m.workspaceSlug === null)
+
+  // The registry is empty (and we know it: the list has been fetched). Distinct from "workspaces exist but no building
+  // is assigned yet", which keeps the configure-your-kingdom welcome above.
+  const registryEmpty = workspacesLoaded && workspaceCount === 0
+  const showEmptyRegistryWelcome = !firstRunDismissed && registryEmpty
+
+  const handleOpenFirstWorkspace = (slug: string) => {
+    setFirstRunDismissed(true)
+    openOverlay({ overlayId: 'wizards-study', workspaceSlug: slug })
+  }
 
   const handleFirstRunConfigure = () => {
     setFirstRunDismissed(true)
@@ -318,6 +382,10 @@ export function RealmShell(): React.ReactElement {
     >
       {/* Frameless window title bar */}
       <WindowTitleBar />
+
+      {/* One-time upgrade notice (UX H1). While the empty-registry overlay is open it shows the notice itself, inside
+          its aria-modal dialog, so this copy is left out: a screen reader would otherwise announce it twice. */}
+      {!showEmptyRegistryWelcome && <LegacyNotice skin="realm" />}
 
       {/* Kingdom map — always rendered as base layer */}
       <div ref={primaryLayerContainerRef} className="relative flex-1 overflow-hidden" style={{ minWidth: 900, minHeight: 700 }}>
@@ -365,14 +433,16 @@ export function RealmShell(): React.ReactElement {
       <div className="sr-only" aria-live="polite" aria-atomic="true">
         {announcement}
       </div>
+      {/* Workspace add/remove/rename confirmations. AppContent renders the realm shell or the office AppShell, never
+          both (the error boundary unmounts this shell before showing the office one), so there is one region. */}
+      <WorkspaceLiveRegion />
 
       {/* First-run welcome — rendered outside the map container intentionally:
           it must cover the WindowTitleBar which sits above the map container. */}
-      {isFirstRun && (
-        <FirstRunWelcome
-          onDismiss={handleFirstRunDismiss}
-          onConfigure={handleFirstRunConfigure}
-        />
+      {showEmptyRegistryWelcome ? (
+        <EmptyRegistryWelcome onDismiss={handleFirstRunDismiss} onOpenWorkspace={handleOpenFirstWorkspace} />
+      ) : (
+        isFirstRun && <FirstRunWelcome onDismiss={handleFirstRunDismiss} onConfigure={handleFirstRunConfigure} />
       )}
     </div>
   )

@@ -1,3 +1,5 @@
+import fs from 'fs'
+import path from 'path'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // ---------------------------------------------------------------------------
@@ -187,5 +189,46 @@ describe('main/index startup (#0038)', () => {
     // setActiveProfile throws if a home getter ran before it; a clean import proves none did.
     await expect(startup({ CORNER_OFFICE_PROFILE: 'dev' })).resolves.toBeUndefined()
     expect(stderr).toEqual([])
+  })
+})
+
+describe('threadpool sizing (#0039, C-2)', () => {
+  const original = process.env.UV_THREADPOOL_SIZE
+
+  beforeEach(() => {
+    vi.resetModules()
+    delete process.env.UV_THREADPOOL_SIZE
+  })
+  afterEach(() => {
+    if (original === undefined) delete process.env.UV_THREADPOOL_SIZE
+    else process.env.UV_THREADPOOL_SIZE = original
+  })
+
+  it('sets UV_THREADPOOL_SIZE to 8 when it is unset', async () => {
+    await import('../main/threadpool')
+    expect(process.env.UV_THREADPOOL_SIZE).toBe('8')
+  })
+
+  it('keeps an explicit value from the environment', async () => {
+    process.env.UV_THREADPOOL_SIZE = '16'
+    await import('../main/threadpool')
+    expect(process.env.UV_THREADPOOL_SIZE).toBe('16')
+  })
+
+  it('is the first import of index.ts, so it runs before any other module evaluates', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '..', 'main', 'index.ts'), 'utf-8')
+    const firstImport = source.split('\n').find((line) => line.startsWith('import '))
+    expect(firstImport).toBe("import './threadpool'")
+  })
+
+  it('importing index.ts sets it before the app starts (the first module evaluated)', async () => {
+    calls.length = 0
+    logMock.transports.file = {}
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ExitSentinel(code)
+    }) as never)
+    await startup({})
+    expect(process.env.UV_THREADPOOL_SIZE).toBe('8')
+    vi.restoreAllMocks()
   })
 })

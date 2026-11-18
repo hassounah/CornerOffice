@@ -1,4 +1,9 @@
 import '@testing-library/jest-dom/vitest'
+import log from 'electron-log/main'
+
+// electron-log's file transport defaults to ~/.config/<app>/logs/main.log, so any test that logs through a real
+// logger would create the real config dir. Tests never write log files; the console transport is unaffected.
+log.transports.file.level = false
 
 // jsdom has no modal <dialog> API. Minimal stand-in that toggles `open`, so a
 // dialog opened via showModal() is visible to queries. Suites that need to spy

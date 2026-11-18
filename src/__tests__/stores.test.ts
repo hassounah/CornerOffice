@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { unwrapIpc, IpcError } from '@renderer/utils/ipc'
 import { useWorkspaceStore } from '@renderer/stores/workspace-store'
 import { useActivityStore } from '@renderer/stores/activity-store'
 import { useHomunculusStore } from '@renderer/stores/homunculus-store'
@@ -9,7 +10,7 @@ import type { Workspace } from '@main/types/workspace'
 import type { ActivityFeedItem } from '@main/types/events'
 import type { HomunculusState } from '@main/types/homunculus'
 import type { GamificationState } from '@main/types/gamification'
-import type { AppConfig } from '@main/types/config'
+import type { Settings } from '@main/services/stores'
 import type { NotificationItem } from '@main/types/gamification'
 
 // ---------------------------------------------------------------------------
@@ -279,7 +280,7 @@ describe('useSettingsStore', () => {
   })
 
   it('fetchConfig — sets config on success', async () => {
-    const config = { companyName: 'Acme', version: 1 } as unknown as AppConfig
+    const config = { companyName: 'Acme', version: 1 } as unknown as Settings
     mockAPI.config.get.mockResolvedValue(ok(config))
 
     await useSettingsStore.getState().fetchConfig()
@@ -297,10 +298,10 @@ describe('useSettingsStore', () => {
   })
 
   it('updateConfig — updates config on success', async () => {
-    const updated = { companyName: 'NewCo', version: 1 } as unknown as AppConfig
+    const updated = { companyName: 'NewCo', version: 1 } as unknown as Settings
     mockAPI.config.update.mockResolvedValue(ok(updated))
 
-    await useSettingsStore.getState().updateConfig({ companyName: 'NewCo' } as Partial<AppConfig>)
+    await useSettingsStore.getState().updateConfig({ companyName: 'NewCo' })
 
     expect(useSettingsStore.getState().config).toEqual(updated)
   })
@@ -309,7 +310,7 @@ describe('useSettingsStore', () => {
     mockAPI.config.update.mockResolvedValue(err('lock timeout'))
 
     await expect(
-      useSettingsStore.getState().updateConfig({ companyName: 'X' } as Partial<AppConfig>)
+      useSettingsStore.getState().updateConfig({ companyName: 'X' })
     ).rejects.toThrow('lock timeout')
   })
 })
@@ -398,5 +399,29 @@ describe('useNotificationStore', () => {
 
     expect(useNotificationStore.getState().items[0]).toEqual(item)
     expect(useNotificationStore.getState().bannerStack[0]).toEqual(item)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// unwrapIpc / IpcError
+// ---------------------------------------------------------------------------
+
+describe('unwrapIpc', () => {
+  it('returns data on success', () => {
+    expect(unwrapIpc(ok(5))).toBe(5)
+  })
+
+  it('throws an IpcError that preserves code and keeps message unchanged', () => {
+    let thrown: unknown
+    try {
+      unwrapIpc({ data: null, error: { code: 'WORKSPACE_UNAVAILABLE', message: 'gone' } })
+    } catch (e) {
+      thrown = e
+    }
+    expect(thrown).toBeInstanceOf(IpcError)
+    expect(thrown).toBeInstanceOf(Error)
+    expect((thrown as IpcError).code).toBe('WORKSPACE_UNAVAILABLE')
+    expect((thrown as IpcError).message).toBe('gone')
+    expect((thrown as IpcError).name).toBe('IpcError')
   })
 })

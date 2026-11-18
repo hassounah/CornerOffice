@@ -150,9 +150,10 @@ export class FileWatcherService {
   }
 
   /** Add watchers for a workspace. Safe to call multiple times (idempotent). */
-  addWorkspace(workspacePath: string, docsRoot: string | null): void {
+  addWorkspace(workspacePath: string, docsRoot: string | null, options: { watchDocs?: boolean } = {}): void {
     this._addRixWatcher(workspacePath)
-    this._addDocsWatcher(workspacePath, docsRoot ?? path.join(workspacePath, 'docs'))
+    // `watchDocs: false`: the docs root was refused (#0039), so nothing under it is watched.
+    if (options.watchDocs !== false) this._addDocsWatcher(workspacePath, docsRoot ?? path.join(workspacePath, 'docs'))
     this._addReadmeWatcher(workspacePath)
     this._checkInotifyLimit()
   }

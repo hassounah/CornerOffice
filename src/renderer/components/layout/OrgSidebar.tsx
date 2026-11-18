@@ -1,10 +1,12 @@
-import React, { useState } from 'react'
+import React, { useEffect, useId, useRef, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router'
 import { useWorkspaceStore } from '../../stores/workspace-store'
 import { useSettingsStore } from '../../stores/settings-store'
+import { useSidebarStore } from '../../stores/sidebar-store'
 import { StatusIcon } from '../shared/StatusIcon'
 import { GateDots } from '../shared/GateDots'
 import { IconDashboard, IconInstincts, IconSettings } from '../icons'
+import { AVAILABILITY_BADGE } from '../../utils/workspace-errors'
 import type { Workspace } from '@main/types/workspace'
 
 // ---------------------------------------------------------------------------
@@ -46,6 +48,9 @@ const NAV_ITEMS: NavItem[] = [
   },
 ]
 
+/** What focus moves to after a Hide or Show: a workspace row (by id) or the Hidden section's header. */
+const HIDDEN_HEADER_TARGET = '\u0000hidden-header'
+
 // ---------------------------------------------------------------------------
 // Workspace row
 // ---------------------------------------------------------------------------
@@ -55,42 +60,132 @@ interface WorkspaceRowProps {
   isSelected: boolean
   onSelect: () => void
   compact?: boolean
+  /** The "…" menu with Hide (main list), or the Show button (Hidden section). */
+  action: { kind: 'hide' | 'show'; onAction: () => void }
+  menuOpen: boolean
+  onToggleMenu: () => void
+  onCloseMenu: () => void
+  registerRow: (slug: string, element: HTMLButtonElement | null) => void
 }
 
-function WorkspaceRow({ workspace, isSelected, onSelect, compact }: WorkspaceRowProps): React.ReactElement {
+function WorkspaceRow({ workspace, isSelected, onSelect, compact, action, menuOpen, onToggleMenu, onCloseMenu, registerRow }: WorkspaceRowProps): React.ReactElement {
+  const menuId = useId()
+  const menuButtonRef = useRef<HTMLButtonElement>(null)
+  const menuItemRef = useRef<HTMLButtonElement>(null)
+  const badge = workspace.availability === 'ok' ? null : AVAILABILITY_BADGE[workspace.availability]
+  const unavailable = badge !== null
+
+  // Opening the menu moves focus to its item; a click elsewhere closes it (Escape is handled on the menu itself).
+  useEffect(() => {
+    if (!menuOpen) return
+    menuItemRef.current?.focus()
+    function onPointerDown(event: MouseEvent): void {
+      const target = event.target as Node
+      if (!menuButtonRef.current?.parentElement?.contains(target)) onCloseMenu()
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    return () => document.removeEventListener('mousedown', onPointerDown)
+  }, [menuOpen, onCloseMenu])
+
+  function handleMenuKeyDown(event: React.KeyboardEvent): void {
+    // The sidebar list handles arrows for moving between workspaces; inside the menu they are not for it.
+    event.stopPropagation()
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      onCloseMenu()
+      menuButtonRef.current?.focus()
+    }
+  }
+
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={[
-        'w-full flex items-center gap-2.5 px-3 text-left transition-all duration-150 rounded-lg',
-        compact ? 'py-1.5' : 'py-2',
-        isSelected
-          ? 'co-sidebar-active bg-white/[0.06] text-co-text-primary'
-          : 'text-co-text-secondary hover:bg-white/[0.04] hover:text-co-text-primary',
-      ].join(' ')}
-      aria-pressed={isSelected}
-      title={workspace.path}
-    >
-      <StatusIcon status={workspace.status} size="sm" />
+    <div className="group relative flex items-center">
+      <button
+        type="button"
+        ref={(element) => registerRow(workspace.slug, element)}
+        onClick={onSelect}
+        className={[
+          'w-full flex items-center gap-2.5 pl-3 pr-9 text-left transition-all duration-150 rounded-lg',
+          compact ? 'py-1.5' : 'py-2',
+          isSelected
+            ? 'co-sidebar-active bg-white/[0.06] text-co-text-primary'
+            : 'text-co-text-secondary hover:bg-white/[0.04] hover:text-co-text-primary',
+          unavailable ? 'opacity-60' : '',
+        ].join(' ')}
+        aria-pressed={isSelected}
+        title={workspace.path}
+      >
+        <StatusIcon status={workspace.status} size="sm" />
 
-      <span className="flex-1 min-w-0 overflow-hidden">
-        <span className="block text-[13px] font-medium truncate">{workspace.displayName}</span>
-        {workspace.level && !compact && (
-          <span className="block text-[11px] text-co-text-muted truncate mt-0.5">
-            Lv {workspace.level.number}
-          </span>
-        )}
-      </span>
+        <span className="flex-1 min-w-0 overflow-hidden">
+          <span className="block text-[13px] font-medium truncate">{workspace.displayName}</span>
+          {badge && (
+            <span className="block text-[11px] text-co-status-attention truncate mt-0.5">{badge}</span>
+          )}
+          {!badge && workspace.level && !compact && (
+            <span className="block text-[11px] text-co-text-muted truncate mt-0.5">
+              Lv {workspace.level.number}
+            </span>
+          )}
+        </span>
 
-      {workspace.activePipelines.length > 0 && workspace.activePipelines.map((pipeline) => (
-        <GateDots
-          key={pipeline.slug}
-          passed={pipeline.gate !== null ? pipeline.gate - 1 : 0}
-          current={pipeline.gate !== null ? pipeline.gate - 1 : undefined}
-        />
-      ))}
-    </button>
+        {workspace.activePipelines.length > 0 && workspace.activePipelines.map((pipeline) => (
+          <GateDots
+            key={pipeline.slug}
+            passed={pipeline.gate !== null ? pipeline.gate - 1 : 0}
+            current={pipeline.gate !== null ? pipeline.gate - 1 : undefined}
+          />
+        ))}
+      </button>
+
+      {action.kind === 'hide' ? (
+        <div className="absolute right-1 top-1/2 -translate-y-1/2" onKeyDown={handleMenuKeyDown}>
+          <button
+            type="button"
+            ref={menuButtonRef}
+            aria-label={`Actions for ${workspace.displayName}`}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-controls={menuOpen ? menuId : undefined}
+            onClick={onToggleMenu}
+            // Visible on hover and whenever focus is inside the row (keyboard users), always while its menu is open.
+            className={[
+              'px-1.5 py-0.5 rounded text-co-text-muted hover:text-co-text-primary hover:bg-white/[0.06] transition-opacity',
+              'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100',
+              menuOpen ? 'opacity-100' : '',
+            ].join(' ')}
+          >
+            <span aria-hidden="true">…</span>
+          </button>
+          {menuOpen && (
+            <div
+              id={menuId}
+              role="menu"
+              aria-label={`${workspace.displayName} actions`}
+              className="absolute right-0 top-full z-40 mt-1 min-w-[96px] rounded-md border border-co-border bg-co-bg-tertiary p-1 shadow-lg"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                ref={menuItemRef}
+                onClick={action.onAction}
+                className="w-full text-left px-2 py-1 text-[12px] rounded text-co-text-secondary hover:text-co-text-primary hover:bg-white/[0.06]"
+              >
+                Hide
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <button
+          type="button"
+          aria-label={`Show ${workspace.displayName}`}
+          onClick={action.onAction}
+          className="absolute right-1 top-1/2 -translate-y-1/2 px-1.5 py-0.5 rounded text-[11px] text-co-text-muted hover:text-co-text-primary hover:bg-white/[0.06]"
+        >
+          Show
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -101,24 +196,51 @@ function WorkspaceRow({ workspace, isSelected, onSelect, compact }: WorkspaceRow
 export function OrgSidebar(): React.ReactElement {
   const navigate = useNavigate()
   const location = useLocation()
-  const [archivedExpanded, setArchivedExpanded] = useState(false)
+  const hiddenHeadingId = useId()
+  const hiddenListId = useId()
 
   const workspaces = useWorkspaceStore((s) => s.workspaces)
   const selectedSlug = useWorkspaceStore((s) => s.selectedSlug)
   const selectWorkspace = useWorkspaceStore((s) => s.selectWorkspace)
+  const setHidden = useWorkspaceStore((s) => s.setHidden)
   const companyName = useSettingsStore((s) => s.config?.companyName ?? '')
   const compactView = useSettingsStore((s) => s.config?.appearance.compactView ?? false)
+  const hiddenExpanded = useSidebarStore((s) => s.hiddenExpanded)
+  const setHiddenExpanded = useSidebarStore((s) => s.setHiddenExpanded)
+  const focusSeq = useSidebarStore((s) => s.focusSeq)
 
-  const nonArchived = workspaces.filter((w) => !w.archived)
-  const pinned = nonArchived.filter((w) => w.pinned).sort(byActivity)
-  const regular = nonArchived.filter((w) => !w.pinned).sort(byActivity)
-  const archived = workspaces.filter((w) => w.archived).sort(byActivity)
+  const [menuSlug, setMenuSlug] = useState<string | null>(null)
+  const [pendingFocus, setPendingFocus] = useState<string | null>(null)
+  const rows = useRef(new Map<string, HTMLButtonElement>())
+  const hiddenHeaderRef = useRef<HTMLButtonElement>(null)
+  const handledFocusSeq = useRef(focusSeq)
 
-  const navigable = [
-    ...pinned,
-    ...regular,
-    ...(archivedExpanded ? archived : []),
-  ]
+  const listed = workspaces.filter((w) => !w.hidden).sort(byActivity)
+  const hidden = workspaces.filter((w) => w.hidden).sort(byActivity)
+  const hiddenNeedAttention = hidden.filter((w) => w.status === 'attention').length
+
+  const navigable = [...listed, ...(hiddenExpanded ? hidden : [])]
+
+  function registerRow(slug: string, element: HTMLButtonElement | null): void {
+    if (element) rows.current.set(slug, element)
+    else rows.current.delete(slug)
+  }
+
+  // Focus follows a Hide or Show to the next item once the list has re-rendered without (or with) the moved row.
+  useEffect(() => {
+    if (pendingFocus === null) return
+    const target = pendingFocus === HIDDEN_HEADER_TARGET ? hiddenHeaderRef.current : rows.current.get(pendingFocus) ?? null
+    if (!target) return
+    target.focus()
+    setPendingFocus(null)
+  }, [pendingFocus, workspaces])
+
+  // The Dashboard's "N hidden · Show" footer: the section is already expanded by the store; put focus on its header.
+  useEffect(() => {
+    if (focusSeq === handledFocusSeq.current) return
+    handledFocusSeq.current = focusSeq
+    hiddenHeaderRef.current?.focus()
+  }, [focusSeq, hidden.length])
 
   function handleWorkspaceSelect(slug: string): void {
     selectWorkspace(slug)
@@ -127,6 +249,35 @@ export function OrgSidebar(): React.ReactElement {
       const main = document.getElementById('main-content')
       main?.focus()
     }, 0)
+  }
+
+  /** The row to focus after `slug` leaves `from`: the next one, else the previous one, else `fallback`. */
+  function neighbour(from: Workspace[], slug: string, fallback: string): string {
+    const index = from.findIndex((w) => w.slug === slug)
+    return from[index + 1]?.slug ?? from[index - 1]?.slug ?? fallback
+  }
+
+  async function hideWorkspace(workspace: Workspace): Promise<void> {
+    setMenuSlug(null)
+    // After Hide, focus moves to the next sidebar item (UX H-2). With none left it goes to the Hidden header.
+    const next = neighbour(listed, workspace.slug, HIDDEN_HEADER_TARGET)
+    try {
+      await setHidden(workspace.slug, true)
+      setPendingFocus(next)
+    } catch {
+      // The store announces nothing on failure; the row is still there, so focus stays where it was.
+      setPendingFocus(workspace.slug)
+    }
+  }
+
+  async function showWorkspace(workspace: Workspace): Promise<void> {
+    try {
+      await setHidden(workspace.slug, false)
+      // The Show button leaves with the row. Focus follows the workspace into the main list.
+      setPendingFocus(workspace.slug)
+    } catch {
+      setPendingFocus(null)
+    }
   }
 
   function handleWorkspaceKeyDown(e: React.KeyboardEvent<HTMLDivElement>): void {
@@ -145,6 +296,24 @@ export function OrgSidebar(): React.ReactElement {
   }
 
   const currentPath = location.pathname
+
+  function renderRow(ws: Workspace, kind: 'hide' | 'show'): React.ReactElement {
+    return (
+      <li key={ws.slug}>
+        <WorkspaceRow
+          workspace={ws}
+          isSelected={selectedSlug === ws.slug}
+          onSelect={() => handleWorkspaceSelect(ws.slug)}
+          compact={compactView}
+          action={{ kind, onAction: () => void (kind === 'hide' ? hideWorkspace(ws) : showWorkspace(ws)) }}
+          menuOpen={menuSlug === ws.slug}
+          onToggleMenu={() => setMenuSlug((current) => (current === ws.slug ? null : ws.slug))}
+          onCloseMenu={() => setMenuSlug((current) => (current === ws.slug ? null : current))}
+          registerRow={registerRow}
+        />
+      </li>
+    )
+  }
 
   return (
     <aside
@@ -166,85 +335,45 @@ export function OrgSidebar(): React.ReactElement {
         role="group"
         aria-label="Workspaces"
       >
-        {pinned.length > 0 && (
+        {listed.length > 0 && (
           <section className="mb-2">
-            <div className="px-2 py-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-co-text-muted/60">
-                Pinned
-              </span>
-            </div>
-            <ul className="flex flex-col gap-0.5">
-              {pinned.map((ws) => (
-                <li key={ws.slug}>
-                  <WorkspaceRow
-                    workspace={ws}
-                    isSelected={selectedSlug === ws.slug}
-                    onSelect={() => handleWorkspaceSelect(ws.slug)}
-                    compact={compactView}
-                  />
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-
-        {regular.length > 0 && (
-          <section className="mb-2">
-            {pinned.length > 0 && (
-              <div className="px-2 py-1.5">
-                <span className="text-[10px] font-semibold uppercase tracking-widest text-co-text-muted/60">
-                  Workspaces
-                </span>
-              </div>
-            )}
-            <ul className="flex flex-col gap-0.5">
-              {regular.map((ws) => (
-                <li key={ws.slug}>
-                  <WorkspaceRow
-                    workspace={ws}
-                    isSelected={selectedSlug === ws.slug}
-                    onSelect={() => handleWorkspaceSelect(ws.slug)}
-                    compact={compactView}
-                  />
-                </li>
-              ))}
-            </ul>
+            <ul className="flex flex-col gap-0.5">{listed.map((ws) => renderRow(ws, 'hide'))}</ul>
           </section>
         )}
 
         {workspaces.length === 0 && (
-          <p className="px-4 py-3 text-sm text-co-text-muted">No workspaces found.</p>
+          <p className="px-4 py-3 text-sm text-co-text-muted">No workspaces yet.</p>
         )}
 
-        {archived.length > 0 && (
-          <section className="mt-3">
+        {hidden.length > 0 && (
+          <section className="mt-3" aria-labelledby={hiddenHeadingId}>
             <button
               type="button"
-              onClick={() => setArchivedExpanded((prev) => !prev)}
+              id={hiddenHeadingId}
+              ref={hiddenHeaderRef}
+              onClick={() => setHiddenExpanded(!hiddenExpanded)}
               className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-co-text-muted/60 hover:text-co-text-muted transition-colors"
-              aria-expanded={archivedExpanded}
+              aria-expanded={hiddenExpanded}
+              aria-controls={hiddenListId}
             >
               <svg
                 width="10" height="10" viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"
-                className={`transition-transform duration-150 ${archivedExpanded ? 'rotate-90' : ''}`}
+                className={`transition-transform duration-150 ${hiddenExpanded ? 'rotate-90' : ''}`}
               >
                 <path d="M3 2l4 3-4 3V2z" />
               </svg>
-              Archived ({archived.length})
+              Hidden ({hidden.length})
+              {hiddenNeedAttention > 0 && (
+                <>
+                  <span aria-hidden="true" className="ml-auto inline-block h-2 w-2 rounded-full bg-co-status-attention" />
+                  <span aria-hidden="true" className="text-co-status-attention normal-case tracking-normal">{hiddenNeedAttention}</span>
+                  <span className="sr-only">{`, ${hiddenNeedAttention} need${hiddenNeedAttention === 1 ? 's' : ''} attention`}</span>
+                </>
+              )}
             </button>
-            {archivedExpanded && (
-              <ul className="flex flex-col gap-0.5 opacity-50">
-                {archived.map((ws) => (
-                  <li key={ws.slug}>
-                    <WorkspaceRow
-                      workspace={ws}
-                      isSelected={selectedSlug === ws.slug}
-                      onSelect={() => handleWorkspaceSelect(ws.slug)}
-                    />
-                  </li>
-                ))}
-              </ul>
-            )}
+            <ul id={hiddenListId} className="flex flex-col gap-0.5" hidden={!hiddenExpanded}>
+              {hiddenExpanded && hidden.map((ws) => renderRow(ws, 'show'))}
+            </ul>
           </section>
         )}
       </div>

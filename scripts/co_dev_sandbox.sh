@@ -27,7 +27,7 @@ HOST_ATTRIBUTION_ENV=(
   CORNER_OFFICE_CHANNEL_PORT
 )
 
-# System packages the Electron dev runtime needs (Wolfi names), for sandbox.extraPackages in config.json.
+# System packages the Electron dev runtime needs (Wolfi names), for extraPackages in sandbox.json (in the config folder).
 ELECTRON_PACKAGES=(
   xvfb glib libnss libnspr libatk-1.0 libatk-bridge-2.0 at-spi2-core cups-libs dbus-libs libdrm libxkbcommon libxcomposite
   libxdamage libxfixes libxrandr mesa-gbm pango cairo alsa-lib gtk-3 fontconfig ttf-dejavu libudev xkbcomp
@@ -142,7 +142,8 @@ print_checklist() {
   {
     echo "make dev can't start the headless app yet. On the host:"
     if [ "$1" = 1 ]; then
-      echo '  [ ] Add these to "sandbox" in ~/.corner-office/config.json (quit Corner Office first), then Settings > Sandbox > Image: Rebuild:'
+      echo '  [ ] Add these to the top level of sandbox.json in the config folder (quit Corner Office first), then Settings > Sandbox > Image: Rebuild:'
+      echo '      (~/.config/corner-office/sandbox.json, or <profile home>/electron/sandbox.json for a dev profile)'
       echo "      \"extraPackages\": $(packages_json)"
     fi
     [ "$2" = 1 ] && echo "  [ ] This workspace's sandbox allowlist: add electronjs.org and release-assets.githubusercontent.com"

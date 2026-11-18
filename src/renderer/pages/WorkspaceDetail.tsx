@@ -28,6 +28,10 @@ import { useDocViewerStore } from '../stores/docviewer-store'
 import { useOpenCodeExplorer, browseCodeTooltip } from '../utils/code-explorer-nav'
 import { consumeReturnFocus } from '../utils/code-explorer-return-focus'
 import { STILL_STOPPING, isSessionStopping } from '../utils/sandbox-copy'
+import { BROWSE_UNAVAILABLE_COPY, DOCS_ROOT_REFUSED_COPY, NOT_RIX_COPY, NO_DOCS_FOLDER_COPY, START_UNAVAILABLE_COPY } from '../utils/workspace-errors'
+import { AvailabilityBanner } from '../components/workspaces/AvailabilityBanner'
+import { CreateWarningNotice } from '../components/workspaces/CreateWarningNotice'
+import { RemoveWorkspaceDialog } from '../components/workspaces/WorkspaceManager'
 
 const STATUS_COLORS: Record<string, string> = {
   active:    'bg-co-status-active',
@@ -44,6 +48,16 @@ export default function WorkspaceDetail(): React.ReactElement {
   const fetchOne = useWorkspaceStore((s) => s.fetchOne)
   const storeLoading = useWorkspaceStore((s) => s.loading)
   const [error, setError] = useState<string | null>(null)
+  const [removing, setRemoving] = useState(false)
+  const titleRef = useRef<HTMLHeadingElement>(null)
+  /** The slug this page has shown a workspace for: a later disappearance of it means it was removed. */
+  const shownSlug = useRef<string | null>(null)
+
+  // The workspace behind this route was removed (here, in Settings or in the realm): there is nothing left to show.
+  useEffect(() => {
+    if (workspace) shownSlug.current = workspace.slug
+    else if (slug && shownSlug.current === slug) navigate('/', { replace: true })
+  }, [workspace, slug, navigate])
 
   // Check if any channel sessions are active for this workspace
   const allSessions = useChannelsStore((s) => s.sessions)
@@ -209,6 +223,19 @@ export default function WorkspaceDetail(): React.ReactElement {
   }
 
   const hasContent = workspace.activePipelines.length > 0 || workspace.shippedFeatures.length > 0 || workspace.parkedPipelines.length > 0
+  const available = workspace.availability === 'ok'
+  // Only an available folder can be "not Rix yet"; an unavailable one is a stub and the banner says why.
+  const notRix = available && !workspace.hasRix
+  // Disabled-with-a-reason (focusable, announced), never a bare `disabled` that says nothing to a keyboard user.
+  const browseDocsBlockedReason = !available
+    ? BROWSE_UNAVAILABLE_COPY
+    : workspace.docsRootRefused
+      ? DOCS_ROOT_REFUSED_COPY
+      : !workspace.docsRootExists
+        ? NO_DOCS_FOLDER_COPY
+        : null
+  const browseCodeBlockedReason = !available ? BROWSE_UNAVAILABLE_COPY : workspace.repoRootStatus !== 'ok' ? browseCodeTooltip(workspace.repoRootStatus) : null
+  const startBlockedReason = !available ? START_UNAVAILABLE_COPY : sandboxEnding ? STILL_STOPPING : null
 
   return (
     <div className="flex flex-col h-full">
@@ -221,39 +248,50 @@ export default function WorkspaceDetail(): React.ReactElement {
               aria-label={`Status: ${workspace.status}`}
               className={`h-2.5 w-2.5 rounded-full shrink-0 ${STATUS_COLORS[workspace.status] ?? 'bg-co-text-muted'}`}
             />
-            <h1 className="text-lg font-semibold text-co-text-primary truncate tracking-tight">
+            <h1 ref={titleRef} tabIndex={-1} className="text-lg font-semibold text-co-text-primary truncate tracking-tight outline-none">
               {workspace.displayName}
             </h1>
           </div>
           <p className="text-[11px] text-co-text-muted mt-1 font-mono truncate opacity-60">{workspace.path}</p>
+          {/* What went wrong after Create (git missing, no .rix yet...), kept until dismissed. */}
+          <div className="mt-2 empty:hidden">
+            <CreateWarningNotice slug={workspace.slug} path={workspace.path} />
+          </div>
         </div>
 
         <TeamLevelBadge level={workspace.level} />
 
         <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => openFolder(workspace.docsRoot, workspace.slug)}
-            disabled={!workspace.docsRootExists}
-            title={workspace.docsRootExists ? undefined : 'Docs directory not found — try refreshing'}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors ${!workspace.docsRootExists ? 'opacity-40 cursor-not-allowed' : ''}`}
-          >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              <path d="M1 3.5C1 2.94772 1.44772 2.5 2 2.5H4.5L5.5 3.5H10C10.5523 3.5 11 3.94772 11 4.5V9C11 9.55228 10.5523 10 10 10H2C1.44772 10 1 9.55228 1 9V3.5Z" stroke="currentColor" strokeWidth="1" strokeLinejoin="round"/>
-            </svg>
-            Browse Docs
-          </button>
-          <button
-            data-return-focus={`browse-code:${workspace.slug}`}
-            onClick={() => openCodeExplorer(workspace.slug, { entry: 'browse' })}
-            disabled={workspace.repoRootStatus !== 'ok'}
-            title={browseCodeTooltip(workspace.repoRootStatus)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors ${workspace.repoRootStatus !== 'ok' ? 'opacity-40 cursor-not-allowed' : ''}`}
-          >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              <path d="M4 3L1.5 6L4 9M8 3L10.5 6L8 9" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-            Browse Code
-          </button>
+          <DisabledReason reason={browseDocsBlockedReason} skin="office">
+            {(reasonProps) => (
+              <button
+                onClick={() => openFolder(workspace.docsRoot, workspace.slug)}
+                {...reasonProps}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors ${browseDocsBlockedReason ? 'opacity-40 cursor-not-allowed' : ''}`}
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M1 3.5C1 2.94772 1.44772 2.5 2 2.5H4.5L5.5 3.5H10C10.5523 3.5 11 3.94772 11 4.5V9C11 9.55228 10.5523 10 10 10H2C1.44772 10 1 9.55228 1 9V3.5Z" stroke="currentColor" strokeWidth="1" strokeLinejoin="round"/>
+                </svg>
+                Browse Docs
+              </button>
+            )}
+          </DisabledReason>
+          <DisabledReason reason={browseCodeBlockedReason} skin="office">
+            {(reasonProps) => (
+              <button
+                data-return-focus={`browse-code:${workspace.slug}`}
+                onClick={() => openCodeExplorer(workspace.slug, { entry: 'browse' })}
+                title={browseCodeBlockedReason ? undefined : browseCodeTooltip(workspace.repoRootStatus)}
+                {...reasonProps}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors ${browseCodeBlockedReason ? 'opacity-40 cursor-not-allowed' : ''}`}
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M4 3L1.5 6L4 9M8 3L10.5 6L8 9" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                Browse Code
+              </button>
+            )}
+          </DisabledReason>
         </div>
 
         {/* Session controls (A15, A6, A9) */}
@@ -266,7 +304,7 @@ export default function WorkspaceDetail(): React.ReactElement {
           {/* Start / End Session */}
           {sessionState === 'none' && (
             <div className="relative">
-              <DisabledReason reason={sandboxEnding ? STILL_STOPPING : null} skin="office">
+              <DisabledReason reason={startBlockedReason} skin="office">
                 {(props) => (
                   <button
                     ref={startButtonRef}
@@ -342,6 +380,13 @@ export default function WorkspaceDetail(): React.ReactElement {
         </div>
       </header>
 
+      {/* The folder is not usable right now: why, Check again and Remove. Clicking a non-ok card or sidebar item lands here. */}
+      {!available && (
+        <div className="shrink-0 px-6 pt-4">
+          <AvailabilityBanner workspace={workspace} onRemove={() => setRemoving(true)} />
+        </div>
+      )}
+
       {/* Spawn error banner (amendment A4) */}
       {spawnError && (
         <div className="shrink-0 px-4 py-2 bg-red-950/60 border-b border-red-900/40 flex items-center justify-between gap-3">
@@ -375,14 +420,14 @@ export default function WorkspaceDetail(): React.ReactElement {
           )}
 
           {/* Empty state — quiet, not a billboard */}
-          {!hasContent && (
+          {!hasContent && available && (
             <div className="rounded-co py-10 text-center flex flex-col gap-2">
               {workspace.projectContext && (
                 <p className="text-[13px] text-co-text-secondary max-w-md mx-auto leading-relaxed">
                   {workspace.projectContext}
                 </p>
               )}
-              <p className="text-[13px] text-co-text-muted">No features shipped yet.</p>
+              <p className="text-[13px] text-co-text-muted">{notRix ? NOT_RIX_COPY : 'No features shipped yet.'}</p>
             </div>
           )}
 
@@ -390,12 +435,16 @@ export default function WorkspaceDetail(): React.ReactElement {
           <WorkspaceTabs
             key={workspace.slug}
             board={
-              <FeatureBoard
-                features={workspace.features}
-                ideationItems={workspace.ideationItems}
-                workspaceSlug={workspace.slug}
-                onReview={handleFeatureReview}
-              />
+              notRix ? (
+                <p className="text-[13px] text-co-text-muted">{NOT_RIX_COPY}</p>
+              ) : (
+                <FeatureBoard
+                  features={workspace.features}
+                  ideationItems={workspace.ideationItems}
+                  workspaceSlug={workspace.slug}
+                  onReview={handleFeatureReview}
+                />
+              )
             }
             memory={workspace.projectContext || null}
             readme={workspace.readmeContent}
@@ -448,6 +497,14 @@ export default function WorkspaceDetail(): React.ReactElement {
           />
         )}
       </div>
+
+      <RemoveWorkspaceDialog
+        target={removing ? workspace : null}
+        skin="office"
+        onClose={() => setRemoving(false)}
+        onRemoved={() => navigate('/')}
+        fallbackFocus={titleRef}
+      />
 
       {/* Single doc viewer mount: serves the header Browse Docs button and feature card clicks on any tab. */}
       <DocViewerOverlay />

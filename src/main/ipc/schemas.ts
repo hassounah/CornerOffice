@@ -4,32 +4,58 @@ import { AgentIdSchema } from '../agents/agent-id-schema'
 import { hasGitSegment } from '../services/repo-path'
 import { AllowlistEntrySchema } from '../services/sandbox-allowlist'
 import { SANDBOX_SLUG_RE } from '../services/sandbox-spec'
-import { terminalSlug } from '../types/slugs'
+import { AbsPath, REALM_LOCATIONS, WorkspaceIdSchema } from '../services/stores'
+import { DiscoveryExclusionSchema, WORKSPACE_NAME_RE, hasNameUnsafeChar, terminalSlug } from '../types/slugs'
 
 // ---------------------------------------------------------------------------
 // Workspace
 // ---------------------------------------------------------------------------
 
-export const WorkspaceGetDetailSchema = z.object({
-  slug: z.string().min(1).max(100),
-})
-
-// Only the mutable subset of WorkspaceConfig — path and slug are immutable
-const WorkspaceConfigUpdateSchema = z.object({
-  slug: z.string().min(1).max(100),
-  displayName: z.string().min(1).max(200).nullable(),
-  pinned: z.boolean(),
-  archived: z.boolean(),
-  // docsRoot override is user-settable via Settings
-  docsRoot: z.string().min(1).max(500).nullable(),
-})
-
-export const WorkspaceUpdateConfigSchema = z.object({
-  slug: z.string().min(1).max(100),
-  config: WorkspaceConfigUpdateSchema,
-})
+export const WorkspaceGetDetailSchema = z.object({ slug: WorkspaceIdSchema }).strict()
 
 export const WorkspaceReadReadmeSchema = z.object({ slug: z.string().min(1).max(100) })
+
+// ---------------------------------------------------------------------------
+// Workspace registry (#0039, TRD §3.7). All inputs are strict.
+// ---------------------------------------------------------------------------
+
+const RegistryDisplayName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .refine((n) => !hasNameUnsafeChar(n), 'must not contain control, invisible or bidirectional characters')
+
+const RegistrySlugInput = z.object({ slug: WorkspaceIdSchema }).strict()
+const EmptyInput = z.object({}).strict()
+
+export const WorkspacePickFolderSchema = z.object({ purpose: z.enum(['add', 'create-parent', 'docs-root']) }).strict()
+export const WorkspaceAddSchema = z.object({ path: AbsPath }).strict()
+export const WorkspaceAddManySchema = z.object({ paths: z.array(AbsPath).min(1).max(500) }).strict()
+export const WorkspaceCreateSchema = z
+  .object({
+    parentPath: AbsPath,
+    name: z
+      .string()
+      .regex(WORKSPACE_NAME_RE)
+      .refine((n) => n !== '.' && n !== '..'),
+    mode: z.enum(['plain', 'rix']),
+  })
+  .strict()
+export const WorkspaceRemoveSchema = RegistrySlugInput
+export const WorkspaceSetHiddenSchema = z.object({ slug: WorkspaceIdSchema, hidden: z.boolean() }).strict()
+export const WorkspaceRenameSchema = z.object({ slug: WorkspaceIdSchema, displayName: RegistryDisplayName.nullable() }).strict()
+export const WorkspaceSetDocsRootSchema = z.object({ slug: WorkspaceIdSchema, docsRoot: AbsPath.nullable() }).strict()
+export const WorkspaceRecheckSchema = EmptyInput
+export const WorkspaceDiscoverStreamSchema = EmptyInput
+export const WorkspaceDiscoverCancelSchema = EmptyInput
+
+export const RealmSetAssignmentSchema = z.object({ location: z.enum(REALM_LOCATIONS), slug: WorkspaceIdSchema.nullable() }).strict()
+export const DiscoverySetExclusionsSchema = z.object({ exclusions: z.array(DiscoveryExclusionSchema).max(100) }).strict()
+
+export const CONFIG_STORE_NAMES = ['settings', 'workspaces', 'sandbox', 'sessionDefaults'] as const
+export const ConfigGetStoreHealthSchema = EmptyInput
+export const ConfigRevealStoreFileSchema = z.object({ store: z.enum(CONFIG_STORE_NAMES) }).strict()
 
 // ---------------------------------------------------------------------------
 // Activity
@@ -74,43 +100,10 @@ const AppearanceConfigUpdateSchema = z.object({
   shipMomentStyle: z.enum(['full', 'compact', 'off']),
 })
 
-// discoveryExclusions: only simple directory names — no path separators or shell metacharacters
-const DiscoveryExclusionSchema = z
-  .string()
-  .regex(/^[a-zA-Z0-9._-]+$/, 'Exclusion must be a simple directory name (no path separators or special characters)')
-
-// Per-workspace display settings updatable by the user
-const WorkspaceDisplayUpdateSchema = z.object({
-  slug: z.string().min(1).max(100),
-  displayName: z.string().min(1).max(200).nullable().optional(),
-  pinned: z.boolean().optional(),
-  archived: z.boolean().optional(),
-})
-
-const RealmLocationEnum = z.enum([
-  'castle', 'barracks', 'library', 'blacksmith', 'farm',
-  'merchant_house', 'observatory', 'stables', 'chapel', 'cottage',
-])
-
+// No `mapping` (#0039 step 4.6): building assignments go through `realm:setAssignment`, which validates the id against
+// the registry and unassigns it elsewhere. A `mapping` sent here is ignored (zod strips unknown keys), never applied.
 const RealmConfigUpdateSchema = z.object({
   enabled: z.boolean(),
-  mapping: z.array(z.object({
-    location: RealmLocationEnum,
-    workspaceSlug: z.string().max(256).nullable(),
-  })).max(10).superRefine((arr, ctx) => {
-    const seen = new Set<string>()
-    for (let i = 0; i < arr.length; i++) {
-      const loc = arr[i].location
-      if (seen.has(loc)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `Duplicate RealmLocation '${loc}' at index ${i}`,
-          path: [i, 'location'],
-        })
-      }
-      seen.add(loc)
-    }
-  }),
   shipCelebration: z.enum(['townSquare', 'off']),
   animationsEnabled: z.boolean().optional(),
   celebrationDurationMs: z.number().int().min(1000).max(30000).optional(),
@@ -133,18 +126,19 @@ const TerminalConfigUpdateSchema = z.object({
   }).optional(),
 })
 
-export const ConfigUpdateSchema = z.object({
-  companyName: z.string().min(0).max(200).optional(),
-  appearance: AppearanceConfigUpdateSchema.optional(),
-  notifications: NotificationConfigUpdateSchema.optional(),
-  discoveryExclusions: z.array(DiscoveryExclusionSchema).max(100).optional(),
-  terminalEmulator: z.string().min(1).max(500).nullable().optional(),
-  realm: RealmConfigUpdateSchema.optional(),
-  terminal: TerminalConfigUpdateSchema.optional(),
-  codeExplorer: z.object({ treeWidth: z.number().int().min(0).max(10000) }).optional(),
-  // Per-workspace display overrides (path is NOT updatable)
-  workspaces: z.array(WorkspaceDisplayUpdateSchema).optional(),
-})
+// Strict (#0039 X1): `workspaces`, `discoveryExclusions` and `terminalEmulator` are no longer settable here.
+// Workspaces go through the workspace:* intents, exclusions through discovery:setExclusions.
+export const ConfigUpdateSchema = z
+  .object({
+    companyName: z.string().min(0).max(200).optional(),
+    appearance: AppearanceConfigUpdateSchema.optional(),
+    notifications: NotificationConfigUpdateSchema.optional(),
+    realm: RealmConfigUpdateSchema.optional(),
+    terminal: TerminalConfigUpdateSchema.optional(),
+    codeExplorer: z.object({ treeWidth: z.number().int().min(0).max(10000) }).optional(),
+    legacyNoticeDismissed: z.boolean().optional(),
+  })
+  .strict()
 
 // ---------------------------------------------------------------------------
 // Notifications
@@ -390,7 +384,6 @@ export const CodeUnwatchSchema = z.object({
 // ---------------------------------------------------------------------------
 
 export type WorkspaceGetDetailInput = z.infer<typeof WorkspaceGetDetailSchema>
-export type WorkspaceUpdateConfigInput = z.infer<typeof WorkspaceUpdateConfigSchema>
 export type WorkspaceReadReadmeInput = z.infer<typeof WorkspaceReadReadmeSchema>
 export type ActivityGetFeedInput = z.infer<typeof ActivityGetFeedSchema>
 export type ConfigUpdateInput = z.infer<typeof ConfigUpdateSchema>

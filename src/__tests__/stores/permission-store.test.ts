@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { usePermissionStore } from '../../renderer/stores/permission-store'
 import { useActivityStore } from '../../renderer/stores/activity-store'
 import { useChannelsStore } from '../../renderer/stores/channels-store'
+import { useWorkspaceStore } from '../../renderer/stores/workspace-store'
+import { makeWorkspace } from '../helpers/workspace-fixture'
 import type { PermissionRequest } from '../../renderer/stores/permission-store'
 import type { ChannelSession } from '@main/types/channels'
 import type { ActivityFeedItem } from '@main/types/events'
@@ -68,7 +70,10 @@ function makeActivityItem(overrides: Partial<ActivityFeedItem> = {}): ActivityFe
   }
 }
 
+const MY_PROJECT = makeWorkspace({ slug: 'my-project', path: '/home/user/my-project' })
+
 function resetAll() {
+  useWorkspaceStore.setState({ workspaces: [MY_PROJECT] })
   usePermissionStore.setState({ queues: {} })
   useActivityStore.setState({ items: [], loading: false, error: null })
   useChannelsStore.setState({ sessions: [], messages: {}, activeSessionId: null, loading: false, error: null })
@@ -415,6 +420,107 @@ describe('usePermissionStore', () => {
       // No session match — queue unchanged
       expect(usePermissionStore.getState().queues['sess-1']).toHaveLength(1)
       cleanup()
+    })
+
+    describe('activity subscription: sessions are matched by path (#0039)', () => {
+      const now = Date.now()
+      const fire = (workspace: string): void => {
+        // New items are prepended: the store only processes a list that grew.
+        const item = makeActivityItem({ type: 'session_ended', workspace, timestamp: new Date(now).toISOString() })
+        useActivityStore.setState((s) => ({ items: [item, ...s.items] }))
+      }
+      const queueLength = (shortId: string): number => usePermissionStore.getState().queues[shortId]?.length ?? 0
+
+      it('colliding basenames: each activity clears only its own session cards', () => {
+        useWorkspaceStore.setState({
+          workspaces: [makeWorkspace({ slug: 'api', path: '/home/a/api' }), makeWorkspace({ slug: 'api-2', path: '/home/b/api' })],
+        })
+        useChannelsStore.setState({
+          sessions: [
+            makeSession({ shortId: 'sess-a', workspaceDir: '/home/a/api', workspaceName: 'api' }),
+            makeSession({ shortId: 'sess-b', workspaceDir: '/home/b/api', workspaceName: 'api' }),
+          ],
+        })
+        usePermissionStore.getState().addRequest(makeRequest({ shortId: 'sess-a', requestId: 'ra', receivedAt: now - 5000 }))
+        usePermissionStore.getState().addRequest(makeRequest({ shortId: 'sess-b', requestId: 'rb', receivedAt: now - 5000 }))
+        const cleanup = usePermissionStore.getState().initListeners()
+
+        fire('api-2')
+        expect(queueLength('sess-a')).toBe(1)
+        expect(queueLength('sess-b')).toBe(0)
+
+        usePermissionStore.getState().addRequest(makeRequest({ shortId: 'sess-b', requestId: 'rb2', receivedAt: now - 5000 }))
+        fire('api')
+        expect(queueLength('sess-a')).toBe(0)
+        expect(queueLength('sess-b')).toBe(1)
+        cleanup()
+      })
+
+      it('an unattributed ?api activity never matches, even though a session is named api', () => {
+        useWorkspaceStore.setState({ workspaces: [makeWorkspace({ slug: 'api', path: '/home/a/api' })] })
+        useChannelsStore.setState({ sessions: [makeSession({ shortId: 'sess-a', workspaceDir: '/home/a/api', workspaceName: 'api' })] })
+        usePermissionStore.getState().addRequest(makeRequest({ shortId: 'sess-a', receivedAt: now - 5000 }))
+        const cleanup = usePermissionStore.getState().initListeners()
+        fire('?api')
+        expect(queueLength('sess-a')).toBe(1)
+        cleanup()
+      })
+
+      it('a trailing-slash workspaceDir still matches', () => {
+        useChannelsStore.setState({ sessions: [makeSession({ workspaceDir: '/home/user/my-project///' })] })
+        usePermissionStore.getState().addRequest(makeRequest({ receivedAt: now - 5000 }))
+        const cleanup = usePermissionStore.getState().initListeners()
+        fire('my-project')
+        expect(queueLength('sess-1')).toBe(0)
+        cleanup()
+      })
+
+      it('a session started under the selectedPath (a symlinked add) matches too', () => {
+        useWorkspaceStore.setState({ workspaces: [makeWorkspace({ slug: 'api', path: '/data/api', selectedPath: '/home/u/link/api' })] })
+        useChannelsStore.setState({ sessions: [makeSession({ workspaceDir: '/home/u/link/api', workspaceName: 'api' })] })
+        usePermissionStore.getState().addRequest(makeRequest({ receivedAt: now - 5000 }))
+        const cleanup = usePermissionStore.getState().initListeners()
+        fire('api')
+        expect(queueLength('sess-1')).toBe(0)
+        cleanup()
+      })
+
+      it('permission cards for a hidden workspace still resolve (§3.12)', () => {
+        useWorkspaceStore.setState({ workspaces: [makeWorkspace({ slug: 'my-project', path: '/home/user/my-project', hidden: true })] })
+        useChannelsStore.setState({ sessions: [makeSession()] })
+        usePermissionStore.getState().addRequest(makeRequest({ receivedAt: now - 5000 }))
+        const cleanup = usePermissionStore.getState().initListeners()
+        fire('my-project')
+        expect(queueLength('sess-1')).toBe(0)
+        cleanup()
+      })
+
+      it('an activity for a workspace that is not in the registry never matches by name', () => {
+        useChannelsStore.setState({ sessions: [makeSession({ workspaceName: 'ghost', workspaceDir: '/home/user/ghost' })] })
+        usePermissionStore.getState().addRequest(makeRequest({ receivedAt: now - 5000 }))
+        const cleanup = usePermissionStore.getState().initListeners()
+        fire('ghost')
+        expect(queueLength('sess-1')).toBe(1)
+        cleanup()
+      })
+
+      it('a session in a prefix-sharing sibling directory (my-project-2) is not cleared', () => {
+        useChannelsStore.setState({ sessions: [makeSession({ workspaceDir: '/home/user/my-project-2' })] })
+        usePermissionStore.getState().addRequest(makeRequest({ receivedAt: now - 5000 }))
+        const cleanup = usePermissionStore.getState().initListeners()
+        fire('my-project')
+        expect(queueLength('sess-1')).toBe(1)
+        cleanup()
+      })
+
+      it('a session in a different directory with the same name is not cleared', () => {
+        useChannelsStore.setState({ sessions: [makeSession({ workspaceDir: '/elsewhere/my-project', workspaceName: 'my-project' })] })
+        usePermissionStore.getState().addRequest(makeRequest({ receivedAt: now - 5000 }))
+        const cleanup = usePermissionStore.getState().initListeners()
+        fire('my-project')
+        expect(queueLength('sess-1')).toBe(1)
+        cleanup()
+      })
     })
 
     it('activity subscription: short-circuits when queues are empty', () => {
