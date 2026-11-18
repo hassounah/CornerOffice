@@ -71,6 +71,7 @@ export function DiscoverDialog({ open, ...rest }: DiscoverDialogProps): React.Re
 
 function DiscoverDialogBody({ onClose, mode = 'scan', onAdded }: Omit<DiscoverDialogProps, 'open'>): React.ReactElement {
   const titleId = useId()
+  const candidatesLabelId = useId()
   const headingRef = useRef<HTMLHeadingElement>(null)
 
   const running = useDiscoveryStore((s) => s.running)
@@ -241,8 +242,12 @@ function DiscoverDialogBody({ onClose, mode = 'scan', onAdded }: Omit<DiscoverDi
               {result.slowDirs > 0 && <p className="text-xs text-co-text-muted">{`${plural(result.slowDirs, 'folder')} didn't respond and were skipped.`}</p>}
 
               {result.candidates.length > 0 && (
-                <fieldset className="mt-3 min-h-0 flex flex-col border-0 p-0 m-0">
-                  <legend className="text-xs text-co-text-secondary mb-1">Workspaces to add</legend>
+                // A div group, not a <fieldset>: Chromium does not bound a fieldset's content box as a flex container,
+                // so the list below would spill out of the dialog instead of scrolling.
+                <div role="group" aria-labelledby={candidatesLabelId} className="mt-3 min-h-0 flex flex-col">
+                  <p id={candidatesLabelId} className="text-xs text-co-text-secondary mb-1">
+                    Workspaces to add
+                  </p>
                   <p className="text-xs text-co-text-muted mb-1">
                     {`You can have at most ${MAX_WORKSPACES} workspaces (${workspaces.length} already added)`}
                   </p>
@@ -289,7 +294,7 @@ function DiscoverDialogBody({ onClose, mode = 'scan', onAdded }: Omit<DiscoverDi
                       )
                     })}
                   </ul>
-                </fieldset>
+                </div>
               )}
             </div>
           ) : followedScanEnded ? (
