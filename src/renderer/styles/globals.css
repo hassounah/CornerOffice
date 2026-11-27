@@ -30,11 +30,12 @@
   --color-co-ship-gold: var(--co-ship-gold);
   --color-co-accent-violet: var(--co-accent);
   --color-co-accent-violet-dim: var(--co-accent-dim);
+  --color-co-on-accent: var(--co-on-accent);
 
   --shadow-co-card: 0 2px 12px -2px rgba(0, 0, 0, 0.2);
   --shadow-co-card-hover: 0 4px 24px -4px rgba(0, 0, 0, 0.3), 0 0 0 1px var(--co-border-glow);
   --shadow-co-glow-accent: 0 0 20px -4px var(--co-accent-glow);
-  --shadow-co-glow-active: 0 0 16px -2px rgba(52, 211, 153, 0.2);
+  --shadow-co-glow-active: 0 0 16px -2px color-mix(in srgb, var(--co-status-active) 20%, transparent);
 
   --radius-co: 0.75rem;
 }
@@ -49,49 +50,55 @@
 
 /* ============================================================
    Corner Office Design Tokens — Dark (default) Theme
-   "Night Command" — deep, rich, alive
+   Office color palettes (#0040): bare :root holds "Ink & Eucalyptus"
+   (the default). "Slate & Signal" and "Moss & Dusk" override every hex
+   token in the :root[data-palette=…] blocks right below. Every pair is
+   checked for WCAG AA by office-palettes.test.ts.
    ============================================================ */
 :root {
   /* Surfaces — layered depth, not flat */
-  --co-bg-primary: #0a0c14;        /* Deepest layer — near-black with blue undertone */
-  --co-bg-secondary: #111420;      /* Card surfaces */
-  --co-bg-tertiary: #1a1e2e;       /* Hover, inputs, recessed areas */
-  --co-bg-elevated: #1e2235;       /* Elevated panels, popovers */
+  --co-bg-primary: #0e1416;        /* Deepest layer — ink with a green undertone */
+  --co-bg-secondary: #141c1f;      /* Card surfaces */
+  --co-bg-tertiary: #1c2629;       /* Hover, inputs, recessed areas */
+  --co-bg-elevated: #1f2a2d;       /* Elevated panels, popovers (= border) */
 
   /* Text — clear hierarchy */
-  --co-text-primary: #e8eaf4;      /* Headlines, primary content */
-  --co-text-secondary: #a0a4b8;    /* Body text, labels */
-  --co-text-muted: #636882;        /* Timestamps, hints — WCAG AA 4.78:1 on #0a0c14 */
+  --co-text-primary: #e3ebe8;      /* Headlines, primary content */
+  --co-text-secondary: #9fb0ab;    /* Body text, labels */
+  --co-text-muted: #788a83;        /* Timestamps, hints — WCAG AA 5.10:1 on bg-primary, 4.74:1 on bg-secondary */
 
   /* Borders — barely there */
-  --co-border: #1e2235;            /* Subtle structural lines */
-  --co-border-glow: #2a3050;       /* Slightly more visible on hover */
+  --co-border: #1f2a2d;            /* Subtle structural lines */
+  --co-border-glow: #2c3a3e;       /* Slightly more visible on hover */
 
-  /* Accents — electric but refined */
-  --co-accent: #7c6aff;            /* Primary accent — rich violet */
-  --co-accent-dim: #5a4ad4;        /* Dimmed variant */
-  --co-accent-glow: rgba(124, 106, 255, 0.15);  /* Glow halo */
-  --co-accent-teal: #22d3c5;       /* Secondary accent — electric teal */
-  --co-accent-teal-glow: rgba(34, 211, 197, 0.12);
+  /* Accents */
+  --co-accent: #5fb49c;            /* Primary accent — eucalyptus */
+  --co-accent-dim: #488776;        /* Accent mixed 72% over bg-primary */
+  --co-on-accent: #06140f;         /* Text/icons on an accent fill — 7.62:1 */
+  --co-accent-teal: #d6b98c;       /* Secondary accent — sand */
 
-  /* Status — vivid and distinct */
-  --co-status-active: #34d399;     /* Emerald green — alive */
-  --co-status-waiting: #fbbf24;    /* Warm amber */
-  --co-status-parked: #a78bfa;     /* Soft violet */
-  --co-status-idle: #4b5068;       /* Muted slate */
-  --co-status-attention: #f87171;  /* Warm red */
+  /* Status — vivid and distinct (3:1 on bg-primary and bg-secondary) */
+  --co-status-active: #93c86f;     /* Alive */
+  --co-status-waiting: #e0b354;    /* Warm amber */
+  --co-status-parked: #8fa2c6;     /* Soft blue-grey */
+  --co-status-idle: #5a6b66;       /* Muted, recedes below text-muted */
+  --co-status-attention: #e27c6b;  /* Warm red */
 
   /* Ship / celebration */
-  --co-ship-gold: #f59e0b;
+  --co-ship-gold: #e0b354;
+
+  /* Derived tokens — palette-agnostic, recompute from the tokens above */
+  --co-accent-glow: color-mix(in srgb, var(--co-accent) 15%, transparent);  /* Glow halo */
+  --co-accent-teal-glow: color-mix(in srgb, var(--co-accent-teal) 12%, transparent);
 
   /* Glass effect */
-  --co-glass-bg: rgba(17, 20, 32, 0.6);
+  --co-glass-bg: color-mix(in srgb, var(--co-bg-secondary) 60%, transparent);
   --co-glass-border: rgba(255, 255, 255, 0.06);
   --co-glass-shine: rgba(255, 255, 255, 0.03);
 
   /* Sidebar */
   --co-sidebar-width: 15rem;
-  --co-sidebar-bg: rgba(10, 12, 20, 0.85);
+  --co-sidebar-bg: color-mix(in srgb, var(--co-bg-primary) 85%, transparent);
 
   /* Invisible/bidi character marker (.co-invisible-token/.cm-co-invisible
      below, TRD §3.6.6, joint High — the Trojan-Source defense). Its own
@@ -113,19 +120,22 @@
      1.4.11's 3:1 floor for a UI component's boundary, and a real concern for
      red-green colorblind viewers who get little of the hue-difference cue
      everyone else does. A neutral mid-gray outline (not --co-invisible-
-     marker-fg itself, which happens to equal --co-code-bg's OWN dark value
-     exactly and would be invisible in office dark mode) clears 3:1 against
-     all four editor canvases at once; see themes.test.ts. */
+     marker-fg itself, which is near-black like the office dark canvases
+     (--co-code-bg is each palette's recessed bg0) and would be effectively
+     invisible in office dark mode) clears 3:1 against all four editor
+     canvases at once; see themes.test.ts. */
   --co-invisible-marker-border: #757575;
 
   /* Code Explorer editor (officeTheme, cm/themes.ts) — every token is
-     checked at WCAG AA 4.5:1 against --co-code-bg; see themes.test.ts. */
-  --co-code-bg: #0a0c14;
+     checked at WCAG AA 4.5:1 against --co-code-bg (each palette's own bg0,
+     overridden in the palette blocks); see themes.test.ts and
+     office-palettes.test.ts. Plain hex on purpose: the tests parse them. */
+  --co-code-bg: #0a1012;
   --co-code-fg: #e8eaf4;             /* 16.28:1 */
-  --co-code-caret: #7c6aff;
-  --co-code-selection: rgba(124, 106, 255, 0.25);
+  --co-code-caret: var(--co-accent);
+  --co-code-selection: color-mix(in srgb, var(--co-accent) 25%, transparent);
   --co-code-active-line: rgba(255, 255, 255, 0.04);
-  --co-code-gutter-bg: #0a0c14;
+  --co-code-gutter-bg: #0a1012;
   --co-code-gutter-fg: #7d84a0;      /* 5.28:1 */
   --co-code-comment: #8992ac;        /* 6.30:1 */
   --co-code-keyword: #9d99ff;        /* 7.84:1 */
@@ -163,8 +173,120 @@
 }
 
 /* ============================================================
+   Office palettes (#0040) — selected by data-palette on <html>
+   (usePalette). Each block restates EVERY hex token so a missing one is
+   caught by office-palettes.test.ts instead of silently inheriting
+   eucalyptus. Derived tokens (glows, glass, sidebar, caret, selection)
+   recompute from these on :root.
+   ============================================================ */
+:root[data-palette='signal'] {
+  --co-bg-primary: #111315;
+  --co-bg-secondary: #181b1e;
+  --co-bg-tertiary: #212529;
+  --co-bg-elevated: #24282d;
+  --co-text-primary: #e6e8ea;
+  --co-text-secondary: #a3a9b0;
+  --co-text-muted: #7e858d;
+  --co-border: #24282d;
+  --co-border-glow: #343a41;
+  --co-accent: #f07a3a;
+  --co-accent-dim: #b25d30;
+  --co-on-accent: #1a0d05;
+  --co-accent-teal: #78aed0;
+  --co-status-active: #62c290;
+  --co-status-waiting: #e8c14e;
+  --co-status-parked: #9aa3ad;
+  --co-status-idle: #606872;
+  --co-status-attention: #ec5a52;
+  --co-ship-gold: #e8c14e;
+  --co-code-bg: #0c0e10;
+  --co-code-gutter-bg: #0c0e10;
+}
+
+:root[data-palette='moss'] {
+  --co-bg-primary: #121410;
+  --co-bg-secondary: #191c16;
+  --co-bg-tertiary: #22261e;
+  --co-bg-elevated: #252a21;
+  --co-text-primary: #e8e9e1;
+  --co-text-secondary: #abae9f;
+  --co-text-muted: #83876f;
+  --co-border: #252a21;
+  --co-border-glow: #353b2f;
+  --co-accent: #a3b86c;
+  --co-accent-dim: #7a8a52;
+  --co-on-accent: #141a08;
+  --co-accent-teal: #8aa6c1;
+  --co-status-active: #6cc0a8;
+  --co-status-waiting: #e0b04f;
+  --co-status-parked: #a19fb3;
+  --co-status-idle: #656a5a;
+  --co-status-attention: #e06a5a;
+  --co-ship-gold: #e0b04f;
+  --co-code-bg: #0e100c;
+  --co-code-gutter-bg: #0e100c;
+}
+
+/* ============================================================
+   Realm scope — Realm keeps its own colors (#0040 decision 4): office
+   components rendered inside RealmShell see the pre-#0040 values,
+   independent of data-palette. Plain @theme resolves --color-co-* once on
+   :root, so they are re-declared here too (otherwise utilities inside the
+   realm would keep following the palette).
+   ============================================================ */
+.co-realm-scope {
+  --co-bg-primary: #0a0c14;
+  --co-bg-secondary: #111420;
+  --co-bg-tertiary: #1a1e2e;
+  --co-bg-elevated: #1e2235;
+  --co-text-primary: #e8eaf4;
+  --co-text-secondary: #a0a4b8;
+  --co-text-muted: #636882;
+  --co-border: #1e2235;
+  --co-border-glow: #2a3050;
+  --co-accent: #7c6aff;
+  --co-accent-dim: #5a4ad4;
+  --co-on-accent: #ffffff;
+  --co-accent-teal: #22d3c5;
+  --co-status-active: #34d399;
+  --co-status-waiting: #fbbf24;
+  --co-status-parked: #a78bfa;
+  --co-status-idle: #4b5068;
+  --co-status-attention: #f87171;
+  --co-ship-gold: #f59e0b;
+  --co-accent-glow: rgba(124, 106, 255, 0.15);
+  --co-accent-teal-glow: rgba(34, 211, 197, 0.12);
+  --co-glass-bg: rgba(17, 20, 32, 0.6);
+  --co-sidebar-bg: rgba(10, 12, 20, 0.85);
+
+  --color-co-bg-primary: var(--co-bg-primary);
+  --color-co-bg-secondary: var(--co-bg-secondary);
+  --color-co-bg-tertiary: var(--co-bg-tertiary);
+  --color-co-bg-elevated: var(--co-bg-elevated);
+  --color-co-text-primary: var(--co-text-primary);
+  --color-co-text-secondary: var(--co-text-secondary);
+  --color-co-text-muted: var(--co-text-muted);
+  --color-co-border: var(--co-border);
+  --color-co-border-glow: var(--co-border-glow);
+  --color-co-accent: var(--co-accent);
+  --color-co-accent-dim: var(--co-accent-dim);
+  --color-co-accent-teal: var(--co-accent-teal);
+  --color-co-status-active: var(--co-status-active);
+  --color-co-status-waiting: var(--co-status-waiting);
+  --color-co-status-parked: var(--co-status-parked);
+  --color-co-status-idle: var(--co-status-idle);
+  --color-co-status-attention: var(--co-status-attention);
+  --color-co-ship-gold: var(--co-ship-gold);
+  --color-co-accent-violet: var(--co-accent);
+  --color-co-accent-violet-dim: var(--co-accent-dim);
+  --color-co-on-accent: var(--co-on-accent);
+}
+
+/* ============================================================
    Light Theme Overrides
    ============================================================ */
+/* Not applied in the shipped app (useTheme is unmounted). Office palettes (#0040) are dark-only; this block is not palette-aware.
+   If light mode is revived: :root[data-palette=…] has specificity (0,2,0) and beats .theme-light (0,1,0), so signal and moss would partially override it. */
 .theme-light {
   --co-bg-primary: #f5f6fa;
   --co-bg-secondary: #ffffff;
@@ -265,12 +387,12 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background-color: rgba(99, 104, 130, 0.3);
+    background-color: color-mix(in srgb, var(--co-text-muted) 30%, transparent);
     border-radius: 99px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(99, 104, 130, 0.5);
+    background-color: color-mix(in srgb, var(--co-text-muted) 50%, transparent);
   }
 }
 
@@ -314,15 +436,15 @@
 
   /* Accent glow — used for active items */
   .co-glow-accent {
-    box-shadow: 0 0 20px -4px var(--co-accent-glow), 0 0 0 1px rgba(124, 106, 255, 0.2);
+    box-shadow: 0 0 20px -4px var(--co-accent-glow), 0 0 0 1px color-mix(in srgb, var(--co-accent) 20%, transparent);
   }
 
   .co-glow-teal {
-    box-shadow: 0 0 20px -4px var(--co-accent-teal-glow), 0 0 0 1px rgba(34, 211, 197, 0.15);
+    box-shadow: 0 0 20px -4px var(--co-accent-teal-glow), 0 0 0 1px color-mix(in srgb, var(--co-accent-teal) 15%, transparent);
   }
 
   .co-glow-active {
-    box-shadow: 0 0 16px -2px rgba(52, 211, 153, 0.2), 0 0 0 1px rgba(52, 211, 153, 0.15);
+    box-shadow: 0 0 16px -2px color-mix(in srgb, var(--co-status-active) 20%, transparent), 0 0 0 1px color-mix(in srgb, var(--co-status-active) 15%, transparent);
   }
 
   /* Custom title bar — frameless window chrome */
@@ -364,8 +486,8 @@
     inset: 0;
     pointer-events: none;
     background:
-      radial-gradient(ellipse 60% 40% at 20% 10%, rgba(124, 106, 255, 0.04), transparent),
-      radial-gradient(ellipse 50% 50% at 80% 80%, rgba(34, 211, 197, 0.03), transparent);
+      radial-gradient(ellipse 60% 40% at 20% 10%, color-mix(in srgb, var(--co-accent) 4%, transparent), transparent),
+      radial-gradient(ellipse 50% 50% at 80% 80%, color-mix(in srgb, var(--co-accent-teal) 3%, transparent), transparent);
     z-index: 0;
   }
 
@@ -956,8 +1078,8 @@
 
   /* Gentle glow breathe for active pipeline */
   @keyframes co-glow-breathe {
-    0%, 100% { box-shadow: 0 0 12px -2px rgba(52, 211, 153, 0.15); }
-    50% { box-shadow: 0 0 20px -2px rgba(52, 211, 153, 0.3); }
+    0%, 100% { box-shadow: 0 0 12px -2px color-mix(in srgb, var(--co-status-active) 15%, transparent); }
+    50% { box-shadow: 0 0 20px -2px color-mix(in srgb, var(--co-status-active) 30%, transparent); }
   }
 
   .co-animate-glow {

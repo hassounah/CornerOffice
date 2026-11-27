@@ -11,7 +11,7 @@ import { guardAction } from '../../hooks/useUnsavedGuard'
 function TrendArrow({ trend }: { trend: 'up' | 'down' | 'flat' }): React.ReactElement {
   if (trend === 'up') {
     return (
-      <svg width="10" height="10" viewBox="0 0 10 10" className="text-emerald-400" aria-hidden="true">
+      <svg width="10" height="10" viewBox="0 0 10 10" className="text-co-status-active" aria-hidden="true">
         <path d="M5 2l4 6H1z" fill="currentColor" />
       </svg>
     )

@@ -116,6 +116,17 @@ describe('defaults', () => {
     expect(defaultSettings().realm.mapping[0].workspaceSlug).toBeNull()
   })
 
+  it('the default appearance palette is eucalyptus', () => {
+    expect(defaultSettings().appearance.palette).toBe('eucalyptus')
+  })
+
+  it('an appearance without a palette parses to eucalyptus without a warning', () => {
+    vi.mocked(log.warn).mockClear()
+    const parsed = SettingsSchema.parse({ version: 1, appearance: { theme: 'light', compactView: true, shipMomentStyle: 'off' } })
+    expect(parsed.appearance).toEqual({ theme: 'light', compactView: true, shipMomentStyle: 'off', palette: 'eucalyptus' })
+    expect(log.warn).not.toHaveBeenCalled()
+  })
+
   it('settings reject a wrong version and an invalid exclusion', () => {
     expect(SettingsSchema.safeParse({ version: 2 }).success).toBe(false)
     expect(SettingsSchema.safeParse({ version: 1, discovery: { exclusions: ['a/b'] } }).success).toBe(false)
@@ -423,6 +434,20 @@ describe('store instances on the real filesystem', () => {
     settingsStore.resetCacheForTests()
     expect(settingsStore.get().legacyNoticeDismissed).toBe(true)
     expect(JSON.parse(fs.readFileSync(path.join(cfg, 'settings.json'), 'utf-8')).legacyNoticeDismissed).toBe(true)
+  })
+
+  it('an unknown appearance.palette resets to eucalyptus, keeps the other fields and leaves the store healthy', () => {
+    fs.mkdirSync(cfg, { recursive: true })
+    fs.writeFileSync(
+      path.join(cfg, 'settings.json'),
+      JSON.stringify({ version: 1, companyName: 'Acme', appearance: { theme: 'light', compactView: true, shipMomentStyle: 'off', palette: 'violet' } }),
+    )
+    vi.mocked(log.warn).mockClear()
+    expect(settingsStore.get().appearance).toEqual({ theme: 'light', compactView: true, shipMomentStyle: 'off', palette: 'eucalyptus' })
+    expect(vi.mocked(log.warn).mock.calls.map((c) => String(c[0]))).toContainEqual(expect.stringContaining('unrecognised appearance.palette'))
+    expect(vi.mocked(log.warn).mock.calls.flat().join(' ')).not.toContain('violet')
+    expect(settingsStore.get().companyName).toBe('Acme')
+    expect(settingsStore.health()).toBe('ok')
   })
 
   it('recovered-partial: the next mutate keeps the invalid file as .corrupt-<ts>', async () => {

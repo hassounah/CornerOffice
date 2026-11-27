@@ -98,9 +98,9 @@ describe('PulseDot', () => {
     expect(container.firstChild).toHaveAttribute('aria-hidden', 'true')
   })
 
-  it('has bg-emerald-400 inner dot', () => {
+  it('has bg-co-status-active inner dot', () => {
     const { container } = render(<PulseDot />)
-    expect(container.querySelector('.bg-emerald-400')).toBeInTheDocument()
+    expect(container.querySelector('.bg-co-status-active')).toBeInTheDocument()
   })
 
   it('has animate-ping class for motion-safe', () => {
@@ -119,10 +119,10 @@ describe('GateDots', () => {
     expect(container.querySelectorAll('span > span')).toHaveLength(3)
   })
 
-  it('renders correct number of emerald dots for passed gates', () => {
+  it('renders correct number of active-colored dots for passed gates', () => {
     const { container } = render(<GateDots passed={2} />)
     const dots = container.querySelectorAll('span > span')
-    const passed = Array.from(dots).filter((d) => d.classList.contains('bg-emerald-400'))
+    const passed = Array.from(dots).filter((d) => d.classList.contains('bg-co-status-active'))
     expect(passed).toHaveLength(2)
   })
 

@@ -2,6 +2,7 @@ import log from 'electron-log/main'
 import path from 'path'
 import { z } from 'zod'
 import type { RealmLocation } from '../types'
+import { DEFAULT_OFFICE_PALETTE, OFFICE_PALETTE_IDS } from '../types/appearance'
 import { DiscoveryExclusionSchema, hasNameUnsafeChar, hasPathUnsafeChar } from '../types/slugs'
 import { configDir } from './app-home'
 import { createJsonStore } from './json-store'
@@ -127,6 +128,13 @@ export const AppearanceSchema = z.object({
   theme: z.enum(['dark', 'light', 'system']),
   compactView: z.boolean(),
   shipMomentStyle: z.enum(['full', 'compact', 'off']),
+  // A missing palette (configs from before #0040) silently takes the default; an unrecognised one
+  // falls back to the default with a warning, never failing the whole settings file. This also runs
+  // on the store write path, so it is not a write-side validator: the IPC schema rejects bad ids.
+  palette: z.enum(OFFICE_PALETTE_IDS).default(DEFAULT_OFFICE_PALETTE).catch(() => {
+    log.warn('[Stores] ignoring an unrecognised appearance.palette in settings.json; using the default')
+    return DEFAULT_OFFICE_PALETTE
+  }),
 })
 
 // Code Explorer layout (#0031): tree width in px
@@ -309,7 +317,12 @@ const defaultNotifications = () => ({
   quietHours: { enabled: false, start: '22:00', end: '08:00' },
 })
 
-const defaultAppearance = () => ({ theme: 'dark' as const, compactView: false, shipMomentStyle: 'full' as const })
+const defaultAppearance = () => ({
+  theme: 'dark' as const,
+  compactView: false,
+  shipMomentStyle: 'full' as const,
+  palette: DEFAULT_OFFICE_PALETTE,
+})
 const defaultRealm = () => ({ enabled: false, mapping: DEFAULT_REALM_MAPPINGS.map((m) => ({ ...m })), shipCelebration: 'townSquare' as const })
 const defaultTerminal = () => ({ fontSize: 14, windowBounds: {} })
 const defaultDiscovery = () => ({ exclusions: [] as string[] })

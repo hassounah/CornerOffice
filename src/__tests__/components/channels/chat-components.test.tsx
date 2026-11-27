@@ -138,7 +138,7 @@ describe('ChatUnavailable (#0037 C6)', () => {
 
   it('shows no channel badge or connection dot', () => {
     const { container } = render(<ChatUnavailable reason={REASON} />)
-    expect(container.querySelector('.bg-emerald-400, .bg-amber-400')).toBeNull()
+    expect(container.querySelector('.bg-co-status-active, .bg-amber-400')).toBeNull()
     expect(screen.queryByText(/Connected|Connecting|Disconnected/)).not.toBeInTheDocument()
   })
 

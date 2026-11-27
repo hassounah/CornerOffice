@@ -13,7 +13,7 @@ interface SessionSelectorProps {
 function connectionColor(state: ConnectionState): string {
   switch (state) {
     case 'connected':
-      return 'bg-emerald-400'
+      return 'bg-co-status-active'
     case 'connecting':
     case 'reconnecting':
       return 'bg-amber-400'

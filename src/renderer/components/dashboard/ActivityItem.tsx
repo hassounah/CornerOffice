@@ -12,14 +12,14 @@ import { isUnattributed, unattributedLabel } from '../../utils/unattributed'
 // ---------------------------------------------------------------------------
 
 const TYPE_CONFIG: Record<ActivityType, { icon: string; colorClass: string }> = {
-  feature_shipped:   { icon: '\u2022', colorClass: 'text-emerald-400' },
-  gate_passed:       { icon: '\u2022', colorClass: 'text-emerald-300' },
+  feature_shipped:   { icon: '\u2022', colorClass: 'text-co-status-active' },
+  gate_passed:       { icon: '\u2022', colorClass: 'text-co-status-active' },
   review_complete:   { icon: '\u2022', colorClass: 'text-blue-400' },
   pipeline_parked:   { icon: '\u2022', colorClass: 'text-amber-400' },
   pipeline_resumed:  { icon: '\u2022', colorClass: 'text-amber-300' },
   input_required:    { icon: '\u2022', colorClass: 'text-orange-400' },
-  instinct_learned:  { icon: '\u2022', colorClass: 'text-purple-400' },
-  instinct_evolved:  { icon: '\u2022', colorClass: 'text-purple-300' },
+  instinct_learned:  { icon: '\u2022', colorClass: 'text-co-accent-teal' },
+  instinct_evolved:  { icon: '\u2022', colorClass: 'text-co-accent-teal' },
   session_started:   { icon: '\u2022', colorClass: 'text-co-text-muted/50' },
   session_ended:     { icon: '\u2022', colorClass: 'text-co-text-muted/50' },
   context_compacted: { icon: '\u2022', colorClass: 'text-co-text-muted/50' },
@@ -28,7 +28,7 @@ const TYPE_CONFIG: Record<ActivityType, { icon: string; colorClass: string }> = 
   tool_completed:    { icon: '\u2022', colorClass: 'text-co-text-muted/50' },
   tool_failed:       { icon: '\u2022', colorClass: 'text-red-400' },
   user_prompt:       { icon: '\u2022', colorClass: 'text-blue-400' },
-  task_completed:    { icon: '\u2022', colorClass: 'text-emerald-300' },
+  task_completed:    { icon: '\u2022', colorClass: 'text-co-status-active' },
   config_changed:    { icon: '\u2022', colorClass: 'text-co-text-muted/50' },
 }
 

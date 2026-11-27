@@ -14,6 +14,7 @@ import { useSettingsStore } from './stores/settings-store'
 import { ConfirmDialog } from './components/shared/ConfirmDialog'
 import { useGuardDialogStore, anyDirty, guardAction } from './hooks/useUnsavedGuard'
 import { useCodeExplorerShortcut } from './hooks/useCodeExplorerShortcut'
+import { usePalette } from './hooks/usePalette'
 import type { RealmConfig } from '@main/types/config'
 
 // Page placeholders — filled in later phases
@@ -315,6 +316,7 @@ function NavigationEffects(): null {
 // ---------------------------------------------------------------------------
 
 export default function App(): React.ReactElement {
+  usePalette()
   const [phase, setPhase] = useState<ReadyPhase>(() =>
     // Running outside Electron (e.g. browser dev preview) — skip to ready
     window.cornerOffice ? 'loading' : 'ready'

@@ -17,7 +17,7 @@ export function AppShell(): React.ReactElement {
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <a
           href="#main-content"
-          className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-2 focus:left-2 focus:px-4 focus:py-2 focus:rounded-md focus:bg-co-accent focus:text-white focus:text-sm focus:font-medium"
+          className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-2 focus:left-2 focus:px-4 focus:py-2 focus:rounded-md focus:bg-co-accent focus:text-co-on-accent focus:text-sm focus:font-medium"
         >
           Skip to content
         </a>

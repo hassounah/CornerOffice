@@ -7,10 +7,10 @@ interface StatusIconProps {
 }
 
 const COLOR_MAP: Record<WorkspaceStatus, string> = {
-  active: 'bg-co-status-active shadow-[0_0_6px_rgba(52,211,153,0.4)]',
-  waiting: 'bg-co-status-waiting shadow-[0_0_6px_rgba(251,191,36,0.3)]',
-  parked: 'bg-co-status-parked shadow-[0_0_6px_rgba(167,139,250,0.3)]',
-  attention: 'bg-co-status-attention shadow-[0_0_6px_rgba(248,113,113,0.3)]',
+  active: 'bg-co-status-active shadow-[0_0_6px_color-mix(in_srgb,var(--co-status-active)_40%,transparent)]',
+  waiting: 'bg-co-status-waiting shadow-[0_0_6px_color-mix(in_srgb,var(--co-status-waiting)_30%,transparent)]',
+  parked: 'bg-co-status-parked shadow-[0_0_6px_color-mix(in_srgb,var(--co-status-parked)_30%,transparent)]',
+  attention: 'bg-co-status-attention shadow-[0_0_6px_color-mix(in_srgb,var(--co-status-attention)_30%,transparent)]',
   idle: 'bg-co-status-idle',
 }
 

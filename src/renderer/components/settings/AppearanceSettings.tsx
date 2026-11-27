@@ -2,8 +2,15 @@ import React, { useState, useRef } from 'react'
 import { useSettingsStore } from '../../stores/settings-store'
 import { guardAction } from '../../hooks/useUnsavedGuard'
 import type { Settings } from '@main/services/stores'
+import type { OfficePaletteId } from '@main/types/appearance'
 
 type ShipStyle = Settings['appearance']['shipMomentStyle']
+
+const PALETTE_OPTIONS: Array<{ value: OfficePaletteId; label: string }> = [
+  { value: 'eucalyptus', label: 'Ink & Eucalyptus' },
+  { value: 'signal',     label: 'Slate & Signal' },
+  { value: 'moss',       label: 'Moss & Dusk' },
+]
 
 const VIEW_OPTIONS: Array<{ value: 'corner-office' | 'corner-realm'; label: string }> = [
   { value: 'corner-office', label: 'Corner Office' },
@@ -41,6 +48,14 @@ export function AppearanceSettings(): React.ReactElement {
   async function handleShipStyleChange(shipMomentStyle: ShipStyle): Promise<void> {
     try {
       await updateConfig({ appearance: { ...appearance, shipMomentStyle } })
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+  async function handlePaletteChange(palette: OfficePaletteId): Promise<void> {
+    try {
+      await updateConfig({ appearance: { ...appearance, palette } })
     } catch (e) {
       console.error(e)
     }
@@ -115,7 +130,7 @@ export function AppearanceSettings(): React.ReactElement {
                 className={[
                   'px-4 py-2 rounded-md text-base font-medium border transition-colors',
                   isSelected
-                    ? 'bg-co-accent text-white border-co-accent'
+                    ? 'bg-co-accent text-co-on-accent border-co-accent'
                     : 'bg-co-bg-tertiary text-co-text-secondary border-co-border hover:text-co-text-primary',
                 ].join(' ')}
                 aria-pressed={isSelected}
@@ -125,6 +140,36 @@ export function AppearanceSettings(): React.ReactElement {
             )
           })}
         </div>
+        {!realmEnabled && (
+          <div className="mt-4 max-w-sm">
+            <label htmlFor="office-palette" className="block text-sm text-co-text-secondary mb-1">
+              Colors
+            </label>
+            <div className="flex items-center gap-3">
+              <select
+                id="office-palette"
+                aria-describedby="office-palette-hint"
+                value={appearance.palette}
+                onChange={(e) => void handlePaletteChange(e.target.value as OfficePaletteId)}
+                className="px-3 py-2 rounded-md bg-co-bg-tertiary border border-co-border text-base text-co-text-primary focus:outline-none focus:border-co-accent"
+              >
+                {PALETTE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <span className="flex items-center gap-1" aria-hidden="true">
+                <span className="h-3 w-3 rounded-full bg-co-accent" />
+                <span className="h-3 w-3 rounded-full bg-co-accent-teal" />
+                <span className="h-3 w-3 rounded-full bg-co-status-active" />
+              </span>
+            </div>
+            <p id="office-palette-hint" className="text-sm text-co-text-muted mt-1">
+              Dark palette for the Corner Office view. Applies instantly.
+            </p>
+          </div>
+        )}
       </section>
 
       {/* Compact view */}

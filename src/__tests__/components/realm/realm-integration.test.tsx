@@ -165,7 +165,7 @@ function makeRealmConfig(overrides: Partial<Settings['realm']> = {}): Settings {
       idleThresholdMinutes: 5,
       quietHours: { enabled: false, start: '22:00', end: '08:00' },
     },
-    appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full' },
+    appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full', palette: 'eucalyptus' },
     realm: {
       enabled: true,
       mapping: [],
