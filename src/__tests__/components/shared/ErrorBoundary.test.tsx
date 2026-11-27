@@ -7,8 +7,8 @@ import React from 'react'
 // ---------------------------------------------------------------------------
 
 vi.mock('../../../renderer/stores/settings-store', () => ({
-  useSettingsStore: vi.fn((selector: (s: { config: { appearance: { theme: string } } | null }) => unknown) =>
-    selector({ config: { appearance: { theme: 'dark' } } })
+  useSettingsStore: vi.fn((selector: (s: { config: { appearance: Record<string, unknown> } | null }) => unknown) =>
+    selector({ config: { appearance: {} } })
   ),
 }))
 

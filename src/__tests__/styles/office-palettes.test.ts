@@ -287,17 +287,17 @@ describe.each(OFFICE_PALETTE_IDS)('office palette %s — WCAG contrast', (id) =>
 })
 
 describe('old violet/teal/emerald literals are gone from office tokens', () => {
-  // Strip the two blocks that legitimately keep the old values.
-  const stripped = ['.co-realm-scope', '.theme-light'].reduce((acc, selector) => stripRule(acc, selector), css)
+  // Strip the block that legitimately keeps the old values.
+  const stripped = stripRule(css, '.co-realm-scope')
 
   it.each(['#7c6aff', '#22d3c5', '124, 106, 255', '34, 211, 197', '52, 211, 153'])(
-    'has no %s outside .co-realm-scope and .theme-light',
+    'has no %s outside .co-realm-scope',
     (literal) => {
       expect(stripped.toLowerCase()).not.toContain(literal)
     },
   )
 
-  it('actually stripped the blocks (the literals are still present in the full file)', () => {
+  it('actually stripped the block (the literals are still present in the full file)', () => {
     expect(css.toLowerCase()).toContain('#7c6aff')
     expect(stripped.length).toBeLessThan(css.length)
   })

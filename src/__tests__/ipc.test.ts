@@ -137,7 +137,7 @@ describe('ConfigUpdateSchema — allowlist enforcement', () => {
   it('accepts appearance update', () => {
     expect(
       ConfigUpdateSchema.safeParse({
-        appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full' },
+        appearance: { compactView: false, shipMomentStyle: 'full' },
       }).success
     ).toBe(true)
   })
@@ -162,9 +162,9 @@ describe('ConfigUpdateSchema — allowlist enforcement', () => {
     expect(ConfigUpdateSchema.safeParse({ discoveryExclusions: ['node_modules', '.git', 'dist'] }).success).toBe(false)
   })
 
-  it('rejects invalid theme value', () => {
+  it('rejects an invalid shipMomentStyle value', () => {
     expect(
-      ConfigUpdateSchema.safeParse({ appearance: { theme: 'purple', compactView: false, shipMomentStyle: 'full' } }).success
+      ConfigUpdateSchema.safeParse({ appearance: { compactView: false, shipMomentStyle: 'purple' } }).success
     ).toBe(false)
   })
 

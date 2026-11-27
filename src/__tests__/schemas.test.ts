@@ -37,21 +37,21 @@ describe('ActivityGetFeedSchema', () => {
 describe('ConfigUpdateSchema', () => {
   it('accepts appearance update', () => {
     const result = ConfigUpdateSchema.safeParse({
-      appearance: { theme: 'dark', compactView: true, shipMomentStyle: 'compact' },
+      appearance: { compactView: true, shipMomentStyle: 'compact' },
     })
     expect(result.success).toBe(true)
   })
 
   it.each(['eucalyptus', 'signal', 'moss'])('accepts the %s palette', (palette) => {
     const result = ConfigUpdateSchema.safeParse({
-      appearance: { theme: 'dark', compactView: true, shipMomentStyle: 'compact', palette },
+      appearance: { compactView: true, shipMomentStyle: 'compact', palette },
     })
     expect(result.success).toBe(true)
   })
 
   it('rejects an unknown palette', () => {
     const result = ConfigUpdateSchema.safeParse({
-      appearance: { theme: 'dark', compactView: true, shipMomentStyle: 'compact', palette: 'violet' },
+      appearance: { compactView: true, shipMomentStyle: 'compact', palette: 'violet' },
     })
     expect(result.success).toBe(false)
   })

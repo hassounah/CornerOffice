@@ -96,7 +96,6 @@ const NotificationConfigUpdateSchema = z.object({
 })
 
 const AppearanceConfigUpdateSchema = z.object({
-  theme: z.enum(['dark', 'light', 'system']),
   compactView: z.boolean(),
   shipMomentStyle: z.enum(['full', 'compact', 'off']),
   palette: z.enum(OFFICE_PALETTE_IDS).optional(),

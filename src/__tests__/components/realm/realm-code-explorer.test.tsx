@@ -144,13 +144,10 @@ describe('RealmCodeExplorer — parchment header (Step 3.2, TRD §3.8.2 "Chrome"
 })
 
 // ---------------------------------------------------------------------------
-// Chrome theming — #0028 user decision (2026-09-28): the chrome no longer
-// reads a fixed REALM_COLORS JS palette; it reads the same --co-realm-* CSS
-// custom properties realmTheme's editor reads (globals.css: dark in :root,
-// light "parchment" override in .theme-light). The actual WCAG AA 4.5:1
-// math for BOTH palettes, and a live toggle test proving the real CSS rules
-// re-resolve them, live in cm/themes.test.ts (it reads globals.css directly,
-// so it can't drift from what's deployed) — this suite's own job is just to
+// Chrome theming — the chrome reads the same --co-realm-* CSS custom
+// properties realmTheme's editor reads (globals.css). The actual WCAG AA
+// 4.5:1 math lives in cm/themes.test.ts (it reads globals.css directly, so
+// it can't drift from what's deployed) — this suite's own job is just to
 // pin the WIRING: that the rendered chrome actually uses these variables
 // (not a hardcoded hex, and not the wrong variable name), so a future
 // refactor that silently reintroduces a fixed color fails a test that names

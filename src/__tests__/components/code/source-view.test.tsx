@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, waitFor, fireEvent, act } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { render, waitFor, fireEvent } from '@testing-library/react'
 import { EditorView } from '@codemirror/view'
 import { SourceView } from '../../../renderer/components/code/SourceView'
 import type { SourceViewControls } from '../../../renderer/components/code/SourceView'
@@ -360,79 +360,13 @@ describe('SourceView — theme', () => {
     expect(officeContainer.querySelector('.cm-editor')).not.toBeNull()
     expect(realmContainer.querySelector('.cm-editor')).not.toBeNull()
   })
-})
 
-// ---------------------------------------------------------------------------
-// Fix #148: CodeMirror's own internal light/dark classification
-// (EditorView.darkTheme) must actually track `.theme-light`, for both skins
-// — checked through the real facet CodeMirror exposes, not a DOM probe (the
-// class it applies is an opaque, auto-generated StyleModule name).
-// ---------------------------------------------------------------------------
-
-describe('SourceView — CodeMirror\'s own dark/light classification (Fix #148)', () => {
-  afterEach(async () => {
-    // Awaited (not a bare synchronous toggle): the resulting MutationObserver
-    // callback (useIsThemeLight.ts) fires as its own microtask, one tick
-    // after this class change, not synchronously within it — an unawaited
-    // toggle here would leave that update to land during the NEXT test
-    // instead, un-wrapped in any act() boundary of its own.
-    await act(async () => {
-      document.documentElement.classList.remove('theme-light')
-    })
-  })
-
-  // highlight={false} on every render below: baseProps() defaults highlight
-  // to true, which kicks off SourceView's OWN unrelated async language-load
-  // effect (loadLanguageForFile().then(setLanguageExt)) — irrelevant to what
-  // these tests check, and its own un-awaited state update would otherwise
-  // add unrelated act() noise on top of the theme assertions below.
-
-  it('marks the editor dark by default (.theme-light absent), for both skins', () => {
+  it('marks the editor dark (CodeMirror\'s own EditorView.darkTheme facet), for both skins', () => {
     let officeView: import('@codemirror/view').EditorView | undefined
     let realmView: import('@codemirror/view').EditorView | undefined
     render(<SourceView {...baseProps()} highlight={false} skin="office" onReady={(view) => { officeView = view }} />)
     render(<SourceView {...baseProps()} highlight={false} skin="realm" onReady={(view) => { realmView = view }} />)
     expect(officeView?.state.facet(EditorView.darkTheme)).toBe(true)
     expect(realmView?.state.facet(EditorView.darkTheme)).toBe(true)
-  })
-
-  it('marks the editor light when .theme-light is already present at mount, for both skins', async () => {
-    await act(async () => {
-      document.documentElement.classList.add('theme-light')
-    })
-    let officeView: import('@codemirror/view').EditorView | undefined
-    let realmView: import('@codemirror/view').EditorView | undefined
-    render(<SourceView {...baseProps()} highlight={false} skin="office" onReady={(view) => { officeView = view }} />)
-    render(<SourceView {...baseProps()} highlight={false} skin="realm" onReady={(view) => { realmView = view }} />)
-    expect(officeView?.state.facet(EditorView.darkTheme)).toBe(false)
-    expect(realmView?.state.facet(EditorView.darkTheme)).toBe(false)
-  })
-
-  it('re-resolves live, on the SAME view (no remount), when .theme-light toggles after mount', async () => {
-    const onReady = vi.fn()
-    let view: import('@codemirror/view').EditorView | undefined
-    render(
-      <SourceView
-        {...baseProps()}
-        highlight={false}
-        onReady={(v) => {
-          view = v
-          onReady(v)
-        }}
-      />,
-    )
-    await waitFor(() => expect(view).toBeDefined())
-    expect(view!.state.facet(EditorView.darkTheme)).toBe(true)
-    expect(onReady).toHaveBeenCalledTimes(1)
-
-    await act(async () => {
-      document.documentElement.classList.add('theme-light')
-    })
-
-    await waitFor(() => expect(view!.state.facet(EditorView.darkTheme)).toBe(false))
-    // Reconfigured in place, via @uiw/react-codemirror's own theme-prop
-    // handling — never torn down and rebuilt (onReady/onCreateEditor fires
-    // once per mount, not once per theme change).
-    expect(onReady).toHaveBeenCalledTimes(1)
   })
 })

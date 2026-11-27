@@ -92,7 +92,7 @@ function makeConfig(mappings: RealmLocationMapping[] = [{ workspaceSlug: 'test-w
       idleThresholdMinutes: 5,
       quietHours: { enabled: false, start: '22:00', end: '08:00' },
     },
-    appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full', palette: 'eucalyptus' },
+    appearance: { compactView: false, shipMomentStyle: 'full', palette: 'eucalyptus' },
     realm: { enabled: true, mapping: mappings, shipCelebration: 'townSquare' },
     terminal: { fontSize: 14, windowBounds: {} },
     discovery: { exclusions: [] },

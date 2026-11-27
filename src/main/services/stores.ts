@@ -125,7 +125,6 @@ export const NotificationsSchema = z.object({
 })
 
 export const AppearanceSchema = z.object({
-  theme: z.enum(['dark', 'light', 'system']),
   compactView: z.boolean(),
   shipMomentStyle: z.enum(['full', 'compact', 'off']),
   // A missing palette (configs from before #0040) silently takes the default; an unrecognised one
@@ -318,7 +317,6 @@ const defaultNotifications = () => ({
 })
 
 const defaultAppearance = () => ({
-  theme: 'dark' as const,
   compactView: false,
   shipMomentStyle: 'full' as const,
   palette: DEFAULT_OFFICE_PALETTE,

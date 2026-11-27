@@ -259,9 +259,7 @@ describe('toolbar CSS contract (globals.css)', () => {
     expect(realm).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
   })
 
-  it('light theme overrides the warning tone, and Retry uses it', () => {
-    const light = blockAt(css, css.indexOf('.theme-light .co-tb {'))
-    expect(light).toContain('--tb-warning')
+  it('Retry uses the warning tone', () => {
     const tone = blockAt(css, css.indexOf(".co-tb-btn[data-tone='warning']"))
     expect(tone).toContain('var(--tb-warning)')
     expect(tone).not.toContain('--co-status-waiting')

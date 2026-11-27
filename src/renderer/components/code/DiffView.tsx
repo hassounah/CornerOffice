@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import type { Extension } from '@codemirror/state'
-import { Compartment, EditorState } from '@codemirror/state'
+import { EditorState } from '@codemirror/state'
 import { EditorView, lineNumbers, drawSelection } from '@codemirror/view'
 import { foldGutter, bracketMatching } from '@codemirror/language'
 import { search, highlightSelectionMatches } from '@codemirror/search'
@@ -12,7 +12,6 @@ import { diffKeymap } from './cm/keymap'
 import { reviewSafetyExtensions } from './cm/review-safety'
 import { loadLanguageForFile } from './cm/languages'
 import { eolOnlyChange } from '../../utils/text-utils'
-import { useIsThemeLight } from '../../hooks/useIsThemeLight'
 import { ExplorerNotice } from './ExplorerNotice'
 import {
   binaryFileChangedNotice,
@@ -152,15 +151,7 @@ function InlineDiff({
   skin: 'office' | 'realm'
   onQuickOpen: () => void
 }): React.ReactElement {
-  // Fix #148: see SourceView.tsx's identical comment — memoized so its
-  // reference only changes when it actually needs to, reusing
-  // @uiw/react-codemirror's existing reconfigure-without-remount machinery
-  // for the `theme` prop.
-  const isThemeLight = useIsThemeLight()
-  const theme = useMemo(
-    () => (skin === 'realm' ? realmTheme(!isThemeLight) : officeTheme(!isThemeLight)),
-    [skin, isThemeLight],
-  )
+  const theme = skin === 'realm' ? realmTheme : officeTheme
 
   const extensions = useMemo<Extension[]>(() => {
     const base: Extension[] = [
@@ -252,21 +243,12 @@ function SplitDiff({
   skin: 'office' | 'realm'
 }): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null)
-  const viewRef = useRef<MergeView | null>(null)
-  // One Compartment slot per mount, reused by BOTH panes' extension arrays
-  // below — a Compartment is just a slot identity, not tied to one
-  // EditorState, so the same instance can hold each pane's own theme
-  // independently and still be reconfigured on both with one dispatch call
-  // each (Fix #150).
-  const themeCompartmentRef = useRef<Compartment>(new Compartment())
-  const isThemeLight = useIsThemeLight()
 
   useEffect(() => {
     const parent = containerRef.current
     if (!parent) return
 
-    const themeCompartment = themeCompartmentRef.current
-    const theme = themeCompartment.of(skin === 'realm' ? realmTheme(!isThemeLight) : officeTheme(!isThemeLight))
+    const theme = skin === 'realm' ? realmTheme : officeTheme
     // Fix #135 item 1: each pane needs its OWN aria-label — the two panes
     // previously shared one `paneExtensions` array (and therefore the same
     // "<relPath> — changes" label on both), so a screen-reader user in
@@ -298,42 +280,11 @@ function SplitDiff({
       collapseUnchanged: { margin: 3, minSize: 4 },
       diffConfig: { scanLimit: 10_000, timeout: 1_000 },
     })
-    viewRef.current = view
 
-    return () => {
-      viewRef.current = null
-      view.destroy()
-    }
-    // Fix #150: `isThemeLight` deliberately NOT a dependency here anymore —
-    // see the effect below, which reconfigures the SAME view's theme
-    // Compartment in place instead of tearing this one down. Everything
-    // else keeps the original "remount on identity change" contract: the
-    // caller keys this component by relPath:fileReq, so a full teardown/
-    // rebuild on any of THESE changing is still the correct, simple
-    // behavior — only a real skin/file/comparison change should reset
-    // scroll to the top.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => view.destroy()
+    // The caller keys this component by relPath:fileReq, so a full teardown/
+    // rebuild on any of these changing is the correct, simple behavior.
   }, [relPath, originalText, currentText, languageExt, skin])
-
-  // Fix #150: reconfigures the theme Compartment on the EXISTING MergeView's
-  // two panes (`view.a`/`view.b`, both real EditorViews) via a normal
-  // dispatch — CodeMirror's own guarantee for a reconfigure transaction is
-  // that scroll position, selection and undo history all survive it, unlike
-  // the full destroy+rebuild the effect above does. `isThemeLight` toggling
-  // is a global, app-wide setting (Settings → Appearance, or the OS
-  // preference under "system") that can change at any moment while the user
-  // is scrolled through this exact diff — unlike relPath/skin/etc., it was
-  // never a reason to reset the view. Runs once (harmlessly) right after the
-  // effect above on initial mount too, re-applying the same theme it was
-  // just built with.
-  useEffect(() => {
-    const view = viewRef.current
-    if (!view) return
-    const theme = skin === 'realm' ? realmTheme(!isThemeLight) : officeTheme(!isThemeLight)
-    const themeCompartment = themeCompartmentRef.current
-    view.a.dispatch({ effects: themeCompartment.reconfigure(theme) })
-    view.b.dispatch({ effects: themeCompartment.reconfigure(theme) })
-  }, [isThemeLight, skin])
 
   return <div ref={containerRef} className="cm-co-mergeview h-full" />
 }
