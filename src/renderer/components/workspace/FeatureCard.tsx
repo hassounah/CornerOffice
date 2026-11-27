@@ -93,7 +93,7 @@ export function FeatureCard({ feature, onClick, onReview, workspaceSlug }: Featu
                   className={[
                     'h-1.5 w-1.5 rounded-full transition-colors',
                     g <= feature.gateProgress
-                      ? 'bg-emerald-400 shadow-[0_0_4px_rgba(52,211,153,0.3)]'
+                      ? 'bg-co-status-active shadow-[0_0_4px_color-mix(in_srgb,var(--co-status-active)_30%,transparent)]'
                       : 'bg-white/[0.08]',
                   ].join(' ')}
                 />

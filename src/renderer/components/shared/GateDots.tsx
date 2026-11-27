@@ -12,7 +12,7 @@ export function GateDots({ total = 3, passed, current }: GateDotsProps): React.R
       {Array.from({ length: total }, (_, i) => {
         let classes: string
         if (i < passed) {
-          classes = 'bg-emerald-400 shadow-[0_0_4px_rgba(52,211,153,0.4)]'
+          classes = 'bg-co-status-active shadow-[0_0_4px_color-mix(in_srgb,var(--co-status-active)_40%,transparent)]'
         } else if (i === current) {
           classes = 'bg-co-accent shadow-[0_0_4px_var(--co-accent-glow)]'
         } else {

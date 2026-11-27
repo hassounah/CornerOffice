@@ -99,6 +99,7 @@ function makeConfig(overrides: Partial<SettingsData> = {}): SettingsData {
       theme: 'dark',
       compactView: false,
       shipMomentStyle: 'full',
+      palette: 'eucalyptus',
     },
     ...overrides,
   }
@@ -145,6 +146,44 @@ describe('AppearanceSettings', () => {
     expect(mockSettingsStore.updateConfig).toHaveBeenCalledWith(
       expect.objectContaining({ realm: expect.objectContaining({ enabled: true }) }),
     )
+  })
+
+  it('renders the Colors select with the three palettes when realm is off', () => {
+    render(<AppearanceSettings />)
+    const select = screen.getByLabelText('Colors')
+    expect(select).toHaveValue('eucalyptus')
+    const labels = Array.from(select.querySelectorAll('option')).map((o) => o.textContent)
+    expect(labels).toEqual(['Ink & Eucalyptus', 'Slate & Signal', 'Moss & Dusk'])
+  })
+
+  it('hides the Colors select when the realm view is enabled', () => {
+    mockSettingsStore.config = makeConfig({ realm: { ...makeConfig().realm, enabled: true } })
+    render(<AppearanceSettings />)
+    expect(screen.queryByLabelText('Colors')).toBeNull()
+  })
+
+  it('the Colors select reflects the configured palette', () => {
+    const base = makeConfig()
+    mockSettingsStore.config = makeConfig({ appearance: { ...base.appearance, palette: 'moss' } })
+    render(<AppearanceSettings />)
+    expect(screen.getByLabelText('Colors')).toHaveValue('moss')
+  })
+
+  it('changing Colors calls updateConfig with the new palette and keeps the other appearance fields', () => {
+    render(<AppearanceSettings />)
+    fireEvent.change(screen.getByLabelText('Colors'), { target: { value: 'signal' } })
+    expect(mockSettingsStore.updateConfig).toHaveBeenCalledWith({
+      appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full', palette: 'signal' },
+    })
+  })
+
+  it('logs and does not throw when saving the palette fails', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    mockSettingsStore.updateConfig.mockRejectedValueOnce(new Error('boom'))
+    render(<AppearanceSettings />)
+    fireEvent.change(screen.getByLabelText('Colors'), { target: { value: 'moss' } })
+    await vi.waitFor(() => expect(err).toHaveBeenCalled())
+    err.mockRestore()
   })
 
   it('renders compact view toggle', () => {

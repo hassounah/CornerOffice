@@ -322,7 +322,28 @@ describe('config:update', () => {
 
   it('updates appearance settings', async () => {
     await getHandler('config:update')(fakeEvent, { appearance: { theme: 'light', compactView: false, shipMomentStyle: 'full' } })
-    expect(kit.settings.get().appearance).toEqual({ theme: 'light', compactView: false, shipMomentStyle: 'full' })
+    expect(kit.settings.get().appearance).toEqual({ theme: 'light', compactView: false, shipMomentStyle: 'full', palette: 'eucalyptus' })
+  })
+
+  it('keeps the stored palette when an appearance update has no palette', async () => {
+    await getHandler('config:update')(fakeEvent, { appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full', palette: 'signal' } })
+    await getHandler('config:update')(fakeEvent, { appearance: { theme: 'light', compactView: true, shipMomentStyle: 'off' } })
+    expect(kit.settings.get().appearance).toEqual({ theme: 'light', compactView: true, shipMomentStyle: 'off', palette: 'signal' })
+  })
+
+  it('keeps the stored palette when an appearance update sends an explicit undefined palette', async () => {
+    await getHandler('config:update')(fakeEvent, { appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full', palette: 'moss' } })
+    await getHandler('config:update')(fakeEvent, { appearance: { theme: 'dark', compactView: true, shipMomentStyle: 'full', palette: undefined } })
+    expect(kit.settings.get().appearance.palette).toBe('moss')
+  })
+
+  it('persists a palette update and rejects an unknown palette', async () => {
+    const ok = await getHandler('config:update')(fakeEvent, { appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full', palette: 'moss' } }) as IpcResponse<unknown>
+    expect(ok.error).toBeNull()
+    expect(kit.settings.get().appearance.palette).toBe('moss')
+    const bad = await getHandler('config:update')(fakeEvent, { appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full', palette: 'violet' } }) as IpcResponse<unknown>
+    expect(bad.error).not.toBeNull()
+    expect(kit.settings.get().appearance.palette).toBe('moss')
   })
 
   it('merges codeExplorer.treeWidth', async () => {

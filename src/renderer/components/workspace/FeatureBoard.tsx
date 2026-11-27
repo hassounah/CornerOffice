@@ -83,7 +83,7 @@ export function FeatureBoard({ features, ideationItems, workspaceSlug, onReview 
     {
       id: 'done',
       label: 'Done',
-      accent: 'bg-emerald-400/60',
+      accent: 'bg-co-status-active/60',
       items: doneFeatures.map((f) => (
         <FeatureCard key={f.slug} feature={f} onClick={workspaceSlug ? handleFeatureClick : undefined} />
       )),

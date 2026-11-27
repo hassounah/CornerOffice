@@ -37,7 +37,7 @@ export function NotificationFeed({ items, onDismiss }: NotificationFeedProps): R
             className={[
               'px-3 py-1 rounded-full text-xs font-medium transition-colors',
               filter === f.value
-                ? 'bg-co-accent text-white'
+                ? 'bg-co-accent text-co-on-accent'
                 : 'bg-co-bg-tertiary text-co-text-secondary hover:text-co-text-primary',
             ].join(' ')}
           >

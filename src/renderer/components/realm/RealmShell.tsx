@@ -375,7 +375,7 @@ export function RealmShell(): React.ReactElement {
 
   return (
     <div
-      className="relative flex flex-col h-full w-full overflow-hidden"
+      className="co-realm-scope relative flex flex-col h-full w-full overflow-hidden"
       style={{ background: '#1a1209' }}
       role="main"
       aria-label="CornerRealm — Kingdom View"

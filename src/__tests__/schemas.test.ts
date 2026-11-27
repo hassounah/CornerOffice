@@ -42,6 +42,20 @@ describe('ConfigUpdateSchema', () => {
     expect(result.success).toBe(true)
   })
 
+  it.each(['eucalyptus', 'signal', 'moss'])('accepts the %s palette', (palette) => {
+    const result = ConfigUpdateSchema.safeParse({
+      appearance: { theme: 'dark', compactView: true, shipMomentStyle: 'compact', palette },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects an unknown palette', () => {
+    const result = ConfigUpdateSchema.safeParse({
+      appearance: { theme: 'dark', compactView: true, shipMomentStyle: 'compact', palette: 'violet' },
+    })
+    expect(result.success).toBe(false)
+  })
+
   it('accepts notification config', () => {
     const result = ConfigUpdateSchema.safeParse({
       notifications: {

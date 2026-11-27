@@ -754,7 +754,14 @@ export function buildRealHandlers(
           const next: Settings = { ...current }
           if (input.companyName !== undefined) next.companyName = input.companyName
           if (input.legacyNoticeDismissed !== undefined) next.legacyNoticeDismissed = input.legacyNoticeDismissed
-          if (input.appearance !== undefined) next.appearance = input.appearance
+          if (input.appearance !== undefined) {
+            // Merge so an update without a palette (or with an explicit undefined one) keeps the stored palette.
+            next.appearance = {
+              ...current.appearance,
+              ...input.appearance,
+              palette: input.appearance.palette ?? current.appearance.palette,
+            }
+          }
           if (input.notifications !== undefined) next.notifications = input.notifications
           // Merge over the current realm so the building assignments (`mapping`) are never touched from here.
           if (input.realm !== undefined) next.realm = { ...current.realm, ...input.realm }

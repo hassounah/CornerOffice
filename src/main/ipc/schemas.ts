@@ -5,6 +5,7 @@ import { hasGitSegment } from '../services/repo-path'
 import { AllowlistEntrySchema } from '../services/sandbox-allowlist'
 import { SANDBOX_SLUG_RE } from '../services/sandbox-spec'
 import { AbsPath, REALM_LOCATIONS, WorkspaceIdSchema } from '../services/stores'
+import { OFFICE_PALETTE_IDS } from '../types/appearance'
 import { DiscoveryExclusionSchema, WORKSPACE_NAME_RE, hasNameUnsafeChar, terminalSlug } from '../types/slugs'
 
 // ---------------------------------------------------------------------------
@@ -98,6 +99,7 @@ const AppearanceConfigUpdateSchema = z.object({
   theme: z.enum(['dark', 'light', 'system']),
   compactView: z.boolean(),
   shipMomentStyle: z.enum(['full', 'compact', 'off']),
+  palette: z.enum(OFFICE_PALETTE_IDS).optional(),
 })
 
 // No `mapping` (#0039 step 4.6): building assignments go through `realm:setAssignment`, which validates the id against

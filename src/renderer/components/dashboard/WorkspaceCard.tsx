@@ -107,7 +107,7 @@ export function WorkspaceCard({ workspace: ws }: WorkspaceCardProps): React.Reac
       <div className="flex items-center justify-between text-[11px] text-co-text-muted mt-auto pt-3 border-t border-white/[0.04]">
         <RelativeTime timestamp={ws.lastActivityTimestamp} />
         {ws.weekShipCount > 0 && (
-          <span className="text-emerald-400 font-medium">{ws.weekShipCount} shipped this week</span>
+          <span className="text-co-status-active font-medium">{ws.weekShipCount} shipped this week</span>
         )}
       </div>
     </button>

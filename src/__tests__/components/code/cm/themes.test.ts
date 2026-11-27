@@ -1,35 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import fs from 'fs'
-import path from 'path'
 import { EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { officeTheme, realmTheme } from '../../../../renderer/components/code/cm/themes'
+import { contrastRatio, extractBlock, extractVar, readGlobalsCss } from '../../../helpers/contrast'
 
-// ---------------------------------------------------------------------------
-// WCAG 2.x relative-luminance contrast ratio (the standard formula; verified
-// below against the black-on-white reference of exactly 21:1).
-// ---------------------------------------------------------------------------
-
-function srgbToLinear(c: number): number {
-  const s = c / 255
-  return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4)
-}
-
-function luminance(hex: string): number {
-  const h = hex.replace('#', '')
-  const r = parseInt(h.slice(0, 2), 16)
-  const g = parseInt(h.slice(2, 4), 16)
-  const b = parseInt(h.slice(4, 6), 16)
-  return 0.2126 * srgbToLinear(r) + 0.7152 * srgbToLinear(g) + 0.0722 * srgbToLinear(b)
-}
-
-function contrastRatio(hexA: string, hexB: string): number {
-  const lA = luminance(hexA)
-  const lB = luminance(hexB)
-  const lighter = Math.max(lA, lB)
-  const darker = Math.min(lA, lB)
-  return (lighter + 0.05) / (darker + 0.05)
-}
+// The WCAG contrast helpers live in helpers/contrast.ts; the black-on-white
+// reference of exactly 21:1 below verifies the formula.
 
 const WCAG_AA = 4.5
 
@@ -59,25 +35,6 @@ const CODE_TOKEN_VARS = [
   'co-code-function',
   'co-code-variable',
 ] as const
-
-function extractBlock(css: string, selector: string): string {
-  const start = css.indexOf(`${selector} {`)
-  if (start === -1) throw new Error(`selector not found in globals.css: ${selector}`)
-  const end = css.indexOf('}', start)
-  return css.slice(start, end)
-}
-
-function extractVar(block: string, name: string): string {
-  const match = new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})`).exec(block)
-  if (!match) throw new Error(`--${name} not found (or not a plain hex color) in this block`)
-  return match[1]
-}
-
-const CSS_PATH = path.join(__dirname, '..', '..', '..', '..', 'renderer', 'styles', 'globals.css')
-
-function readGlobalsCss(): string {
-  return fs.readFileSync(CSS_PATH, 'utf-8')
-}
 
 function readThemeVars(
   tokenVars: readonly string[],
@@ -251,8 +208,8 @@ describe('invisible/bidi character marker — WCAG AA 4.5:1 in both themes (Fix 
 // colorblind viewers). `--co-invisible-marker-border` is checked here
 // against all FOUR possible editor canvases at once (office dark/light,
 // realm dark/light) — deliberately NOT reusing --co-invisible-marker-fg
-// itself, which happens to equal --co-code-bg's own dark value exactly and
-// would be invisible in office dark mode.
+// itself, which is near-identical to the office dark canvas (#0a0c14 vs the
+// palette's #0a1012 recessed bg0) and would be effectively invisible there.
 // ---------------------------------------------------------------------------
 
 const WCAG_UI_COMPONENT = 3
@@ -278,7 +235,7 @@ describe('invisible/bidi character marker — border reaches 3:1 against all fou
     expect(contrastRatio(canvasBg, markerDark['co-invisible-marker-border'])).toBeGreaterThanOrEqual(WCAG_UI_COMPONENT)
   })
 
-  it('is NOT --co-invisible-marker-fg — that value happens to equal --co-code-bg\'s own dark value and would be invisible there', () => {
+  it('is NOT --co-invisible-marker-fg — that near-black value would be invisible against the dark office canvas', () => {
     expect(markerDark['co-invisible-marker-border']).not.toBe(officeBgs.darkBg)
   })
 })

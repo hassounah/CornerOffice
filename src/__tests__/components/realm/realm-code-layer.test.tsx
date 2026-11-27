@@ -114,7 +114,7 @@ function makeRealmConfig(): Settings {
       idleThresholdMinutes: 5,
       quietHours: { enabled: false, start: '22:00', end: '08:00' },
     },
-    appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full' },
+    appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full', palette: 'eucalyptus' },
     realm: { enabled: true, mapping: [{ location: 'castle', workspaceSlug: 'ws' }], shipCelebration: 'townSquare' },
     terminal: { fontSize: 14, windowBounds: {} },
   }
@@ -162,6 +162,13 @@ describe('RealmShell — code explorer layer (TRD §3.8.2, step 3.1)', () => {
     // mapContainer precedes layer in document order — i.e. the layer comes
     // strictly AFTER the map container, never nested inside it.
     expect(layer.compareDocumentPosition(mapContainer) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+  })
+
+  it('the RealmShell root carries co-realm-scope so realm keeps its own colors under any office palette', async () => {
+    await act(async () => {
+      render(<RealmShell />)
+    })
+    expect(screen.getByRole('main', { name: /Kingdom View/i })).toHaveClass('co-realm-scope')
   })
 
   it('the layer carries the co-realm-code-explorer class (drag region — jsdom can\'t check the OS behavior itself, 4.5 does)', async () => {

@@ -237,7 +237,7 @@ export function ChatPanel({ workspaceSlug, className = '' }: ChatPanelProps): Re
             <div className="flex items-center gap-2 min-h-[1.25rem]">
               <ConnectionDot state={activeSession.connectionState} />
               <span className={`text-xs font-medium ${
-                isConnected ? 'text-emerald-400' :
+                isConnected ? 'text-co-status-active' :
                 isReconnecting ? 'text-amber-400' :
                 activeSession.connectionState === 'connecting' ? 'text-amber-400' :
                 'text-stone-500'

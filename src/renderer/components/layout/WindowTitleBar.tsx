@@ -111,10 +111,10 @@ export function WindowTitleBar(): React.ReactElement {
       {/* Title with logo — centered absolutely across the full width */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none gap-1.5">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <rect x="3" y="3" width="10" height="10" rx="2" stroke="#34d399" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          <rect x="16" y="3" width="5" height="5" rx="1.5" stroke="#34d399" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          <rect x="16" y="11" width="5" height="10" rx="1.5" stroke="#34d399" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          <rect x="3" y="16" width="10" height="5" rx="1.5" stroke="#34d399" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          <rect x="3" y="3" width="10" height="10" rx="2" stroke="var(--co-status-active)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          <rect x="16" y="3" width="5" height="5" rx="1.5" stroke="var(--co-status-active)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          <rect x="16" y="11" width="5" height="10" rx="1.5" stroke="var(--co-status-active)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          <rect x="3" y="16" width="10" height="5" rx="1.5" stroke="var(--co-status-active)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
         <span className="text-[12px] font-medium tracking-wide text-co-text-muted/60">
           Corner Office

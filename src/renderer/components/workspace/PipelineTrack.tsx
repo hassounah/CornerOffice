@@ -122,7 +122,7 @@ export function PipelineTrack({ pipeline, onReview, workspaceSlug }: PipelineTra
                     className={[
                       'w-3 h-3 rounded-full transition-all duration-300',
                       passed
-                        ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.4)]'
+                        ? 'bg-co-status-active shadow-[0_0_8px_color-mix(in_srgb,var(--co-status-active)_40%,transparent)]'
                         : active
                           ? 'bg-co-accent motion-safe:co-animate-node'
                           : 'bg-white/[0.08] border border-white/[0.1]',
@@ -132,7 +132,7 @@ export function PipelineTrack({ pipeline, onReview, workspaceSlug }: PipelineTra
                     className={[
                       'text-[10px] font-semibold uppercase tracking-wider',
                       passed
-                        ? 'text-emerald-400'
+                        ? 'text-co-status-active'
                         : active
                           ? 'text-co-accent'
                           : 'text-co-text-muted/50',
@@ -149,7 +149,7 @@ export function PipelineTrack({ pipeline, onReview, workspaceSlug }: PipelineTra
                       className={[
                         'h-px w-full transition-colors duration-300',
                         gatesPassed > idx
-                          ? 'bg-emerald-400/40'
+                          ? 'bg-co-status-active/40'
                           : 'bg-white/[0.06]',
                       ].join(' ')}
                     />

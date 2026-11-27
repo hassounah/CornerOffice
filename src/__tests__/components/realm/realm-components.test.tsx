@@ -300,7 +300,7 @@ function makeConfig(overrides: Partial<Settings> = {}): Settings {
       idleThresholdMinutes: 5,
       quietHours: { enabled: false, start: '22:00', end: '08:00' },
     },
-    appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full' },
+    appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full', palette: 'eucalyptus' },
     realm: { enabled: false, mapping: [], shipCelebration: 'townSquare' as const },
     terminal: { fontSize: 14, windowBounds: {} },
     ...overrides,
