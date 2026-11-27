@@ -4,8 +4,8 @@
 
 /* Design token indirection:
    @theme registers TW utility names (bg-co-bg-primary, text-co-text-muted, etc.)
-   that resolve through :root / .theme-light CSS custom properties defined below.
-   This enables runtime theme switching without JS — just swap the CSS class. */
+   that resolve through the :root (and :root[data-palette=…]) CSS custom properties
+   defined below, so a palette switch re-themes everything without JS. */
 @theme {
   --font-display: 'Outfit', system-ui, sans-serif;
   --font-sans: 'Outfit', system-ui, -apple-system, sans-serif;
@@ -105,25 +105,18 @@
      dedicated pair, deliberately NOT --co-status-attention/--co-bg-primary:
      those two track the app's own status-badge accent and background, which
      is the wrong thing for a fixed, always-conspicuous security marker to
-     depend on (Fix #149 — the light-mode override of --co-bg-primary alone
-     flipped this marker's text to near-white on a red background, ~2.56:1,
-     well under AA, when nothing about --co-status-attention itself was
-     wrong). Checked at 4.5:1 in both themes; see themes.test.ts. Same fixed
-     values in both — the marker's whole job is to look the same regardless
-     of skin or appearance setting. */
+     depend on (Fix #149). Checked at 4.5:1; see themes.test.ts. Fixed
+     values — the marker's whole job is to look the same regardless of skin
+     or palette. */
   --co-invisible-marker-bg: #f87171;
   --co-invisible-marker-fg: #0a0c14;   /* 7.06:1 */
-  /* Fix #151: the chip has no border, so its ONLY boundary against the
-     surrounding editor canvas was the fill color itself — fine against both
-     dark canvases (~6.8-7.1:1) but only ~2.3-2.56:1 against the two LIGHT
-     canvases (--co-code-bg/--co-realm-bg light overrides), under WCAG
-     1.4.11's 3:1 floor for a UI component's boundary, and a real concern for
-     red-green colorblind viewers who get little of the hue-difference cue
-     everyone else does. A neutral mid-gray outline (not --co-invisible-
-     marker-fg itself, which is near-black like the office dark canvases
-     (--co-code-bg is each palette's recessed bg0) and would be effectively
-     invisible in office dark mode) clears 3:1 against all four editor
-     canvases at once; see themes.test.ts. */
+  /* Fix #151: the chip has no border, so its only boundary against the
+     surrounding editor canvas would be the fill color itself, which gives
+     little hue-difference cue to red-green colorblind viewers. A neutral
+     mid-gray outline (not --co-invisible-marker-fg itself, which is
+     near-black like the editor canvases and would be effectively invisible)
+     clears WCAG 1.4.11's 3:1 against the editor canvases; see
+     themes.test.ts. */
   --co-invisible-marker-border: #757575;
 
   /* Code Explorer editor (officeTheme, cm/themes.ts) — every token is
@@ -146,11 +139,9 @@
   --co-code-variable: #e8eaf4;       /* 16.28:1 */
 
   /* Realm code explorer — chrome (RealmCodeExplorer.tsx) and editor
-     (realmTheme, cm/themes.ts) — TRD §3.8.2 "Chrome", #0028 user decision
-     2026-09-28 ("keep the theme flexible, dont force dark or light").
-     Dark values here are the original fixed warm-dark palette (step 2.15);
-     every token is checked at WCAG AA 4.5:1 against --co-realm-bg, in both
-     this block and .theme-light's override below — see themes.test.ts. No
+     (realmTheme, cm/themes.ts) — TRD §3.8.2 "Chrome". The fixed warm-dark
+     palette (step 2.15); every token is checked at WCAG AA 4.5:1 against
+     --co-realm-bg — see themes.test.ts. No
      --co-realm-variable: realm has never had a distinct "variable" token,
      reusing --co-realm-fg for that role and for operators/punctuation,
      same as officeTheme's own --co-code-variable happens to equal fg. */
@@ -280,78 +271,6 @@
   --color-co-accent-violet: var(--co-accent);
   --color-co-accent-violet-dim: var(--co-accent-dim);
   --color-co-on-accent: var(--co-on-accent);
-}
-
-/* ============================================================
-   Light Theme Overrides
-   ============================================================ */
-/* Not applied in the shipped app (useTheme is unmounted). Office palettes (#0040) are dark-only; this block is not palette-aware.
-   If light mode is revived: :root[data-palette=…] has specificity (0,2,0) and beats .theme-light (0,1,0), so signal and moss would partially override it. */
-.theme-light {
-  --co-bg-primary: #f5f6fa;
-  --co-bg-secondary: #ffffff;
-  --co-bg-tertiary: #eef0f6;
-  --co-bg-elevated: #ffffff;
-  --co-text-primary: #13152a;
-  --co-text-secondary: #5a5f73;
-  --co-text-muted: #7c819a;        /* WCAG AA 4.62:1 on #f5f6fa */
-  --co-border: #e4e6ef;
-  --co-border-glow: #d0d3e0;
-  --co-accent: #6d4cf0;
-  --co-accent-dim: #8b6ff5;
-  --co-accent-glow: rgba(109, 76, 240, 0.08);
-  --co-accent-teal: #0d9488;
-  --co-accent-teal-glow: rgba(13, 148, 136, 0.06);
-  --co-glass-bg: rgba(255, 255, 255, 0.7);
-  --co-glass-border: rgba(0, 0, 0, 0.06);
-  --co-glass-shine: rgba(255, 255, 255, 0.5);
-  --co-sidebar-bg: rgba(245, 246, 250, 0.9);
-
-  /* Invisible/bidi character marker — same fixed values as :root (Fix
-     #149): the marker's own job is to look identical regardless of theme,
-     so it's defined explicitly here too rather than left to inherit,
-     matching this file's own per-theme-block convention and letting
-     themes.test.ts check both blocks independently. */
-  --co-invisible-marker-bg: #f87171;
-  --co-invisible-marker-fg: #0a0c14;   /* 7.06:1 */
-  --co-invisible-marker-border: #757575;   /* Fix #151: 3:1+ vs all 4 editor canvases */
-
-  /* Code Explorer editor — light overrides, each re-checked at 4.5:1
-     against --co-code-bg; see themes.test.ts. */
-  --co-code-bg: #f5f6fa;
-  --co-code-fg: #13152a;             /* 16.64:1 */
-  --co-code-caret: #6d4cf0;
-  --co-code-selection: rgba(109, 76, 240, 0.15);
-  --co-code-active-line: rgba(0, 0, 0, 0.035);
-  --co-code-gutter-bg: #f5f6fa;
-  --co-code-gutter-fg: #5c6178;      /* 5.66:1 */
-  --co-code-comment: #5f6580;        /* 5.31:1 */
-  --co-code-keyword: #5347c9;        /* 6.25:1 */
-  --co-code-string: #3f7d33;         /* 4.64:1 */
-  --co-code-number: #a15b12;         /* 4.84:1 */
-  --co-code-type: #127a6b;           /* 4.83:1 */
-  --co-code-function: #8a6b0f;       /* 4.64:1 */
-  --co-code-variable: #13152a;       /* 16.64:1 */
-
-  /* Realm code explorer — light "parchment" palette (#0028 user decision
-     2026-09-28), each re-checked at 4.5:1 against --co-realm-bg; see
-     themes.test.ts. Warm cream background, dark-brown ink text, a deeper
-     gold accent for keyword — same hue family as the dark palette, darkened
-     enough to clear AA on a light background. */
-  --co-realm-bg: #f2e8d0;
-  --co-realm-fg: #3b2a18;             /* 11.26:1 */
-  --co-realm-caret: #3b2a18;
-  --co-realm-selection: rgba(107, 74, 0, 0.15);
-  --co-realm-active-line: rgba(0, 0, 0, 0.035);
-  --co-realm-gutter-bg: #f2e8d0;
-  --co-realm-gutter-fg: #6b4f1f;      /* 6.23:1 */
-  --co-realm-comment: #6b4f1f;        /* 6.23:1 */
-  --co-realm-keyword: #6b4a00;        /* 6.61:1 */
-  --co-realm-string: #3f6b28;         /* 5.15:1 */
-  --co-realm-number: #8a4a12;         /* 5.61:1 */
-  --co-realm-type: #256b5a;           /* 5.17:1 */
-  --co-realm-function: #7c5f22;       /* 4.90:1 */
-  --co-realm-border: rgba(107, 74, 0, 0.35);
 }
 
 /* ============================================================
@@ -858,11 +777,6 @@
     --tb-tint: color-mix(in srgb, var(--co-accent) 15%, transparent);
     --tb-ring: var(--co-accent);
     --tb-warning: var(--co-status-waiting);
-  }
-
-  /* The amber warning is ~1.5:1 on the light surfaces; a dark amber reads at ~5:1. */
-  .theme-light .co-tb {
-    --tb-warning: #8a5a00;
   }
 
   .co-tb[data-skin='realm'] {

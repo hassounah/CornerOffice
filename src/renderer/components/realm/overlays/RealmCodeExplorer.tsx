@@ -16,21 +16,14 @@ import { CodeExplorer } from '../../code/CodeExplorer'
 // security/degraded copy (GitStateBanner, notice-copy.ts, FileHeader, etc.)
 // stays untouched by design ("clarity beats immersion there").
 //
-// #0028 user decision (2026-09-28): this chrome used to read REALM_COLORS,
-// a fixed warm-dark JS palette (cm/themes.ts, step 2.15) — the user asked
-// for the Realm code explorer to follow the app's own light/dark toggle
-// instead of forcing dark. It now reads the same `--co-realm-*` CSS custom
-// properties realmTheme's editor reads (globals.css: dark values in :root,
-// a light "parchment" override in .theme-light) — no JS theme detection or
-// remount here, exactly like officeTheme/CodeExplorer's own tokens.
+// This chrome reads the same `--co-realm-*` CSS custom properties
+// realmTheme's editor reads (globals.css), exactly like
+// officeTheme/CodeExplorer's own tokens.
 // ---------------------------------------------------------------------------
 
-// `--co-realm-keyword` at 30%/35% opacity (dark/light respectively) — matches
-// the border weight every other Realm overlay's own dialog frame already
-// uses (TowerView/SettingsChamber/RealmDocViewer's GOLD_DIM); its own CSS
-// variable rather than a color-mix() of --co-realm-keyword, since the two
-// themes' opacity differs (light needs a stronger tint to stay visible
-// against a light background).
+// `--co-realm-keyword` at 30% opacity — matches the border weight every
+// other Realm overlay's own dialog frame already uses
+// (TowerView/SettingsChamber/RealmDocViewer's GOLD_DIM).
 const FRAME_BORDER = 'var(--co-realm-border)'
 
 export function RealmCodeExplorer(): React.ReactElement {

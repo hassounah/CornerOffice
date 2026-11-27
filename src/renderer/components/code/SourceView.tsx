@@ -12,7 +12,6 @@ import { sourceKeymap } from './cm/keymap'
 import { reviewSafetyExtensions } from './cm/review-safety'
 import { loadLanguageForFile } from './cm/languages'
 import { minimalChange } from '../../utils/text-utils'
-import { useIsThemeLight } from '../../hooks/useIsThemeLight'
 
 // ---------------------------------------------------------------------------
 // SourceView — the CodeMirror integration (TRD §3.6.5, §3.6.6). Uncontrolled:
@@ -42,9 +41,6 @@ import { useIsThemeLight } from '../../hooks/useIsThemeLight'
 // so this file doesn't build redundant Compartments for those three — only
 // the async-loaded language extension needs this component's own state,
 // since it lives inside the `extensions` array rather than a top-level prop.
-// Fix #148 reuses this SAME mechanism for CodeMirror's internal dark/light
-// flag (`theme`'s memo below re-derives officeTheme/realmTheme whenever
-// `useIsThemeLight()` changes), rather than adding a second Compartment.
 // ---------------------------------------------------------------------------
 
 export interface SourceViewControls {
@@ -108,16 +104,7 @@ export function SourceView({
 }: SourceViewProps): React.ReactElement {
   const baselineRef = useRef<Text | null>(null)
   const [languageExt, setLanguageExt] = useState<Extension | null>(null)
-  // Fix #148: officeTheme/realmTheme are now functions of CodeMirror's OWN
-  // internal dark/light flag (distinct from the `--co-*` CSS variables they
-  // also use, which need no JS at all) — memoized so its reference only
-  // changes when it actually needs to, letting the `theme` prop below reuse
-  // @uiw/react-codemirror's existing reconfigure-without-remount machinery.
-  const isThemeLight = useIsThemeLight()
-  const theme = useMemo(
-    () => (skin === 'realm' ? realmTheme(!isThemeLight) : officeTheme(!isThemeLight)),
-    [skin, isThemeLight],
-  )
+  const theme = skin === 'realm' ? realmTheme : officeTheme
   // Fix #140: `content` must be captured ONCE per mount, exactly as this
   // file's own header comment already claimed — `useState(content)`'s
   // initial-value argument is only ever used on the first render, so this

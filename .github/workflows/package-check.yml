@@ -1,13 +1,23 @@
 name: Package check
 
-# Temporary (#0032): remove after merge (P2).
-# Proves the Electron 44 + node-pty bundle packages on both architectures and
-# that the unpacked pty.node matches the target architecture. Builds a .deb
-# only: no upload, no release.
+# Packages the app on both architectures for PRs that change dependencies or
+# the build setup, so a packaging break shows up before release (package.yml
+# only runs when a release tag is cut). Also checks that the unpacked
+# pty.node matches the target architecture. Builds a .deb only: no upload,
+# no release.
 
 on:
   pull_request:
     branches: [main]
+    paths:
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .nvmrc
+      - electron-builder.yml
+      - electron.vite.config.ts
+      - Makefile
+      - .github/workflows/package-check.yml
   workflow_dispatch:
 
 permissions:
@@ -16,13 +26,14 @@ permissions:
 jobs:
   package:
     name: Package (${{ matrix.arch }})
-    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'feat/0032-major-deps-upgrade'
     runs-on: ${{ matrix.runner }}
+    # Runners are pinned like package.yml: node-pty is compiled here and links
+    # against the runner's glibc, so this builds on the runners a release uses.
     strategy:
       matrix:
         include:
           - arch: x64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             elf: x86-64
           - arch: arm64
             runner: ubuntu-24.04-arm

@@ -122,9 +122,17 @@ describe('defaults', () => {
 
   it('an appearance without a palette parses to eucalyptus without a warning', () => {
     vi.mocked(log.warn).mockClear()
-    const parsed = SettingsSchema.parse({ version: 1, appearance: { theme: 'light', compactView: true, shipMomentStyle: 'off' } })
-    expect(parsed.appearance).toEqual({ theme: 'light', compactView: true, shipMomentStyle: 'off', palette: 'eucalyptus' })
+    const parsed = SettingsSchema.parse({ version: 1, appearance: { compactView: true, shipMomentStyle: 'off' } })
+    expect(parsed.appearance).toEqual({ compactView: true, shipMomentStyle: 'off', palette: 'eucalyptus' })
     expect(log.warn).not.toHaveBeenCalled()
+  })
+
+  it('a legacy appearance.theme key still parses and is dropped', () => {
+    const parsed = SettingsSchema.parse({
+      version: 1,
+      appearance: { theme: 'light', compactView: false, shipMomentStyle: 'full', palette: 'moss' },
+    })
+    expect(parsed.appearance).toEqual({ compactView: false, shipMomentStyle: 'full', palette: 'moss' })
   })
 
   it('settings reject a wrong version and an invalid exclusion', () => {
@@ -440,10 +448,10 @@ describe('store instances on the real filesystem', () => {
     fs.mkdirSync(cfg, { recursive: true })
     fs.writeFileSync(
       path.join(cfg, 'settings.json'),
-      JSON.stringify({ version: 1, companyName: 'Acme', appearance: { theme: 'light', compactView: true, shipMomentStyle: 'off', palette: 'violet' } }),
+      JSON.stringify({ version: 1, companyName: 'Acme', appearance: { compactView: true, shipMomentStyle: 'off', palette: 'violet' } }),
     )
     vi.mocked(log.warn).mockClear()
-    expect(settingsStore.get().appearance).toEqual({ theme: 'light', compactView: true, shipMomentStyle: 'off', palette: 'eucalyptus' })
+    expect(settingsStore.get().appearance).toEqual({ compactView: true, shipMomentStyle: 'off', palette: 'eucalyptus' })
     expect(vi.mocked(log.warn).mock.calls.map((c) => String(c[0]))).toContainEqual(expect.stringContaining('unrecognised appearance.palette'))
     expect(vi.mocked(log.warn).mock.calls.flat().join(' ')).not.toContain('violet')
     expect(settingsStore.get().companyName).toBe('Acme')

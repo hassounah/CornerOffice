@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { officeTheme, realmTheme } from '../../../../renderer/components/code/cm/themes'
@@ -20,8 +20,9 @@ describe('contrastRatio', () => {
 })
 
 // ---------------------------------------------------------------------------
-// officeTheme — reads the actual deployed values from globals.css, so this
-// can never silently drift from what the app really ships.
+// officeTheme — reads the actual deployed :root values from globals.css, so
+// this can never silently drift from what the app really ships. The other
+// palettes' overrides are checked in office-palettes.test.ts.
 // ---------------------------------------------------------------------------
 
 const CODE_TOKEN_VARS = [
@@ -36,46 +37,26 @@ const CODE_TOKEN_VARS = [
   'co-code-variable',
 ] as const
 
-function readThemeVars(
-  tokenVars: readonly string[],
-  bgVar: string,
-): { dark: Record<string, string>; light: Record<string, string>; darkBg: string; lightBg: string } {
-  const css = readGlobalsCss()
-  const rootBlock = extractBlock(css, ':root')
-  const lightBlock = extractBlock(css, '.theme-light')
-
-  const dark: Record<string, string> = {}
-  const light: Record<string, string> = {}
+function readRootVars(tokenVars: readonly string[], bgVar: string): { vars: Record<string, string>; bg: string } {
+  const rootBlock = extractBlock(readGlobalsCss(), ':root')
+  const vars: Record<string, string> = {}
   for (const name of tokenVars) {
-    dark[name] = extractVar(rootBlock, name)
-    light[name] = extractVar(lightBlock, name)
+    vars[name] = extractVar(rootBlock, name)
   }
-  return {
-    dark,
-    light,
-    darkBg: extractVar(rootBlock, bgVar),
-    lightBg: extractVar(lightBlock, bgVar),
-  }
+  return { vars, bg: extractVar(rootBlock, bgVar) }
 }
 
 describe('officeTheme — WCAG AA 4.5:1 for every token', () => {
-  const { dark, light, darkBg, lightBg } = readThemeVars(CODE_TOKEN_VARS, 'co-code-bg')
+  const { vars, bg } = readRootVars(CODE_TOKEN_VARS, 'co-code-bg')
 
-  it.each(CODE_TOKEN_VARS)('%s reaches 4.5:1 against the dark background', (name) => {
-    expect(contrastRatio(darkBg, dark[name])).toBeGreaterThanOrEqual(WCAG_AA)
-  })
-
-  it.each(CODE_TOKEN_VARS)('%s reaches 4.5:1 against the light background', (name) => {
-    expect(contrastRatio(lightBg, light[name])).toBeGreaterThanOrEqual(WCAG_AA)
+  it.each(CODE_TOKEN_VARS)('%s reaches 4.5:1 against the background', (name) => {
+    expect(contrastRatio(bg, vars[name])).toBeGreaterThanOrEqual(WCAG_AA)
   })
 })
 
 // ---------------------------------------------------------------------------
-// realmTheme — #0028 user decision (2026-09-28): Realm's code explorer now
-// toggles between a dark palette (:root, the original fixed warm-dark
-// values, TRD §3.6.5) and a light "parchment" palette (.theme-light), read
-// from globals.css exactly like officeTheme above — so this can never
-// silently drift from what the app really ships, in either theme.
+// realmTheme — the fixed warm-dark palette (TRD §3.6.5), read from
+// globals.css exactly like officeTheme above.
 // ---------------------------------------------------------------------------
 
 const REALM_TOKEN_VARS = [
@@ -89,153 +70,72 @@ const REALM_TOKEN_VARS = [
   'co-realm-function',
 ] as const
 
-describe('realmTheme — WCAG AA 4.5:1 for every token, both palettes', () => {
-  const { dark, light, darkBg, lightBg } = readThemeVars(REALM_TOKEN_VARS, 'co-realm-bg')
+describe('realmTheme — WCAG AA 4.5:1 for every token', () => {
+  const { vars, bg } = readRootVars(REALM_TOKEN_VARS, 'co-realm-bg')
 
-  it.each(REALM_TOKEN_VARS)('%s reaches 4.5:1 against the dark background', (name) => {
-    expect(contrastRatio(darkBg, dark[name])).toBeGreaterThanOrEqual(WCAG_AA)
+  it.each(REALM_TOKEN_VARS)('%s reaches 4.5:1 against the background', (name) => {
+    expect(contrastRatio(bg, vars[name])).toBeGreaterThanOrEqual(WCAG_AA)
   })
 
-  it.each(REALM_TOKEN_VARS)('%s reaches 4.5:1 against the light (parchment) background', (name) => {
-    expect(contrastRatio(lightBg, light[name])).toBeGreaterThanOrEqual(WCAG_AA)
-  })
-
-  it('the dark background is the exact TRD-specified #17110a', () => {
-    expect(darkBg).toBe('#17110a')
+  it('the background is the exact TRD-specified #17110a', () => {
+    expect(bg).toBe('#17110a')
   })
 })
 
 // ---------------------------------------------------------------------------
-// Toggle test — proves the ACTUAL globals.css rules re-theme the realm
-// variables when `.theme-light` is toggled on `documentElement`, with no JS
-// theme detection: injects the real, verbatim `:root { … }` and
-// `.theme-light { … }` blocks (not a hand-typed copy) into a <style> tag and
-// reads them back via getComputedStyle, the same mechanism the app itself
-// relies on when the appearance setting changes.
+// CodeMirror's own light/dark classification (the `EditorView.darkTheme`
+// facet, which @codemirror/merge's `&dark` diff-decoration rules key off).
+// The app is dark-only, so both themes must mark the editor dark.
 // ---------------------------------------------------------------------------
 
-describe('realmTheme — .theme-light toggling re-resolves --co-realm-* (no JS remount)', () => {
-  afterEach(() => {
-    document.documentElement.classList.remove('theme-light')
-    document.getElementById('realm-theme-toggle-probe')?.remove()
-  })
-
-  it('resolves the dark values by default and the light values once .theme-light is added', () => {
-    const css = readGlobalsCss()
-    const rootBlock = `${extractBlock(css, ':root')}}`
-    const lightBlock = `${extractBlock(css, '.theme-light')}}`
-
-    const style = document.createElement('style')
-    style.id = 'realm-theme-toggle-probe'
-    style.textContent = `${rootBlock}\n${lightBlock}`
-    document.head.appendChild(style)
-
-    const resolved = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim()
-
-    for (const name of ['co-realm-bg', ...REALM_TOKEN_VARS]) {
-      expect(resolved(name)).toBe(extractVar(rootBlock, name))
-    }
-
-    document.documentElement.classList.add('theme-light')
-
-    for (const name of ['co-realm-bg', ...REALM_TOKEN_VARS]) {
-      expect(resolved(name)).toBe(extractVar(lightBlock, name))
-      // The two palettes are never accidentally identical for any token —
-      // otherwise this test could pass even if the light override silently
-      // failed to apply.
-      expect(resolved(name)).not.toBe(extractVar(rootBlock, name))
-    }
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Fix #148 — officeTheme/realmTheme are functions of CodeMirror's OWN
-// internal light/dark classification now, not a hardcoded `dark: true`. This
-// is a DIFFERENT axis from the `--co-*` CSS variables above: it's the
-// `EditorView.darkTheme` facet several extensions (notably @codemirror/
-// merge's own `&light`/`&dark` diff-decoration rules) key off directly, and
-// it needs an actual boolean argument rather than resolving through CSS —
-// checked here against CodeMirror's own public facet API, not a DOM probe.
-// ---------------------------------------------------------------------------
-
-describe('officeTheme/realmTheme — the dark option actually varies (Fix #148)', () => {
+describe('officeTheme/realmTheme — mark the editor dark', () => {
   it.each([
     ['officeTheme', officeTheme],
     ['realmTheme', realmTheme],
-  ] as const)('%s(true) marks the editor dark; %s(false) marks it light', (_name, theme) => {
-    const darkState = EditorState.create({ extensions: theme(true) })
-    const lightState = EditorState.create({ extensions: theme(false) })
-    expect(darkState.facet(EditorView.darkTheme)).toBe(true)
-    expect(lightState.facet(EditorView.darkTheme)).toBe(false)
+  ] as const)('%s sets EditorView.darkTheme', (_name, theme) => {
+    const state = EditorState.create({ extensions: theme })
+    expect(state.facet(EditorView.darkTheme)).toBe(true)
   })
 })
 
 // ---------------------------------------------------------------------------
 // Invisible/bidi character marker (.co-invisible-token/.cm-co-invisible,
 // globals.css, TRD §3.6.6 joint High — the Trojan-Source defense) — Fix
-// #149. It used to read --co-status-attention/--co-bg-primary: the SAME
-// --co-bg-primary that flips per theme for the app's own background, which
-// made this marker's text ~2.56:1 in light mode (near-white on a warm-red
-// background) — well under AA, for a marker whose whole job is to be
-// conspicuous. It now has its own dedicated --co-invisible-marker-bg/-fg
-// pair, deliberately fixed and identical in both themes (this marker isn't
-// supposed to blend in with either skin), checked here in both blocks
-// exactly like officeTheme/realmTheme above so it can't silently drift.
+// #149. It has its own dedicated --co-invisible-marker-bg/-fg pair, fixed
+// regardless of skin or palette, checked here so it can't silently drift.
 // ---------------------------------------------------------------------------
 
-describe('invisible/bidi character marker — WCAG AA 4.5:1 in both themes (Fix #149)', () => {
-  const { dark, light, darkBg, lightBg } = readThemeVars(['co-invisible-marker-fg'] as const, 'co-invisible-marker-bg')
+describe('invisible/bidi character marker — WCAG AA 4.5:1 (Fix #149)', () => {
+  const { vars, bg } = readRootVars(['co-invisible-marker-fg'] as const, 'co-invisible-marker-bg')
 
-  it('reaches 4.5:1 against its background in dark mode (:root)', () => {
-    expect(contrastRatio(darkBg, dark['co-invisible-marker-fg'])).toBeGreaterThanOrEqual(WCAG_AA)
-  })
-
-  it('reaches 4.5:1 against its background in light mode (.theme-light)', () => {
-    expect(contrastRatio(lightBg, light['co-invisible-marker-fg'])).toBeGreaterThanOrEqual(WCAG_AA)
-  })
-
-  it('is the same fixed pair in both themes — this marker never blends in with either skin', () => {
-    expect(light['co-invisible-marker-fg']).toBe(dark['co-invisible-marker-fg'])
-    expect(lightBg).toBe(darkBg)
+  it('reaches 4.5:1 against its background', () => {
+    expect(contrastRatio(bg, vars['co-invisible-marker-fg'])).toBeGreaterThanOrEqual(WCAG_AA)
   })
 })
 
 // ---------------------------------------------------------------------------
-// Fix #151: the chip has no border of its own — its ONLY boundary against
-// the surrounding editor canvas was the fill color, which drops to
-// ~2.3-2.56:1 against the two LIGHT canvases (below WCAG 1.4.11's 3:1 floor
-// for a UI component's boundary, and a real concern for red-green
-// colorblind viewers). `--co-invisible-marker-border` is checked here
-// against all FOUR possible editor canvases at once (office dark/light,
-// realm dark/light) — deliberately NOT reusing --co-invisible-marker-fg
-// itself, which is near-identical to the office dark canvas (#0a0c14 vs the
-// palette's #0a1012 recessed bg0) and would be effectively invisible there.
+// Fix #151: the chip has no border of its own, so
+// `--co-invisible-marker-border` gives it a boundary (WCAG 1.4.11's 3:1 for
+// a UI component) against both editor canvases — deliberately NOT reusing
+// --co-invisible-marker-fg itself, which is near-identical to the office
+// canvas (#0a0c14 vs the palette's #0a1012 recessed bg0).
 // ---------------------------------------------------------------------------
 
 const WCAG_UI_COMPONENT = 3
 
-describe('invisible/bidi character marker — border reaches 3:1 against all four editor canvases (Fix #151)', () => {
-  const { dark: markerDark, light: markerLight } = readThemeVars(
-    ['co-invisible-marker-border'] as const,
-    'co-invisible-marker-bg',
-  )
-  const officeBgs = readThemeVars([] as const, 'co-code-bg')
-  const realmBgs = readThemeVars([] as const, 'co-realm-bg')
-
-  it('the border color is the same fixed value in both themes', () => {
-    expect(markerLight['co-invisible-marker-border']).toBe(markerDark['co-invisible-marker-border'])
-  })
+describe('invisible/bidi character marker — border reaches 3:1 against both editor canvases (Fix #151)', () => {
+  const { vars: marker } = readRootVars(['co-invisible-marker-border'] as const, 'co-invisible-marker-bg')
+  const officeBg = readRootVars([] as const, 'co-code-bg').bg
+  const realmBg = readRootVars([] as const, 'co-realm-bg').bg
 
   it.each([
-    ['office dark', officeBgs.darkBg],
-    ['office light', officeBgs.lightBg],
-    ['realm dark', realmBgs.darkBg],
-    ['realm light (parchment)', realmBgs.lightBg],
+    ['office', officeBg],
+    ['realm', realmBg],
   ] as const)('reaches 3:1 against the %s canvas', (_label, canvasBg) => {
-    expect(contrastRatio(canvasBg, markerDark['co-invisible-marker-border'])).toBeGreaterThanOrEqual(WCAG_UI_COMPONENT)
+    expect(contrastRatio(canvasBg, marker['co-invisible-marker-border'])).toBeGreaterThanOrEqual(WCAG_UI_COMPONENT)
   })
 
-  it('is NOT --co-invisible-marker-fg — that near-black value would be invisible against the dark office canvas', () => {
-    expect(markerDark['co-invisible-marker-border']).not.toBe(officeBgs.darkBg)
+  it('is NOT --co-invisible-marker-fg — that near-black value would be invisible against the office canvas', () => {
+    expect(marker['co-invisible-marker-border']).not.toBe(officeBg)
   })
 })

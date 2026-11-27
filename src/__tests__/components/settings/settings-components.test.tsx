@@ -96,7 +96,6 @@ function makeConfig(overrides: Partial<SettingsData> = {}): SettingsData {
       quietHours: { enabled: false, start: '22:00', end: '08:00' },
     },
     appearance: {
-      theme: 'dark',
       compactView: false,
       shipMomentStyle: 'full',
       palette: 'eucalyptus',
@@ -173,7 +172,7 @@ describe('AppearanceSettings', () => {
     render(<AppearanceSettings />)
     fireEvent.change(screen.getByLabelText('Colors'), { target: { value: 'signal' } })
     expect(mockSettingsStore.updateConfig).toHaveBeenCalledWith({
-      appearance: { theme: 'dark', compactView: false, shipMomentStyle: 'full', palette: 'signal' },
+      appearance: { compactView: false, shipMomentStyle: 'full', palette: 'signal' },
     })
   })
 

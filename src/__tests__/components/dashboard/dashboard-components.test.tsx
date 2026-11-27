@@ -24,8 +24,8 @@ vi.mock('../../../renderer/stores/activity-store', () => ({
 }))
 
 vi.mock('../../../renderer/stores/settings-store', () => ({
-  useSettingsStore: vi.fn((selector: (s: { config: { appearance: { theme: string }; hooks: { installed: boolean } } | null }) => unknown) =>
-    selector({ config: { appearance: { theme: 'dark' }, hooks: { installed: false } } })
+  useSettingsStore: vi.fn((selector: (s: { config: { appearance: Record<string, unknown>; hooks: { installed: boolean } } | null }) => unknown) =>
+    selector({ config: { appearance: {}, hooks: { installed: false } } })
   ),
 }))
 
@@ -257,7 +257,7 @@ describe('WorkspaceCard', () => {
       vi.mocked(useSettingsStore).mockImplementationOnce(
         // @ts-expect-error — mock selector receives partial state
         (selector: (s: Record<string, unknown>) => unknown) =>
-          selector({ config: { appearance: { theme: 'dark', compactView: true }, hooks: { installed: false } } })
+          selector({ config: { appearance: { compactView: true }, hooks: { installed: false } } })
       )
       render(<WorkspaceCard workspace={makeWorkspace({ availability: 'missing' })} />)
       expect(screen.getByText('Missing')).toBeInTheDocument()
@@ -359,7 +359,7 @@ describe('WorkspaceCard', () => {
     vi.mocked(useSettingsStore).mockImplementationOnce(
       // @ts-expect-error — mock selector receives partial state
       (selector: (s: Record<string, unknown>) => unknown) =>
-        selector({ config: { appearance: { theme: 'dark', compactView: true }, hooks: { installed: false } } })
+        selector({ config: { appearance: { compactView: true }, hooks: { installed: false } } })
     )
     render(<WorkspaceCard workspace={makeWorkspace()} />)
     // Compact view renders a button with py-2 (not py-4)
@@ -373,7 +373,7 @@ describe('WorkspaceCard', () => {
     vi.mocked(useSettingsStore).mockImplementationOnce(
       // @ts-expect-error — mock selector receives partial state
       (selector: (s: Record<string, unknown>) => unknown) =>
-        selector({ config: { appearance: { theme: 'dark', compactView: true }, hooks: { installed: false } } })
+        selector({ config: { appearance: { compactView: true }, hooks: { installed: false } } })
     )
     const ws = makeWorkspace({
       activePipelines: [{
@@ -468,7 +468,7 @@ describe('ActivityItem', () => {
       vi.mocked(useSettingsStore).mockImplementationOnce(
         // @ts-expect-error — mock selector receives partial state
         (selector: (s: Record<string, unknown>) => unknown) =>
-          selector({ config: { appearance: { theme: 'dark', compactView: true }, hooks: { installed: false } } })
+          selector({ config: { appearance: { compactView: true }, hooks: { installed: false } } })
       )
       render(<ActivityItem item={makeActivityItem({ workspace: '?proj-x' })} />)
       expect(screen.getByText('proj-x (not in your workspaces)')).toBeInTheDocument()
@@ -480,7 +480,7 @@ describe('ActivityItem', () => {
     vi.mocked(useSettingsStore).mockImplementationOnce(
       // @ts-expect-error — mock selector receives partial state
       (selector: (s: Record<string, unknown>) => unknown) =>
-        selector({ config: { appearance: { theme: 'dark', compactView: true }, hooks: { installed: false } } })
+        selector({ config: { appearance: { compactView: true }, hooks: { installed: false } } })
     )
     const { container } = render(<ActivityItem item={makeActivityItem()} />)
     const btn = container.querySelector('button')
@@ -491,7 +491,7 @@ describe('ActivityItem', () => {
     vi.mocked(useSettingsStore).mockImplementationOnce(
       // @ts-expect-error — mock selector receives partial state
       (selector: (s: Record<string, unknown>) => unknown) =>
-        selector({ config: { appearance: { theme: 'dark', compactView: true }, hooks: { installed: false } } })
+        selector({ config: { appearance: { compactView: true }, hooks: { installed: false } } })
     )
     render(<ActivityItem item={makeActivityItem()} />)
     expect(screen.getByText('test-ws')).toBeInTheDocument()
@@ -502,7 +502,7 @@ describe('ActivityItem', () => {
     vi.mocked(useSettingsStore).mockImplementationOnce(
       // @ts-expect-error — mock selector receives partial state
       (selector: (s: Record<string, unknown>) => unknown) =>
-        selector({ config: { appearance: { theme: 'dark', compactView: true }, hooks: { installed: false } } })
+        selector({ config: { appearance: { compactView: true }, hooks: { installed: false } } })
     )
     render(<ActivityItem item={makeActivityItem()} />)
     await user.click(screen.getByRole('button'))
@@ -623,7 +623,7 @@ describe('WorkspaceCard — UnmergedDot', () => {
     setSummary(['feat/a'])
     vi.mocked(useSettingsStore).mockImplementationOnce(
       ((selector: (s: Record<string, unknown>) => unknown) =>
-        selector({ config: { appearance: { theme: 'dark', compactView: true }, hooks: { installed: false } } })) as never,
+        selector({ config: { appearance: { compactView: true }, hooks: { installed: false } } })) as never,
     )
     render(<WorkspaceCard workspace={makeWorkspace()} />)
     expect(screen.getByRole('img', { name: /Unmerged sandbox work: feat\/a/ })).toBeInTheDocument()
@@ -654,7 +654,7 @@ describe('ActivityItem — sandbox provenance', () => {
 
     vi.mocked(useSettingsStore).mockImplementationOnce(
       ((selector: (s: Record<string, unknown>) => unknown) =>
-        selector({ config: { appearance: { theme: 'dark', compactView: true }, hooks: { installed: false } } })) as never,
+        selector({ config: { appearance: { compactView: true }, hooks: { installed: false } } })) as never,
     )
     render(<ActivityItem item={makeActivityItem({ source: 'sandbox' })} />)
     expect(screen.getByText(/\(from the sandbox for /)).toBeInTheDocument()

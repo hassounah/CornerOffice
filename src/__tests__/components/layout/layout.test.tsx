@@ -26,7 +26,7 @@ const mockGamificationStore = vi.hoisted(() => ({
 const mockUpdateConfig = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 
 const mockSettingsStore = vi.hoisted(() => ({
-  config: null as { companyName: string; appearance: { theme: string } } | null,
+  config: null as { companyName: string; appearance: Record<string, unknown> } | null,
   loading: false,
   error: null,
   updateConfig: mockUpdateConfig,
@@ -147,7 +147,7 @@ describe('TopBar', () => {
   })
 
   it('shows company name when not on dashboard', () => {
-    mockSettingsStore.config = { companyName: 'Acme', appearance: { theme: 'dark' } }
+    mockSettingsStore.config = { companyName: 'Acme', appearance: {} }
     renderInRouter(<TopBar />, '/workspace/foo')
     expect(screen.getByText('Acme')).toBeInTheDocument()
   })
